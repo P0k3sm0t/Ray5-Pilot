@@ -54,6 +54,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "draw_corner_marks": True,
             },
         },
+        "overlay_alignment": {
+            "enabled": True,
+            "physical_width_mm": 300,
+            "physical_height_mm": 300,
+            "source_offset_x_px": 0,
+            "source_offset_y_px": 0,
+            "offset_x_mm": 0,
+            "offset_y_mm": 0,
+            "scale_x": 1.0,
+            "scale_y": 1.0,
+            "fine_rotation_degrees": 0.0,
+        },
     },
     "jobs": {
         "imported_jobs_dir": "imported_jobs",

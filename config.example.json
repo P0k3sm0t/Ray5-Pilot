@@ -63,7 +63,19 @@
                                                               "draw_border":  true,
                                                               "draw_corner_marks":  true
                                                           }
-                                   }
+                                   },
+                   "overlay_alignment":  {
+                                             "enabled":  true,
+                                             "physical_width_mm":  300,
+                                             "physical_height_mm":  300,
+                                             "source_offset_x_px":  0,
+                                             "source_offset_y_px":  0,
+                                             "offset_x_mm":  0,
+                                             "offset_y_mm":  0,
+                                             "scale_x":  1,
+                                             "scale_y":  1,
+                                             "fine_rotation_degrees":  0
+                                         }
                },
     "jobs":  {
                  "imported_jobs_dir":  "imported_jobs",

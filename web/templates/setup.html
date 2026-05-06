@@ -49,6 +49,19 @@
 <label><input id="cam_guides_corners" type="checkbox"> Draw corner marks</label>
 <p class="muted small">Snapshots are used as overlay/reference images. By default Ray5 Pilot overwrites latest.jpg/latest_raw.jpg and does not keep history.</p>
 </section>
+<section class="card">
+<h3>Camera Overlay Alignment</h3>
+<p>Fine-tune processed overlay alignment for your calibrated target area (for example 300 x 300 mm).</p>
+<label><input id="cam_align_enabled" type="checkbox"> Enable overlay alignment</label>
+<label>Physical width (mm) <input id="cam_align_width_mm" type="number" step="0.01"></label>
+<label>Physical height (mm) <input id="cam_align_height_mm" type="number" step="0.01"></label>
+<label>Source X offset (px) <input id="cam_align_offset_x" type="number" step="1"></label>
+<label>Source Y offset (px) <input id="cam_align_offset_y" type="number" step="1"></label>
+<label>Scale X <input id="cam_align_scale_x" type="number" step="0.0001"></label>
+<label>Scale Y <input id="cam_align_scale_y" type="number" step="0.0001"></label>
+<label>Fine rotation (degrees) <input id="cam_align_rotation" type="number" step="0.01"></label>
+<p class="muted small">Physical width/height controls the real-world LightBurn import size of latest.jpg. Source X/Y offset moves the selected camera area before deskew to avoid blank/cropped edges. Scale X/Y corrects small size mismatch. Fine rotation corrects small angle mismatch.</p>
+</section>
 <section class="card"><h3>Imported Jobs</h3><p>Folders, watch polling, and file extensions for G-code imports.</p><label>Imported folder <input id="jobs_imported"></label><label>Watched folder <input id="jobs_watched"></label><label><input id="jobs_watch_enabled" type="checkbox"> Enable watched-folder auto import</label><label>Watch poll seconds <input id="jobs_watch_poll" type="number"></label><label>Extensions comma list <input id="jobs_ext"></label></section>
 <section class="card">
 <h3>Framing</h3>
@@ -73,5 +86,5 @@
 </div>
 <div class="card"><button id="saveCfg">Save Config</button><pre id="saveOut"></pre></div>
 </main>
-<script src="/static/setup.js"></script>
+<script src="/static/setup.js?v=1.0.4"></script>
 </body></html>

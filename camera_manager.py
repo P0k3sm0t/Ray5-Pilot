@@ -256,6 +256,14 @@ class CameraManager:
             self.log.info("[CAMERA] Deskew source points: %s", len(source_points) if isinstance(source_points, list) else 0)
             try:
                 src_points = np.array(self._parse_deskew_source_points(source_points), dtype="float32")
+                overlay = self.camera.get("overlay_alignment", {}) if isinstance(self.camera.get("overlay_alignment"), dict) else {}
+                if bool(overlay.get("enabled", True)):
+                    src_off_x = float(overlay.get("source_offset_x_px", 0) or 0)
+                    src_off_y = float(overlay.get("source_offset_y_px", 0) or 0)
+                    self.log.info("[CAMERA] Deskew source offset: x=%s y=%s", src_off_x, src_off_y)
+                    src_points[:, 0] = src_points[:, 0] + src_off_x
+                    src_points[:, 1] = src_points[:, 1] + src_off_y
+                    self.log.info("[CAMERA] Adjusted deskew points: count=%s", len(src_points))
                 out_w, out_h = self._parse_deskew_output_size(deskew.get("output_size", [1200, 1200]))
                 self.log.info("[CAMERA] Deskew output size: %sx%s", out_w, out_h)
                 dst_points = np.array(
@@ -265,7 +273,7 @@ class CameraManager:
                 matrix = cv2.getPerspectiveTransform(src_points, dst_points)
                 image = cv2.warpPerspective(image, matrix, (out_w, out_h))
                 deskew_applied = True
-                self.log.info("[CAMERA] Deskew applied")
+                self.log.info("[CAMERA] Deskew applied with source offset")
             except Exception as exc:
                 self.log.warning("[CAMERA] Deskew failed, using raw image as latest.jpg: %s", exc)
                 self.latest_path.write_bytes(self.latest_raw_path.read_bytes())
@@ -276,6 +284,10 @@ class CameraManager:
             image, postprocess_applied = self._apply_postprocess(image)
         except Exception as exc:
             self.log.warning("[CAMERA] Postprocess failed, using deskewed image as latest.jpg: %s", exc)
+        try:
+            image = self._apply_overlay_alignment(image)
+        except Exception as exc:
+            self.log.warning("[CAMERA] Overlay alignment failed, keeping unaligned image: %s", exc)
         post = self.camera.get("postprocess", {}) if isinstance(self.camera.get("postprocess"), dict) else {}
         if bool(post.get("overlay_guides", {}).get("enabled", False)):
             image = self._draw_overlay_guides(image)
@@ -285,6 +297,38 @@ class CameraManager:
         self._write_dpi_metadata(self.latest_path)
         self.log.info("[CAMERA] Final image saved: %s", self._camera_display_path(self.latest_path))
         return {"deskew_applied": deskew_applied, "postprocess_applied": postprocess_applied}
+
+    def _apply_overlay_alignment(self, image: Any) -> Any:
+        if image is None:
+            return image
+        overlay = self.camera.get("overlay_alignment", {}) if isinstance(self.camera.get("overlay_alignment"), dict) else {}
+        if not bool(overlay.get("enabled", True)):
+            return image
+        h, w = image.shape[:2]
+        scale_x = float(overlay.get("scale_x", 1.0) or 1.0)
+        scale_y = float(overlay.get("scale_y", 1.0) or 1.0)
+        fine_rotation = float(overlay.get("fine_rotation_degrees", 0.0) or 0.0)
+        center = (w / 2.0, h / 2.0)
+        mat = cv2.getRotationMatrix2D(center, fine_rotation, 1.0)
+        mat[0, 0] *= scale_x
+        mat[0, 1] *= scale_x
+        mat[1, 0] *= scale_y
+        mat[1, 1] *= scale_y
+        aligned = cv2.warpAffine(
+            image,
+            mat,
+            (w, h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0),
+        )
+        self.log.info(
+            "[CAMERA] Overlay fine alignment applied: scale=(%s,%s) fine_rot=%sdeg",
+            scale_x,
+            scale_y,
+            fine_rotation,
+        )
+        return aligned
 
     def _apply_postprocess(self, image: Any) -> tuple[Any, bool]:
         post = self.camera.get("postprocess", {}) if isinstance(self.camera.get("postprocess"), dict) else {}
@@ -369,19 +413,18 @@ class CameraManager:
             old.unlink(missing_ok=True)
 
     def _write_overlay_instructions(self) -> None:
-        post = self.camera.get("postprocess", {}) if isinstance(self.camera.get("postprocess"), dict) else {}
-        final_size = post.get("final_size", [1200, 1200])
-        dpi = float(post.get("dpi", 101.6))
-        mm_w = (float(final_size[0]) / dpi) * 25.4 if isinstance(final_size, list) and len(final_size) == 2 else 300.0
-        mm_h = (float(final_size[1]) / dpi) * 25.4 if isinstance(final_size, list) and len(final_size) == 2 else 300.0
+        overlay = self.camera.get("overlay_alignment", {}) if isinstance(self.camera.get("overlay_alignment"), dict) else {}
+        mm_w = float(overlay.get("physical_width_mm", 300) or 300.0)
+        mm_h = float(overlay.get("physical_height_mm", 300) or 300.0)
         txt = (
             "Ray5 Pilot Overlay Helper\n"
-            "1) Drag latest.jpg into LightBurn.\n"
-            f"2) Confirm import size is about {mm_w:.2f} mm x {mm_h:.2f} mm.\n"
-            "3) Put camera image on a non-output layer and lock it.\n"
-            "4) Use absolute coordinates.\n"
-            "5) Place artwork over the material.\n"
-            "6) Always frame before start.\n"
+            "1) Import latest.jpg into LightBurn.\n"
+            f"2) Set width to {mm_w:.2f} mm.\n"
+            f"3) Set height to {mm_h:.2f} mm.\n"
+            "4) Place/center the overlay where your calibrated camera area belongs.\n"
+            "5) Put camera image on a non-output layer and lock it.\n"
+            "6) Place artwork over the material.\n"
+            "7) Frame before firing.\n"
         )
         self.latest_instructions_path.write_text(txt, encoding="utf-8")
         self.log.info("[CAMERA] LightBurn instructions written")
@@ -424,10 +467,15 @@ class CameraManager:
 
     def _write_dpi_metadata(self, final_path: Path) -> None:
         try:
-            dpi = self._dpi()
             with Image.open(final_path) as image:
-                image.save(final_path, dpi=(dpi, dpi))
-            self.log.info("[CAMERA] DPI metadata written: %s", dpi)
+                w_px, h_px = image.size
+                overlay = self.camera.get("overlay_alignment", {}) if isinstance(self.camera.get("overlay_alignment"), dict) else {}
+                mm_w = float(overlay.get("physical_width_mm", 300) or 300.0)
+                mm_h = float(overlay.get("physical_height_mm", 300) or 300.0)
+                dpi_x = (float(w_px) * 25.4 / mm_w) if mm_w > 0 else self._dpi()
+                dpi_y = (float(h_px) * 25.4 / mm_h) if mm_h > 0 else self._dpi()
+                image.save(final_path, dpi=(dpi_x, dpi_y))
+            self.log.info("[CAMERA] DPI metadata written: x=%.3f y=%.3f", dpi_x, dpi_y)
         except Exception as exc:
             self.log.warning("[CAMERA] Failed to write DPI metadata: %s", exc)
 
@@ -506,6 +554,7 @@ class CameraManager:
             "output_size": output_size,
             "postprocess_enabled": bool(post.get("enabled", False)),
             "final_size": final_size,
+            "overlay_alignment": self.camera.get("overlay_alignment", {}),
             "latest_raw_exists": latest_raw.exists(),
             "latest_exists": latest.exists(),
         }

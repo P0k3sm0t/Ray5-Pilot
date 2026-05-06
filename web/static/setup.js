@@ -1,111 +1,136 @@
 async function api(url, method='GET', body=null){const opt={method,headers:{}};if(body){opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(body)}const r=await fetch(url,opt);return r.json()}
 function v(id){return document.getElementById(id)}
+function setVal(id,value,fallback=''){const el=v(id);if(!el){console.warn(`Missing settings field: ${id}`);return}el.value=(value??fallback)}
+function setChecked(id,value,fallback=false){const el=v(id);if(!el){console.warn(`Missing settings field: ${id}`);return}el.checked=(value??fallback)}
+function unwrapConfigResponse(d){
+  if (d && d.config && d.config.ray5) return d.config;
+  if (d && d.config && d.config.config && d.config.config.ray5) return d.config.config;
+  if (d && d.ray5) return d;
+  throw new Error("Invalid /api/config response shape");
+}
+let settingsLoaded = false;
 
 function load(cfg){
-  v('ray_host').value=cfg.ray5.host;
-  v('ray_port').value=cfg.ray5.port;
-  v('ray_timeout').value=cfg.ray5.request_timeout_seconds ?? cfg.ray5.timeout ?? 4;
-  v('web_host').value=cfg.web_ui.host;
-  v('web_port').value=cfg.web_ui.port;
-
+  cfg = cfg || {};
+  const ray = cfg.ray5 || {};
+  const web = cfg.web_ui || {};
   const cam=cfg.camera||{};
-  v('cam_enabled').checked=!!cam.enabled;
-  v('cam_stream').value=cam.url||cam.stream_url||'';
-  v('cam_snapshot').value=cam.snapshot_url||'';
-  v('cam_proxy_enabled').checked=(cam.proxy_enabled!==false);
-  v('cam_proxy_path').value=cam.proxy_path||'/camera/stream';
-  v('cam_reconnect').value=cam.reconnect_seconds||5;
-  v('cam_capture_method').value=cam.capture_method||'ffmpeg';
-  v('cam_output_dir').value=cam.output_dir||'camera_captures';
-  v('cam_filename_prefix').value=cam.filename_prefix||'ray5_bed';
-  v('cam_save_history').checked=!!cam.save_history;
-  v('cam_keep_last').value=(cam.keep_last??0);
-  v('cam_auto_cleanup').checked=(cam.auto_cleanup_on_start!==false);
-  v('cam_cleanup_capture').checked=(cam.cleanup_on_capture!==false);
-  v('cam_timeout').value=cam.timeout_seconds||15;
+  const jobs = cfg.jobs || {};
+  const framing = cfg.framing || {};
+  const machine = cfg.machine || {};
+  const mc = cfg.manual_controls || {};
+  const safety = cfg.safety || {};
+  const sd = cfg.sd_files || {};
+  const up = cfg.upload || {};
+  const st = cfg.status || {};
+
+  setVal('ray_host', ray.host, '');
+  setVal('ray_port', ray.port, 8848);
+  setVal('ray_timeout', ray.request_timeout_seconds ?? ray.timeout ?? 4, 4);
+  setVal('web_host', web.host, '127.0.0.1');
+  setVal('web_port', web.port, 5050);
+
+  setChecked('cam_enabled', !!cam.enabled, false);
+  setVal('cam_stream', cam.url||cam.stream_url||'', '');
+  setVal('cam_snapshot', cam.snapshot_url||'', '');
+  setChecked('cam_proxy_enabled', (cam.proxy_enabled!==false), true);
+  setVal('cam_proxy_path', cam.proxy_path||'/camera/stream', '/camera/stream');
+  setVal('cam_reconnect', cam.reconnect_seconds||5, 5);
+  setVal('cam_capture_method', cam.capture_method||'ffmpeg', 'ffmpeg');
+  setVal('cam_output_dir', cam.output_dir||'camera_captures', 'camera_captures');
+  setVal('cam_filename_prefix', cam.filename_prefix||'ray5_bed', 'ray5_bed');
+  setChecked('cam_save_history', !!cam.save_history, false);
+  setVal('cam_keep_last', (cam.keep_last??0), 0);
+  setChecked('cam_auto_cleanup', (cam.auto_cleanup_on_start!==false), true);
+  setChecked('cam_cleanup_capture', (cam.cleanup_on_capture!==false), true);
+  setVal('cam_timeout', cam.timeout_seconds||15, 15);
   const rotVal = String((cam.postprocess&&cam.postprocess.rotate_degrees) ?? 90);
-  v('cam_rot').value=(['0','90','180','270'].includes(rotVal)?rotVal:'0');
-  v('cam_deskew_enabled').checked=!!(cam.deskew&&cam.deskew.enabled);
-  v('cam_deskew_points').value=JSON.stringify((cam.deskew&&cam.deskew.source_points)||[]);
-  v('cam_deskew_out_w').value=((cam.deskew&&cam.deskew.output_size&&cam.deskew.output_size[0])||1200);
-  v('cam_deskew_out_h').value=((cam.deskew&&cam.deskew.output_size&&cam.deskew.output_size[1])||1200);
-  v('cam_post_enabled').checked=!!(cam.postprocess&&cam.postprocess.enabled);
-  v('cam_scale').value=((cam.postprocess&&cam.postprocess.scale)??1.0);
-  v('cam_crop_margin').value=((cam.postprocess&&cam.postprocess.center_crop_margin)??0);
+  setVal('cam_rot', (['0','90','180','270'].includes(rotVal)?rotVal:'0'), '0');
+  setChecked('cam_deskew_enabled', !!(cam.deskew&&cam.deskew.enabled), false);
+  setVal('cam_deskew_points', JSON.stringify((cam.deskew&&cam.deskew.source_points)||[]), '[]');
+  setVal('cam_deskew_out_w', ((cam.deskew&&cam.deskew.output_size&&cam.deskew.output_size[0])||1200), 1200);
+  setVal('cam_deskew_out_h', ((cam.deskew&&cam.deskew.output_size&&cam.deskew.output_size[1])||1200), 1200);
+  setChecked('cam_post_enabled', !!(cam.postprocess&&cam.postprocess.enabled), false);
+  setVal('cam_scale', ((cam.postprocess&&cam.postprocess.scale)??1.0), 1.0);
+  setVal('cam_crop_margin', ((cam.postprocess&&cam.postprocess.center_crop_margin)??0), 0);
   const fs=(cam.postprocess&&cam.postprocess.final_size)||[1200,1200];
-  v('cam_final_w').value=fs[0]||1200;
-  v('cam_final_h').value=fs[1]||1200;
-  v('cam_dpi').value=((cam.postprocess&&cam.postprocess.dpi)??101.6);
+  setVal('cam_final_w', fs[0]||1200, 1200);
+  setVal('cam_final_h', fs[1]||1200, 1200);
+  setVal('cam_dpi', ((cam.postprocess&&cam.postprocess.dpi)??101.6), 101.6);
   const guides=(cam.postprocess&&cam.postprocess.overlay_guides)||{};
-  v('cam_guides_enabled').checked=!!guides.enabled;
-  v('cam_guides_cross').checked=(guides.draw_center_cross!==false);
-  v('cam_guides_border').checked=(guides.draw_border!==false);
-  v('cam_guides_corners').checked=(guides.draw_corner_marks!==false);
+  setChecked('cam_guides_enabled', !!guides.enabled, false);
+  setChecked('cam_guides_cross', (guides.draw_center_cross!==false), true);
+  setChecked('cam_guides_border', (guides.draw_border!==false), true);
+  setChecked('cam_guides_corners', (guides.draw_corner_marks!==false), true);
+  const oa=(cam.overlay_alignment)||{};
+  setChecked('cam_align_enabled', (oa.enabled!==false), true);
+  setVal('cam_align_width_mm', (oa.physical_width_mm??300), 300);
+  setVal('cam_align_height_mm', (oa.physical_height_mm??300), 300);
+  setVal('cam_align_offset_x', (oa.source_offset_x_px ?? oa.offset_x_mm ?? 0), 0);
+  setVal('cam_align_offset_y', (oa.source_offset_y_px ?? oa.offset_y_mm ?? 0), 0);
+  setVal('cam_align_scale_x', (oa.scale_x??1.0), 1.0);
+  setVal('cam_align_scale_y', (oa.scale_y??1.0), 1.0);
+  setVal('cam_align_rotation', (oa.fine_rotation_degrees??0.0), 0.0);
 
-  v('jobs_imported').value=cfg.jobs.imported_jobs_dir||cfg.jobs.imported_jobs_folder||'imported_jobs';
-  v('jobs_watched').value=cfg.jobs.watched_gcode_dir||cfg.jobs.watched_folder||'watched_gcode';
-  v('jobs_ext').value=(cfg.jobs.allowed_extensions||[]).join(',');
-  v('jobs_watch_enabled').checked=cfg.jobs.watch_enabled!==false;
-  v('jobs_watch_poll').value=cfg.jobs.watch_poll_seconds||3;
+  setVal('jobs_imported', jobs.imported_jobs_dir||jobs.imported_jobs_folder||'imported_jobs', 'imported_jobs');
+  setVal('jobs_watched', jobs.watched_gcode_dir||jobs.watched_folder||'watched_gcode', 'watched_gcode');
+  setVal('jobs_ext', (jobs.allowed_extensions||[]).join(','), '.gcode,.gc,.nc');
+  setChecked('jobs_watch_enabled', jobs.watch_enabled!==false, true);
+  setVal('jobs_watch_poll', jobs.watch_poll_seconds||3, 3);
 
-  v('frame_feed').value=(cfg.framing.feedrate ?? cfg.framing.frame_feedrate ?? 3000);
-  v('frame_margin').value=(cfg.framing.margin_mm ?? cfg.framing.frame_margin_mm ?? 2.0);
-  v('frame_laser_off').checked=(cfg.framing.force_laser_off ?? cfg.framing.laser_off_during_frame ?? true);
-  v('frame_validate_bounds').checked=(cfg.framing.validate_bounds ?? true);
-  v('frame_clamp_bounds').checked=(cfg.framing.clamp_to_machine_area ?? true);
-  const machine=cfg.machine||{};
-  v('machine_min_x').value=(machine.min_x ?? 0);
-  v('machine_min_y').value=(machine.min_y ?? 0);
-  v('machine_max_x').value=(machine.max_x ?? machine.bed_width_mm ?? 390);
-  v('machine_max_y').value=(machine.max_y ?? machine.bed_height_mm ?? 360);
-  v('machine_bed_w').value=(machine.bed_width_mm ?? 390);
-  v('machine_bed_h').value=(machine.bed_height_mm ?? 360);
+  setVal('frame_feed', (framing.feedrate ?? framing.frame_feedrate ?? 3000), 3000);
+  setVal('frame_margin', (framing.margin_mm ?? framing.frame_margin_mm ?? 2.0), 2.0);
+  setChecked('frame_laser_off', (framing.force_laser_off ?? framing.laser_off_during_frame ?? true), true);
+  setChecked('frame_validate_bounds', (framing.validate_bounds ?? true), true);
+  setChecked('frame_clamp_bounds', (framing.clamp_to_machine_area ?? true), true);
+  setVal('machine_min_x', (machine.min_x ?? 0), 0);
+  setVal('machine_min_y', (machine.min_y ?? 0), 0);
+  setVal('machine_max_x', (machine.max_x ?? machine.bed_width_mm ?? 390), 390);
+  setVal('machine_max_y', (machine.max_y ?? machine.bed_height_mm ?? 360), 360);
+  setVal('machine_bed_w', (machine.bed_width_mm ?? 390), 390);
+  setVal('machine_bed_h', (machine.bed_height_mm ?? 360), 360);
 
-  const mc=cfg.manual_controls||{};
-  v('jog_step').value=(mc.default_jog_step ?? mc.default_jog_step_mm ?? 10);
-  v('jog_feed').value=(mc.default_feedrate ?? 500);
-  v('jog_z').checked=(mc.enable_z_jog ?? mc.enable_jog_z ?? false);
-  v('preset_enabled').checked=(mc.preset_enabled !== false);
-  v('preset_label').value=(mc.preset_label ?? 'Go To Preset');
-  v('preset_x').value=(mc.preset_x ?? 0);
-  v('preset_y').value=(mc.preset_y ?? 0);
-  v('preset_feedrate').value=(mc.preset_feedrate ?? 1500);
+  setVal('jog_step', (mc.default_jog_step ?? mc.default_jog_step_mm ?? 10), 10);
+  setVal('jog_feed', (mc.default_feedrate ?? 500), 500);
+  setChecked('jog_z', (mc.enable_z_jog ?? mc.enable_jog_z ?? false), false);
+  setChecked('preset_enabled', (mc.preset_enabled !== false), true);
+  setVal('preset_label', (mc.preset_label ?? 'Go To Preset'), 'Go To Preset');
+  setVal('preset_x', (mc.preset_x ?? 0), 0);
+  setVal('preset_y', (mc.preset_y ?? 0), 0);
+  setVal('preset_feedrate', (mc.preset_feedrate ?? 1500), 1500);
 
-  v('safe_test_enable').checked=(cfg.safety.test_fire_enabled ?? cfg.safety.enable_test_fire);
-  v('safe_power').value=cfg.safety.test_fire_power;
-  v('safe_power_max').value=cfg.safety.test_fire_max_power ?? 5;
-  const durMs = (cfg.safety.test_fire_duration_ms ?? Math.round((cfg.safety.test_fire_duration_seconds ?? 0.1)*1000));
-  v('safe_dur').value=durMs;
-  v('safe_dur_max').value=cfg.safety.test_fire_max_duration_ms ?? 500;
+  setChecked('safe_test_enable', (safety.test_fire_enabled ?? safety.enable_test_fire ?? false), false);
+  setVal('safe_power', (safety.test_fire_power ?? 1), 1);
+  setVal('safe_power_max', (safety.test_fire_max_power ?? 5), 5);
+  const durMs = (safety.test_fire_duration_ms ?? Math.round((safety.test_fire_duration_seconds ?? 0.1)*1000));
+  setVal('safe_dur', durMs, 100);
+  setVal('safe_dur_max', (safety.test_fire_max_duration_ms ?? 500), 500);
 
-  const sd=cfg.sd_files||{};
-  v('sd_auto_refresh').value=sd.auto_refresh_seconds??0;
-  v('sd_show_storage').checked=sd.show_storage_summary!==false;
-  v('sd_enable_start').checked=sd.enable_start!==false;
-  v('sd_enable_delete').checked=sd.enable_delete!==false;
-  v('sd_enable_preview').checked=!!sd.enable_preview;
+  setVal('sd_auto_refresh', sd.auto_refresh_seconds??0, 0);
+  setChecked('sd_show_storage', sd.show_storage_summary!==false, true);
+  setChecked('sd_enable_start', sd.enable_start!==false, true);
+  setChecked('sd_enable_delete', sd.enable_delete!==false, true);
+  setChecked('sd_enable_preview', !!sd.enable_preview, false);
 
-  const up=cfg.upload||{};
-  v('upload_preserve_original').checked=(up.preserve_original!==false);
-  v('upload_sanitize_filename').checked=!!up.sanitize_filename;
-  v('upload_rewrite').checked=!!up.screen_compatible_rewrite;
-  v('upload_convert_m4').checked=!!up.convert_m4_to_m3;
-  v('upload_force_ext').value=up.force_extension||'';
-  v('upload_normalize_eol').checked=!!up.normalize_line_endings;
+  setChecked('upload_preserve_original', (up.preserve_original!==false), true);
+  setChecked('upload_sanitize_filename', !!up.sanitize_filename, false);
+  setChecked('upload_rewrite', !!up.screen_compatible_rewrite, false);
+  setChecked('upload_convert_m4', !!up.convert_m4_to_m3, false);
+  setVal('upload_force_ext', up.force_extension||'', '');
+  setChecked('upload_normalize_eol', !!up.normalize_line_endings, false);
 
-  const st=cfg.status||{};
-  v('status_prefer_live').checked=(st.prefer_live_status!==false);
-  v('status_ws_enabled').checked=(st.websocket_enabled!==false);
-  v('status_debug_logging').checked=!!st.debug_logging;
-  v('status_ws_port').value=st.websocket_port||8849;
-  v('status_ws_path').value=st.websocket_path||'/';
-  v('status_ws_subprotocol').value=st.websocket_subprotocol||'arduino';
-  v('status_poll_seconds').value=st.poll_seconds??1.0;
-  v('status_reconnect_seconds').value=st.reconnect_seconds??3.0;
-  v('status_stale_after').value=st.stale_after_seconds??5.0;
-  v('status_synth_fallback').checked=(st.synthetic_fallback_enabled!==false);
-  v('status_show_source').checked=(st.show_status_source!==false);
-  v('status_show_pos_source').checked=(st.show_position_source!==false);
+  setChecked('status_prefer_live', (st.prefer_live_status!==false), true);
+  setChecked('status_ws_enabled', (st.websocket_enabled!==false), true);
+  setChecked('status_debug_logging', !!st.debug_logging, false);
+  setVal('status_ws_port', st.websocket_port||8849, 8849);
+  setVal('status_ws_path', st.websocket_path||'/', '/');
+  setVal('status_ws_subprotocol', st.websocket_subprotocol||'arduino', 'arduino');
+  setVal('status_poll_seconds', st.poll_seconds??1.0, 1.0);
+  setVal('status_reconnect_seconds', st.reconnect_seconds??3.0, 3.0);
+  setVal('status_stale_after', st.stale_after_seconds??5.0, 5.0);
+  setChecked('status_synth_fallback', (st.synthetic_fallback_enabled!==false), true);
+  setChecked('status_show_source', (st.show_status_source!==false), true);
+  setChecked('status_show_pos_source', (st.show_position_source!==false), true);
 }
 
 function collect(){
@@ -154,6 +179,18 @@ function collect(){
           draw_border:v('cam_guides_border').checked,
           draw_corner_marks:v('cam_guides_corners').checked
         }
+      },
+      overlay_alignment:{
+        enabled:v('cam_align_enabled').checked,
+        physical_width_mm:Number(v('cam_align_width_mm').value)||300,
+        physical_height_mm:Number(v('cam_align_height_mm').value)||300,
+        source_offset_x_px:Number(v('cam_align_offset_x').value)||0,
+        source_offset_y_px:Number(v('cam_align_offset_y').value)||0,
+        offset_x_mm:0,
+        offset_y_mm:0,
+        scale_x:Number(v('cam_align_scale_x').value)||1.0,
+        scale_y:Number(v('cam_align_scale_y').value)||1.0,
+        fine_rotation_degrees:Number(v('cam_align_rotation').value)||0.0
       }
     },
     jobs:{imported_jobs_dir:v('jobs_imported').value.trim(),watched_gcode_dir:v('jobs_watched').value.trim(),watch_enabled:v('jobs_watch_enabled').checked,watch_poll_seconds:Number(v('jobs_watch_poll').value),allowed_extensions:v('jobs_ext').value.split(',').map(s=>s.trim()).filter(Boolean)},
@@ -230,17 +267,30 @@ function collect(){
 }
 
 async function init(){
-  const d=await api('/api/config');
-  load(d.config);
   const saveBtn = v('saveCfg');
-  const host = String((d.config?.ray5?.host)||'').trim();
-  if(host.toUpperCase()==='YOUR_RAY5_IP'){
-    v('saveOut').textContent='Settings are showing placeholder Ray5 host. Do not save until config.json is loaded correctly.';
+  try{
+    const d=await api('/api/config');
+    const cfg=unwrapConfigResponse(d);
+    load(cfg);
+    settingsLoaded = true;
+    const host = String((cfg?.ray5?.host)||'').trim();
+    if(host.toUpperCase()==='YOUR_RAY5_IP'){
+      v('saveOut').textContent='Settings are showing placeholder Ray5 host. Do not save until config.json is loaded correctly.';
+      if(saveBtn) saveBtn.disabled = true;
+    } else {
+      if(saveBtn) saveBtn.disabled = false;
+    }
+  }catch(err){
+    settingsLoaded = false;
+    if(v('saveOut')) v('saveOut').textContent=`Settings failed to load: ${err && err.message ? err.message : err}`;
     if(saveBtn) saveBtn.disabled = true;
-  } else {
-    if(saveBtn) saveBtn.disabled = false;
+    console.error('Settings init failed', err);
   }
   saveBtn.onclick=async()=>{
+    if(!settingsLoaded){
+      v('saveOut').textContent='Save blocked: Settings did not load correctly.';
+      return;
+    }
     const rayHost = v('ray_host').value.trim();
     const webHost = v('web_host').value.trim();
     const rayPort = Number(v('ray_port').value);
