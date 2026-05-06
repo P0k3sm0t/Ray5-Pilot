@@ -1,6 +1,6 @@
-﻿# Ray5 Pilot v1.0.0
+﻿# Ray5 Pilot v1.0.1
 
-Ray5 Pilot is a local Flask web controller for Longer Ray5 laser engravers using the ESP3D-style HTTP/WebSocket interface.
+A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-style HTTP/WebSocket interface.
 
 ## Features
 - Dashboard web UI
@@ -17,14 +17,16 @@ Ray5 Pilot is a local Flask web controller for Longer Ray5 laser engravers using
 - Camera deskew/postprocess/rotation/source-offset alignment settings
 - Camera Overlay Alignment card with source X/Y offset explanations
 - Live Console with smart auto-scroll
-- Settings page with descriptions/examples
+- Settings page with expanded descriptions and examples
 - 3D-printer G-code rejection safety scanner
+- Optional sanitized Ray5 diagnostic endpoints
+- Portable Windows startup BAT file
 - No old LightBurn TCP bridge
 
 ## Setup
 1. Download/clone Ray5-Pilot.
-2. Run `Start_Ray5_Pilot.bat`.
-3. Edit `config.json` or open Settings.
+2. Run Start_Ray5_Pilot.bat.
+3. Edit config.json or open Settings.
 4. Set Ray5 IP.
 5. Optional: configure RTSP camera URL.
 6. Restart Ray5 Pilot.
@@ -37,24 +39,46 @@ Ray5 Pilot is a local Flask web controller for Longer Ray5 laser engravers using
 - WebSocket subprotocol: arduino
 
 ## Camera overlay notes
-- `latest_raw.jpg` is the raw camera snapshot.
-- `latest.jpg` is the processed LightBurn overlay.
+- latest_raw.jpg is the raw camera snapshot.
+- latest.jpg is the processed LightBurn overlay.
 - Source X offset px moves the selected camera source area before deskew.
 - Positive Source X samples farther right in the raw image.
 - Negative Source X samples farther left.
 - Positive Source Y samples farther down.
 - Negative Source Y samples farther up.
+- Use small offset values like 10 or 20 px and retest.
+
+## 3D-printer G-code safety scanner
+- Blocks obvious 3D-printer slicer files before import/upload/run.
+- Looks for hotend/bed temperature commands, extrusion E moves, slicer metadata, and printer-only commands.
+- Does not replace user judgment.
+- Always verify files before running a laser job.
+
+## Debug diagnostics
+- /api/debug/ray5/device-info
+- /api/debug/ray5/keepalive
+- /api/debug/ray5/settings-info
+- Diagnostic responses are sanitized to mask passwords, keys, tokens, secrets, credentials, and auth-like values.
+- Keep Ray5 Pilot bound to 127.0.0.1 unless you understand the risk.
 
 ## Safety warning
 - Ray5 Pilot controls a laser engraver.
 - Always supervise laser operation.
 - Keep laser enclosure/eye protection/air assist/fire safety in place.
-- Default web host is `127.0.0.1` for local-only use.
+- Default web host is 127.0.0.1 for local-only use.
 - Do not expose this app to the internet.
 - No authentication is currently included.
-- Binding to `0.0.0.0` allows LAN devices to access machine-control endpoints.
+- Binding to 0.0.0.0 allows LAN devices to access machine-control endpoints.
 
 ## Config notes
-- `config.json` is local/private and is not committed.
-- `config.example.json` is only a template.
+- config.json is local/private and is not committed.
+- config.example.json is only a template.
 - Old LightBurn TCP bridge behavior is intentionally not included.
+
+## v1.0.1
+- Added expanded Settings page descriptions and examples.
+- Added Camera Overlay Alignment guidance for source X/Y offsets.
+- Added 3D-printer G-code rejection safety scanning for SD upload, watched-folder import, manual import, Imported Jobs upload, and Upload + Run.
+- Added sanitized Ray5 debug diagnostics endpoints.
+- Sanitized ESP400 settings output so passwords/secrets are masked.
+- Improved release safety around local-only config and private runtime files.

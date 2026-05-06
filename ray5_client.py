@@ -109,6 +109,48 @@ class Ray5Client:
             }
             return {"ok": False, "message": str(exc), "raw": "", "endpoint": endpoint, "param": "commandText", "count": 1}
 
+    def _request_plain_command(self, command: str) -> dict[str, Any]:
+        ray = self.cfg.get("ray5", {})
+        endpoint = str(ray.get("command_endpoint", "/command"))
+        url = self._base() + endpoint
+        params = {"plain": command}
+        try:
+            resp = self.session.get(url, params=params, timeout=self._timeout())
+            text = (resp.text or "").strip()
+            lower = text.lower()
+            is_error_text = lower in {"error", "invalid command"} or "invalid command" in lower
+            ok = bool(resp.status_code == 200 and not is_error_text)
+            self.last_debug = {
+                "endpoint": endpoint,
+                "method": "GET",
+                "url": url,
+                "params": {"plain": "<payload>"},
+                "status_code": resp.status_code,
+                "success": ok,
+                "preview": (resp.text or "")[:220].replace("\n", "\\n").replace("\r", ""),
+                "error": "" if ok else ((resp.text or "").strip() or f"http {resp.status_code}"),
+            }
+            return {
+                "ok": ok,
+                "message": "ok" if ok else (text or f"http {resp.status_code}"),
+                "raw": resp.text or "",
+                "endpoint": endpoint,
+                "param": "plain",
+                "count": 1,
+            }
+        except requests.RequestException as exc:
+            self.last_debug = {
+                "endpoint": endpoint,
+                "method": "GET",
+                "url": url,
+                "params": {"plain": "<payload>"},
+                "status_code": None,
+                "success": False,
+                "preview": "",
+                "error": str(exc),
+            }
+            return {"ok": False, "message": str(exc), "raw": "", "endpoint": endpoint, "param": "plain", "count": 1}
+
     def trigger_live_status(self, page_id: str | None = None) -> dict[str, Any]:
         ray = self.cfg.get("ray5", {})
         endpoint = str(ray.get("command_endpoint", "/command"))
@@ -339,6 +381,12 @@ class Ray5Client:
         if not target:
             return {"ok": False, "message": "filename is required", "raw": ""}
         return self._request_command(f"$sd/delete=/{target}")
+
+    def get_device_info(self) -> dict[str, Any]:
+        return self._request_plain_command("[ESP420]")
+
+    def keepalive_ping(self) -> dict[str, Any]:
+        return self._request_plain_command("[ESP400]")
 
     def start_sd_file(self, filename_or_path: str) -> dict[str, Any]:
         target = str(filename_or_path or "").strip().lstrip("/")

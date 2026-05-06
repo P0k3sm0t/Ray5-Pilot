@@ -9,7 +9,7 @@ watched_gcode/*
 rejected_jobs/*
 !imported_jobs/.gitkeep
 !watched_gcode/.gitkeep
-!logs/.gitkeep
 !rejected_jobs/.gitkeep
+!logs/.gitkeep
 .DS_Store
 Thumbs.db

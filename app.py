@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import subprocess
 import sys
 import threading
@@ -21,7 +22,7 @@ from ray5_client import Ray5Client
 from ray5_status_monitor import Ray5StatusMonitor
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 app = Flask(__name__, template_folder=str(BASE_DIR / "web" / "templates"), static_folder=str(BASE_DIR / "web" / "static"))
 
 cfg_mgr = ConfigManager(BASE_DIR)
@@ -43,6 +44,102 @@ console.add("info", f"CONFIG EXISTS: {cfg_mgr.config_path.exists()}")
 console.add("info", f"RAY5 HOST: {cfg.get('ray5', {}).get('host', '')}")
 console.add("info", f"RAY5 PORT: {cfg.get('ray5', {}).get('port', '')}")
 console.add("info", f"RAY5 BASE URL: {ray5._base()}")
+
+
+_SENSITIVE_DEBUG_TOKENS = ("password", "pass", "key", "token", "secret", "credential", "auth")
+
+
+def _is_sensitive_key(name: str) -> bool:
+    n = str(name or "").strip().lower()
+    return any(tok in n for tok in _SENSITIVE_DEBUG_TOKENS)
+
+
+def _sanitize_debug_value(key: str, value: str) -> str:
+    if _is_sensitive_key(key):
+        return "******"
+    v = str(value or "").strip()
+    if any(tok in v.lower() for tok in _SENSITIVE_DEBUG_TOKENS):
+        return "******"
+    return v
+
+
+def _sanitize_debug_obj(obj: Any, key_name: str = "") -> Any:
+    if isinstance(obj, dict):
+        # ESP400 entries often describe field identity in P/H/F/K then store value in V.
+        descriptor = " ".join(
+            [
+                str(obj.get("P", "")),
+                str(obj.get("H", "")),
+                str(obj.get("F", "")),
+                str(obj.get("K", "")),
+                str(obj.get("name", "")),
+                str(obj.get("path", "")),
+            ]
+        ).lower()
+        descriptor_sensitive = any(tok in descriptor for tok in _SENSITIVE_DEBUG_TOKENS)
+        out: dict[str, Any] = {}
+        for k, v in obj.items():
+            k_str = str(k)
+            if _is_sensitive_key(k_str):
+                out[k_str] = "******"
+                continue
+            if k_str == "V" and descriptor_sensitive:
+                out[k_str] = "******"
+                continue
+            out[k_str] = _sanitize_debug_obj(v, key_name=k_str)
+        return out
+    if isinstance(obj, list):
+        return [_sanitize_debug_obj(item, key_name=key_name) for item in obj]
+    if isinstance(obj, str):
+        return _sanitize_debug_value(key_name, obj)
+    return obj
+
+
+def _parse_and_sanitize_esp400(raw: str) -> Any:
+    txt = str(raw or "").strip()
+    if txt.startswith("{") or txt.startswith("["):
+        try:
+            parsed = json.loads(txt)
+            return _sanitize_debug_obj(parsed)
+        except Exception:
+            pass
+    lines: list[dict[str, str]] = []
+    for ln in txt.replace("\r", "\n").split("\n"):
+        s = ln.strip()
+        if not s:
+            continue
+        if "=" in s:
+            k, v = s.split("=", 1)
+            key = k.strip()
+            val = _sanitize_debug_value(key, v)
+            lines.append({"K": key, "V": val})
+        else:
+            lines.append({"K": s, "V": ""})
+    return lines
+
+
+def _sanitize_plain_text_lines(raw: str) -> list[str]:
+    out: list[str] = []
+    for ln in str(raw or "").replace("\r", "\n").split("\n"):
+        s = ln.strip()
+        if not s:
+            continue
+        if ":" in s:
+            k, v = s.split(":", 1)
+            key = k.strip()
+            val = _sanitize_debug_value(key, v)
+            out.append(f"{key}: {val}")
+        elif "=" in s:
+            k, v = s.split("=", 1)
+            key = k.strip()
+            val = _sanitize_debug_value(key, v)
+            out.append(f"{key}={val}")
+        else:
+            if any(tok in s.lower() for tok in _SENSITIVE_DEBUG_TOKENS):
+                out.append("******")
+            else:
+                out.append(s)
+    return out
 
 
 def reload_components() -> None:
@@ -304,7 +401,6 @@ def api_status() -> Any:
         {
             "ok": True,
             "online": online,
-            "message": ("Ray5 host is not configured. Set ray5.host in Settings." if not _is_ray5_host_configured() else None),
             "connected": online,
             "machine_state": state,
             "state": state,
@@ -1128,6 +1224,69 @@ def api_debug_ray5() -> Any:
     )
 
 
+@app.get("/api/debug/ray5/device-info")
+def api_debug_ray5_device_info() -> Any:
+    guard = _require_ray5_configured()
+    if guard:
+        return guard
+    result = ray5.get_device_info()
+    raw = str(result.get("raw", ""))
+    txt = raw.strip()
+    parsed: Any | None = None
+    if txt.startswith("{") or txt.startswith("["):
+        try:
+            parsed = _sanitize_debug_obj(json.loads(txt))
+        except Exception:
+            parsed = None
+    sanitized_lines = _sanitize_plain_text_lines(raw) if parsed is None else []
+    return jsonify(
+        {
+            "ok": bool(result.get("ok")),
+            "message": str(result.get("message", "")),
+            "count": int(result.get("count", 1) or 1),
+            "param": "plain",
+            "sanitized": True,
+            "parsed": parsed,
+            "lines": sanitized_lines,
+            "raw": ("\n".join(sanitized_lines) if parsed is None else ""),
+        }
+    )
+
+
+@app.get("/api/debug/ray5/keepalive")
+def api_debug_ray5_keepalive() -> Any:
+    guard = _require_ray5_configured()
+    if guard:
+        return guard
+    result = ray5.keepalive_ping()
+    return jsonify(
+        {
+            "ok": bool(result.get("ok")),
+            "message": str(result.get("message", "ok")),
+            "count": int(result.get("count", 1) or 1),
+        }
+    )
+
+
+@app.get("/api/debug/ray5/settings-info")
+def api_debug_ray5_settings_info() -> Any:
+    guard = _require_ray5_configured()
+    if guard:
+        return guard
+    result = ray5.keepalive_ping()
+    raw = str(result.get("raw", ""))
+    rows = _sanitize_debug_obj(_parse_and_sanitize_esp400(raw))
+    return jsonify(
+        {
+            "ok": bool(result.get("ok")),
+            "message": str(result.get("message", "")),
+            "count": int(result.get("count", 1) or 1),
+            "sanitized": True,
+            "settings": rows,
+        }
+    )
+
+
 @app.get("/api/config")
 def api_config_get() -> Any:
     loaded = cfg_mgr.load()
@@ -1138,6 +1297,11 @@ def api_config_get() -> Any:
     if cfg_mgr.config_path.exists() and host.upper() == "YOUR_RAY5_IP":
         console.add("warn", "Settings are showing placeholder Ray5 host. Do not save until config.json is loaded correctly.")
     return jsonify({"ok": True, "config": loaded})
+
+
+@app.get("/api/version")
+def api_version() -> Any:
+    return jsonify({"ok": True, "name": "Ray5 Pilot", "version": APP_VERSION})
 
 
 @app.get("/api/config/debug")
@@ -1166,11 +1330,6 @@ def api_config_debug() -> Any:
             "using_placeholder_host": host.upper() == "YOUR_RAY5_IP" or host == "",
         }
     )
-
-
-@app.get("/api/version")
-def api_version() -> Any:
-    return jsonify({"ok": True, "name": "Ray5 Pilot", "version": APP_VERSION})
 
 
 @app.post("/api/config")
