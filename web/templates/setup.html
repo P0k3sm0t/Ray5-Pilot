@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ray5 Pilot Settings</title><link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<header><h1>Ray5 Pilot</h1><nav><a href="/">Dashboard</a><a href="/setup">Settings</a></nav></header>
+<main><section class="card"><h2>Settings / Setup</h2><p>Edit grouped config below. Save writes to local <code>config.json</code>.</p></section>
+<div class="grid">
+<section class="card"><h3>Ray5 Network</h3><p>How Ray5 Pilot talks to the laser.</p><label>Host <input id="ray_host"></label><label>Port <input id="ray_port" type="number"></label><label>Timeout <input id="ray_timeout" type="number" step="0.1"></label></section>
+<section class="card"><h3>Web UI</h3><p>Where dashboard runs.</p><label>Host <input id="web_host"></label><label>Port <input id="web_port" type="number"></label></section>
+<section class="card">
+<h3>Camera</h3>
+<p>RTSP streams are proxied through <code>/camera/stream</code> as MJPEG. Keep config.json private if URL contains credentials.</p>
+<label><input id="cam_enabled" type="checkbox"> Enabled</label>
+<label>Stream URL <input id="cam_stream"></label>
+<label>Snapshot URL <input id="cam_snapshot"></label>
+<label><input id="cam_proxy_enabled" type="checkbox"> Proxy enabled</label>
+<label>Proxy path <input id="cam_proxy_path"></label>
+<label>Reconnect seconds <input id="cam_reconnect" type="number"></label>
+<label>Capture method <input id="cam_capture_method"></label>
+<label>Output directory <input id="cam_output_dir"></label>
+<label>Filename prefix <input id="cam_filename_prefix"></label>
+<label><input id="cam_save_history" type="checkbox"> Save snapshot history</label>
+<label>Keep last <input id="cam_keep_last" type="number"></label>
+<label><input id="cam_auto_cleanup" type="checkbox"> Cleanup old snapshots on startup</label>
+<label><input id="cam_cleanup_capture" type="checkbox"> Cleanup old snapshots on capture</label>
+<label>Timeout seconds <input id="cam_timeout" type="number"></label>
+<label>Processed overlay rotation
+  <select id="cam_rot">
+    <option value="0">0° / None</option>
+    <option value="90">90° CCW</option>
+    <option value="180">180°</option>
+    <option value="270">270° CCW / 90° CW</option>
+  </select>
+</label>
+<p class="muted small">Rotates latest.jpg after deskew/crop processing. Does not affect live video or latest_raw.jpg.</p>
+<label><input id="cam_deskew_enabled" type="checkbox"> Deskew enabled</label>
+<label>Deskew source points (JSON [[x,y],[x,y],[x,y],[x,y]]) <input id="cam_deskew_points"></label>
+<label>Deskew output width <input id="cam_deskew_out_w" type="number"></label>
+<label>Deskew output height <input id="cam_deskew_out_h" type="number"></label>
+<label><input id="cam_post_enabled" type="checkbox"> Postprocess enabled</label>
+<label>Postprocess scale <input id="cam_scale" type="number" step="0.01"></label>
+<label>Center crop margin <input id="cam_crop_margin" type="number"></label>
+<label>Final size width <input id="cam_final_w" type="number"></label>
+<label>Final size height <input id="cam_final_h" type="number"></label>
+<label>DPI <input id="cam_dpi" type="number" step="0.01"></label>
+<label><input id="cam_guides_enabled" type="checkbox"> Overlay guides enabled</label>
+<label><input id="cam_guides_cross" type="checkbox"> Draw center cross</label>
+<label><input id="cam_guides_border" type="checkbox"> Draw border</label>
+<label><input id="cam_guides_corners" type="checkbox"> Draw corner marks</label>
+<p class="muted small">Snapshots are used as overlay/reference images. By default Ray5 Pilot overwrites latest.jpg/latest_raw.jpg and does not keep history.</p>
+</section>
+<section class="card"><h3>Imported Jobs</h3><p>Folders, watch polling, and file extensions for G-code imports.</p><label>Imported folder <input id="jobs_imported"></label><label>Watched folder <input id="jobs_watched"></label><label><input id="jobs_watch_enabled" type="checkbox"> Enable watched-folder auto import</label><label>Watch poll seconds <input id="jobs_watch_poll" type="number"></label><label>Extensions comma list <input id="jobs_ext"></label></section>
+<section class="card">
+<h3>Framing</h3>
+<p>Outline frame behavior around bounds and enforce machine-safe limits.</p>
+<label>Feedrate <input id="frame_feed" type="number"></label>
+<label>Margin mm <input id="frame_margin" type="number" step="0.1"></label>
+<label><input id="frame_laser_off" type="checkbox"> Force laser off</label>
+<label><input id="frame_validate_bounds" type="checkbox"> Validate bounds before frame</label>
+<label><input id="frame_clamp_bounds" type="checkbox"> Clamp frame margin to machine area</label>
+<label>Machine min X <input id="machine_min_x" type="number" step="0.1"></label>
+<label>Machine min Y <input id="machine_min_y" type="number" step="0.1"></label>
+<label>Machine max X <input id="machine_max_x" type="number" step="0.1"></label>
+<label>Machine max Y <input id="machine_max_y" type="number" step="0.1"></label>
+<label>Bed width (mm) <input id="machine_bed_w" type="number" step="0.1"></label>
+<label>Bed height (mm) <input id="machine_bed_h" type="number" step="0.1"></label>
+</section>
+<section class="card"><h3>Manual Controls</h3><p>These settings control jog defaults, preset move behavior, and whether Z jog is shown.</p><label>Default jog step (mm) <input id="jog_step" type="number" step="0.1"></label><label>Default feedrate <input id="jog_feed" type="number"></label><label><input id="jog_z" type="checkbox"> Enable Z jog</label><label><input id="preset_enabled" type="checkbox"> Enable preset button</label><p class="muted small">Shows a preset move button in Manual Controls.</p><label>Preset button label <input id="preset_label"></label><label>Preset X (mm) <input id="preset_x" type="number" step="0.1"></label><label>Preset Y (mm) <input id="preset_y" type="number" step="0.1"></label><label>Preset feedrate <input id="preset_feedrate" type="number" step="1"></label></section>
+<section class="card"><h3>SD Files</h3><p>SD file card behavior and refresh preferences.</p><label>Auto refresh seconds (0=manual) <input id="sd_auto_refresh" type="number"></label><label><input id="sd_show_storage" type="checkbox"> Show storage summary</label><label><input id="sd_enable_start" type="checkbox"> Enable start actions</label><label><input id="sd_enable_delete" type="checkbox"> Enable delete actions</label><label><input id="sd_enable_preview" type="checkbox"> Enable preview (if firmware supports it)</label></section>
+<section class="card"><h3>Upload</h3><p>Preserve original is recommended so Ray5 screen Border/Frame can parse LightBurn metadata.</p><label><input id="upload_preserve_original" type="checkbox"> Preserve original file content</label><label><input id="upload_sanitize_filename" type="checkbox"> Sanitize uploaded filenames</label><p class="muted small">Replaces spaces/special characters with underscores. Leave off to preserve filenames exactly.</p><label><input id="upload_rewrite" type="checkbox"> Screen-compatible rewrite (optional)</label><label><input id="upload_convert_m4" type="checkbox"> Convert M4 to M3</label><label>Force extension (blank recommended) <input id="upload_force_ext"></label><label><input id="upload_normalize_eol" type="checkbox"> Normalize line endings</label></section>
+<section class="card"><h3>Status / Live Status</h3><p>Live GRBL status via ESP3D WebSocket + PAGEID command flow.</p><label><input id="status_prefer_live" type="checkbox"> Prefer live status</label><label><input id="status_ws_enabled" type="checkbox"> WebSocket enabled</label><label><input id="status_debug_logging" type="checkbox"> Debug status logging</label><p class="muted small">Logs every status trigger and raw websocket parse. Keep off unless troubleshooting.</p><label>WebSocket port <input id="status_ws_port" type="number"></label><label>WebSocket path <input id="status_ws_path"></label><label>WebSocket subprotocol <input id="status_ws_subprotocol"></label><label>Poll seconds <input id="status_poll_seconds" type="number" step="0.1"></label><label>Reconnect seconds <input id="status_reconnect_seconds" type="number" step="0.1"></label><label>Stale after seconds <input id="status_stale_after" type="number" step="0.1"></label><label><input id="status_synth_fallback" type="checkbox"> Synthetic fallback enabled</label><label><input id="status_show_source" type="checkbox"> Show status source</label><label><input id="status_show_pos_source" type="checkbox"> Show position source</label></section>
+<section class="card"><h3>Safety</h3><p>Test fire is disabled by default. Keep power and duration low. Laser off is always available.</p><label><input id="safe_test_enable" type="checkbox"> Enable test fire</label><label>Test fire power <input id="safe_power" type="number"></label><label>Test fire max power <input id="safe_power_max" type="number"></label><label>Test fire duration (ms) <input id="safe_dur" type="number" step="10"></label><label>Test fire max duration (ms) <input id="safe_dur_max" type="number" step="10"></label><p class="muted small">Duration is capped by max duration.</p></section>
+</div>
+<div class="card"><button id="saveCfg">Save Config</button><pre id="saveOut"></pre></div>
+</main>
+<script src="/static/setup.js"></script>
+</body></html>

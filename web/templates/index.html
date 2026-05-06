@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ray5 Pilot</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header><h1>Ray5 Pilot</h1><nav><a href="/">Dashboard</a><a href="/setup">Settings</a></nav></header>
+<main>
+  <section class="card video-card">
+    <div class="video-card-header">
+      <div class="video-card-title">
+        <h2>Video / Camera</h2>
+        <div id="cameraStatusLine" class="muted small"></div>
+      </div>
+      <div class="video-actions">
+        <button id="camRefresh">Reload Camera</button>
+        <button id="camTest">Test Camera</button>
+        <button id="camCapture">Take Snapshot</button>
+        <button id="snapOpenFolder">Open Snapshot Folder</button>
+        <button id="camCalibrate">Calibrate Camera</button>
+      </div>
+    </div>
+    <div class="video-frame-wrap">
+      <img id="cam" class="camera-feed" src="" alt="camera stream">
+      <div id="cameraOffline" class="camera-offline" style="display:none;">Camera unavailable</div>
+    </div>
+    <div id="camMsg" class="muted small"></div>
+    <div class="camera-overlay-row">
+      <div>
+        <strong>Latest Overlay</strong>
+        <span id="latestSnapshotInfo" class="muted small">No snapshot yet</span>
+      </div>
+      <div class="overlay-actions">
+        <a id="openLatestSnapshot" href="#" target="_blank">Open Latest</a>
+        <a id="downloadLatestSnapshot" href="#" target="_blank">Download Latest</a>
+        <a id="openLatestRaw" href="#" target="_blank">Open Raw</a>
+        <a id="downloadLatestRaw" href="#" target="_blank">Download Raw</a>
+      </div>
+    </div>
+  </section>
+  <section id="importedJobsCard" class="card imported-jobs-card full-width-card">
+    <h2>Imported Jobs</h2>
+    <div class="job-import-toolbar">
+      <input type="file" id="jobFile" accept=".gcode,.gc,.nc">
+      <button id="importBtn">Import</button>
+      <button id="jobsRefresh">Refresh</button>
+    </div>
+    <div id="jobWatchInfo" class="muted small"></div>
+    <div class="table-wrap imported-jobs-table-wrap">
+      <table class="jobs-table">
+        <thead>
+          <tr>
+            <th>File</th>
+            <th>Size</th>
+            <th>Modified</th>
+            <th>Bounds</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="jobsBody"></tbody>
+      </table>
+    </div>
+    <div id="jobsMsg" class="muted small"></div>
+  </section>
+
+  <div class="dashboard-grid">
+    <section id="statusCard" class="card"><h2>Status</h2><div id="status"></div></section>
+    <section id="manualControlsCard" class="card manual-card">
+      <h2>Manual Controls</h2>
+      <div class="manual-controls-inner">
+        <div class="manual-settings-row">
+          <label>Step (mm)
+            <select id="jogStep">
+              <option>0.1</option><option>1</option><option>5</option><option selected>10</option><option>50</option>
+            </select>
+          </label>
+          <label>Feedrate
+            <select id="jogFeed">
+              <option>500</option><option>1000</option><option selected>3000</option><option>6000</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="jog-pad" aria-label="Jog controls">
+          <button id="yPlus" class="jog-btn jog-y-plus">Y+</button>
+          <button id="xMinus" class="jog-btn jog-x-minus">X-</button>
+          <button id="homeAll" class="jog-btn jog-home" title="Home All">⌂</button>
+          <button id="xPlus" class="jog-btn jog-x-plus">X+</button>
+          <button id="yMinus" class="jog-btn jog-y-minus">Y-</button>
+        </div>
+
+        <div id="presetRow" class="button-row manual-row manual-preset-row">
+          <button id="presetMoveBtn">Go To Preset</button>
+        </div>
+        <div class="muted small manual-preset-help">Moves to configured X/Y position.</div>
+
+        <div class="button-row manual-row manual-utility-row">
+          <button id="unlock">Unlock / Clear Alarm</button>
+        </div>
+
+        <div class="button-row manual-row manual-air-row">
+          <button id="airOn">Air On</button>
+          <button id="airOff">Air Off</button>
+        </div>
+
+        <div class="button-row manual-row manual-job-row">
+          <button id="pauseBtn">Pause</button>
+          <button id="resumeBtn">Resume</button>
+          <button class="danger" id="stop">Stop Job</button>
+        </div>
+
+        <div class="manual-section danger-zone">
+          <h3>Laser Test</h3>
+          <div class="button-row">
+            <button id="testFire" class="danger">Test Fire (low power/timed)</button>
+          </div>
+        </div>
+
+        <div id="manualMsg"></div>
+      </div>
+    </section>
+    <section id="sdFilesCard" class="card sd-card">
+      <div class="sd-toolbar">
+        <h2>SD Card Files</h2>
+        <div class="sd-actions">
+          <button id="sdStop" class="danger">Stop Job</button>
+        </div>
+      </div>
+      <div class="sd-upload-row">
+        <input type="file" id="sdUploadFile" accept=".gc,.nc,.gcode">
+        <button id="sdUploadBtn">Upload to SD</button>
+        <button id="filesRefresh">Refresh SD Files</button>
+      </div>
+      <div class="sd-upload-help sd-muted">Allowed: .gc, .nc, .gcode</div>
+      <div id="sdStorage" class="sd-storage-grid"></div>
+      <div class="sd-path">Path: <code id="sdPath">/</code></div>
+      <div class="table-wrap">
+        <table class="sd-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Size</th>
+              <th>Modified</th>
+              <th>Type</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="sdFilesBody"></tbody>
+        </table>
+      </div>
+      <div id="sdMsg" class="sd-muted"></div>
+      <div id="sdDetails" class="sd-muted"></div>
+    </section>
+  </div>
+
+  <section id="consoleCard" class="card console-card full-width-card">
+    <div class="card-header">
+      <h2>Live Console</h2>
+      <div class="card-actions"><button id="consoleClear">Clear</button></div>
+    </div>
+    <pre id="console" class="console-output"></pre>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

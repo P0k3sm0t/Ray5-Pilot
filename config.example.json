@@ -1,0 +1,173 @@
+{
+    "ray5":  {
+                 "host":  "YOUR_RAY5_IP",
+                 "port":  8848,
+                 "timeout":  4,
+                 "request_timeout_seconds":  4,
+                 "command_endpoint":  "/command",
+                 "command_field":  "commandText",
+                 "files_endpoint":  "/files",
+                 "upload_endpoint":  "/upload",
+                 "run_command_template":  "$sd/runzip=/{filename}",
+                 "upload_path":  "/",
+                 "sd_path":  "/"
+             },
+    "web_ui":  {
+                   "host":  "127.0.0.1",
+                   "port":  5050,
+                   "debug":  false
+               },
+    "camera":  {
+                   "enabled":  false,
+                   "url":  "rtsp://USERNAME:PASSWORD@CAMERA_IP:554/stream2",
+                   "stream_url":  "",
+                   "snapshot_url":  "",
+                   "proxy_enabled":  true,
+                   "proxy_path":  "/camera/stream",
+                   "mask_credentials":  true,
+                   "reconnect_seconds":  5,
+                   "capture_method":  "ffmpeg",
+                   "output_dir":  "camera_captures",
+                   "filename_prefix":  "ray5_bed",
+                   "save_history":  false,
+                   "keep_last":  0,
+                   "auto_cleanup_on_start":  true,
+                   "cleanup_on_capture":  true,
+                   "latest_raw_name":  "latest_raw.jpg",
+                   "latest_processed_name":  "latest.jpg",
+                   "auto_capture_on_start":  false,
+                   "timeout_seconds":  15,
+                   "deskew":  {
+                                  "enabled":  false,
+                                  "source_points":  [
+
+                                                    ],
+                                  "output_size":  [
+                                                      1200,
+                                                      1200
+                                                  ]
+                              },
+                   "postprocess":  {
+                                       "enabled":  false,
+                                       "scale":  1,
+                                       "center_crop_margin":  0,
+                                       "rotate_degrees":  90,
+                                       "final_size":  [
+                                                          1200,
+                                                          1200
+                                                      ],
+                                       "dpi":  101.6,
+                                       "overlay_guides":  {
+                                                              "enabled":  false,
+                                                              "draw_center_cross":  true,
+                                                              "draw_border":  true,
+                                                              "draw_corner_marks":  true
+                                                          }
+                                   }
+               },
+    "jobs":  {
+                 "imported_jobs_dir":  "imported_jobs",
+                 "watched_gcode_dir":  "watched_gcode",
+                 "watch_enabled":  true,
+                 "watch_poll_seconds":  3,
+                 "delete_watched_after_import":  true,
+                 "allowed_extensions":  [
+                                            ".gcode",
+                                            ".gc",
+                                            ".nc"
+                                        ]
+             },
+    "framing":  {
+                    "margin_mm":  2,
+                    "feedrate":  3000,
+                    "force_laser_off":  true,
+                    "validate_bounds":  true,
+                    "clamp_to_machine_area":  true
+                },
+    "machine":  {
+                    "bed_width_mm":  390,
+                    "bed_height_mm":  360,
+                    "min_x":  0,
+                    "min_y":  0,
+                    "max_x":  390,
+                    "max_y":  360
+                },
+    "manual_controls":  {
+                            "default_jog_step":  10,
+                            "default_jog_step_mm":  10,
+                            "default_feedrate":  500,
+                            "jog_steps":  [
+                                              0.1,
+                                              1,
+                                              5,
+                                              10,
+                                              50
+                                          ],
+                            "feedrates":  [
+                                              500,
+                                              1000,
+                                              3000,
+                                              6000
+                                          ],
+                            "force_laser_off_before_move":  true,
+                            "enable_z_jog":  false,
+                            "preset_enabled":  true,
+                            "preset_label":  "Go To Preset",
+                            "preset_x":  0,
+                            "preset_y":  0,
+                            "preset_feedrate":  1500
+                        },
+    "safety":  {
+                   "test_fire_enabled":  false,
+                   "enable_test_fire":  false,
+                   "test_fire_power":  1,
+                   "test_fire_duration_ms":  100,
+                   "test_fire_duration_seconds":  0.1,
+                   "test_fire_max_power":  5,
+                   "test_fire_max_duration_ms":  500,
+                   "confirm_dangerous_actions":  true
+               },
+    "air_assist":  {
+                       "supported":  true,
+                       "on_command":  "M8",
+                       "off_command":  "M9"
+                   },
+    "sd_files":  {
+                     "auto_refresh_seconds":  0,
+                     "show_storage_summary":  true,
+                     "enable_delete":  true,
+                     "enable_start":  true,
+                     "enable_preview":  false
+                 },
+    "upload":  {
+                   "preserve_original":  true,
+                   "sanitize_filename":  false,
+                   "screen_compatible_rewrite":  false,
+                   "convert_m4_to_m3":  false,
+                   "force_extension":  "",
+                   "normalize_line_endings":  false,
+                   "start_after_upload":  false
+               },
+    "job_control":  {
+                        "stop_mode":  "hold_only",
+                        "allow_soft_reset_stop":  false
+                    },
+    "limits":  {
+                   "max_gcode_upload_mb":  50,
+                   "max_bounds_parse_mb":  50
+               },
+    "status":  {
+                   "prefer_live_status":  true,
+                   "websocket_enabled":  true,
+                   "debug_logging":  false,
+                   "websocket_port":  8849,
+                   "websocket_path":  "/",
+                   "websocket_subprotocol":  "arduino",
+                   "poll_seconds":  1,
+                   "reconnect_seconds":  3,
+                   "stale_after_seconds":  5,
+                   "synthetic_fallback_enabled":  true,
+                   "show_status_source":  true,
+                   "show_position_source":  true
+               }
+}
