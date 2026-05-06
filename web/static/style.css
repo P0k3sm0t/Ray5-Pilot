@@ -72,6 +72,7 @@ input[type='checkbox']{width:auto}
 
 .muted{color:#94a3b8}
 .small{font-size:13px}
+.help-text,.field-help{color:#94a3b8;font-size:.85rem;line-height:1.35;margin-top:-4px;margin-bottom:8px}
 .imported-jobs-card .job-import-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px}
 .imported-jobs-card .job-import-toolbar input[type="file"]{flex:1 1 260px;min-width:220px}
 .imported-jobs-table-wrap{max-height:360px;overflow:auto;border:1px solid #2b3345;border-radius:12px}
@@ -109,5 +110,4 @@ input[type='checkbox']{width:auto}
 @media (max-width:800px){
   main{padding:6px}
 }
-
 

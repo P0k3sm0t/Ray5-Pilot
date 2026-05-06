@@ -5,84 +5,91 @@
 <header><h1>Ray5 Pilot</h1><nav><a href="/">Dashboard</a><a href="/setup">Settings</a></nav></header>
 <main><section class="card"><h2>Settings / Setup</h2><p>Edit grouped config below. Save writes to local <code>config.json</code>.</p></section>
 <div class="grid">
-<section class="card"><h3>Ray5 Network</h3><p>How Ray5 Pilot talks to the laser.</p><label>Host <input id="ray_host"></label><label>Port <input id="ray_port" type="number"></label><label>Timeout <input id="ray_timeout" type="number" step="0.1"></label></section>
-<section class="card"><h3>Web UI</h3><p>Where dashboard runs.</p><label>Host <input id="web_host"></label><label>Port <input id="web_port" type="number"></label></section>
+<section class="card"><h3>Ray5 Network</h3><p>Connection settings for the Ray5 ESP32 web interface. The Ray5 usually uses HTTP port 8848.</p><label>Host <input id="ray_host"></label><p class="field-help">IP address of your Ray5 on your local network. Example: 192.168.1.50</p><label>Port <input id="ray_port" type="number"></label><p class="field-help">ESP3D HTTP port. Longer Ray5 commonly uses 8848.</p><label>Timeout <input id="ray_timeout" type="number" step="0.1"></label><p class="field-help">How long Ray5 Pilot waits for a response before treating the request as failed.</p></section>
+<section class="card"><h3>Web UI</h3><p>Where Ray5 Pilot itself runs on this computer.</p><label>Host <input id="web_host"></label><p class="field-help">127.0.0.1 means this computer only. 0.0.0.0 allows other LAN devices to access the UI.</p><p class="field-help">Do not expose Ray5 Pilot to the internet. No authentication is currently included.</p><label>Port <input id="web_port" type="number"></label><p class="field-help">Browser port for Ray5 Pilot. Default: 5050.</p></section>
 <section class="card">
 <h3>Camera</h3>
-<p>RTSP streams are proxied through <code>/camera/stream</code> as MJPEG. Keep config.json private if URL contains credentials.</p>
-<label><input id="cam_enabled" type="checkbox"> Enabled</label>
-<label>Stream URL <input id="cam_stream"></label>
-<label>Snapshot URL <input id="cam_snapshot"></label>
-<label><input id="cam_proxy_enabled" type="checkbox"> Proxy enabled</label>
+<p>Optional RTSP or snapshot camera used for live view and LightBurn overlay snapshots.</p>
+<label><input id="cam_enabled" type="checkbox"> Enabled</label><p class="field-help">Turns camera features on/off.</p>
+<label>Stream URL <input id="cam_stream"></label><p class="field-help">RTSP camera stream. Example: rtsp://USERNAME:PASSWORD@CAMERA_IP:554/stream2</p>
+<label>Snapshot URL <input id="cam_snapshot"></label><p class="field-help">Optional still-image URL if your camera supports HTTP snapshots.</p>
+<label><input id="cam_proxy_enabled" type="checkbox"> Proxy enabled</label><p class="field-help">Routes camera video through Ray5 Pilot as <code>/camera/stream</code> for the dashboard.</p>
 <label>Proxy path <input id="cam_proxy_path"></label>
 <label>Reconnect seconds <input id="cam_reconnect" type="number"></label>
-<label>Capture method <input id="cam_capture_method"></label>
-<label>Output directory <input id="cam_output_dir"></label>
+<label>Capture method <input id="cam_capture_method"></label><p class="field-help">ffmpeg is recommended for RTSP snapshots.</p>
+<label>Output directory <input id="cam_output_dir"></label><p class="field-help">Folder where latest.jpg and latest_raw.jpg are saved.</p>
 <label>Filename prefix <input id="cam_filename_prefix"></label>
-<label><input id="cam_save_history" type="checkbox"> Save snapshot history</label>
-<label>Keep last <input id="cam_keep_last" type="number"></label>
+<label><input id="cam_save_history" type="checkbox"> Save snapshot history</label><p class="field-help">Off means snapshots are treated as temporary overlays and old images are cleaned up.</p>
+<label>Keep last <input id="cam_keep_last" type="number"></label><p class="field-help">How many timestamped captures to keep if history is enabled.</p>
 <label><input id="cam_auto_cleanup" type="checkbox"> Cleanup old snapshots on startup</label>
 <label><input id="cam_cleanup_capture" type="checkbox"> Cleanup old snapshots on capture</label>
 <label>Timeout seconds <input id="cam_timeout" type="number"></label>
+<p class="muted small">Keep config.json private if URL contains credentials.</p>
+</section>
+<section class="card">
+<h3>Camera Processing / Deskew</h3>
+<p>Turns the raw camera image into a corrected overlay image for LightBurn/material alignment.</p>
 <label>Processed overlay rotation
   <select id="cam_rot">
-    <option value="0">0° / None</option>
-    <option value="90">90° CCW</option>
-    <option value="180">180°</option>
-    <option value="270">270° CCW / 90° CW</option>
+    <option value="0">0&deg; / None</option>
+    <option value="90">90&deg; CCW</option>
+    <option value="180">180&deg;</option>
+    <option value="270">270&deg; CCW / 90&deg; CW</option>
   </select>
 </label>
-<p class="muted small">Rotates latest.jpg after deskew/crop processing. Does not affect live video or latest_raw.jpg.</p>
-<label><input id="cam_deskew_enabled" type="checkbox"> Deskew enabled</label>
-<label>Deskew source points (JSON [[x,y],[x,y],[x,y],[x,y]]) <input id="cam_deskew_points"></label>
+<p class="field-help">Rotates latest.jpg only. Does not rotate live video or latest_raw.jpg. Example: 90&deg; CCW rotates the processed overlay counter-clockwise.</p>
+<label><input id="cam_deskew_enabled" type="checkbox"> Deskew enabled</label><p class="field-help">Uses four selected camera points to flatten the target area into a square/rectangle.</p>
+<label>Deskew source points (JSON [[x,y],[x,y],[x,y],[x,y]]) <input id="cam_deskew_points"></label><p class="field-help">Four raw camera pixel points in this order: top-left, top-right, bottom-right, bottom-left.</p>
 <label>Deskew output width <input id="cam_deskew_out_w" type="number"></label>
-<label>Deskew output height <input id="cam_deskew_out_h" type="number"></label>
-<label><input id="cam_post_enabled" type="checkbox"> Postprocess enabled</label>
+<label>Deskew output height <input id="cam_deskew_out_h" type="number"></label><p class="field-help">Pixel size of the corrected deskew image before final postprocess.</p>
+<label><input id="cam_post_enabled" type="checkbox"> Postprocess enabled</label><p class="field-help">Applies final size, DPI, rotation, and overlay guides to latest.jpg.</p>
 <label>Postprocess scale <input id="cam_scale" type="number" step="0.01"></label>
 <label>Center crop margin <input id="cam_crop_margin" type="number"></label>
 <label>Final size width <input id="cam_final_w" type="number"></label>
-<label>Final size height <input id="cam_final_h" type="number"></label>
-<label>DPI <input id="cam_dpi" type="number" step="0.01"></label>
+<label>Final size height <input id="cam_final_h" type="number"></label><p class="field-help">Pixel size of latest.jpg.</p>
+<label>DPI <input id="cam_dpi" type="number" step="0.01"></label><p class="field-help">Controls how large the image imports into LightBurn.</p>
 <label><input id="cam_guides_enabled" type="checkbox"> Overlay guides enabled</label>
 <label><input id="cam_guides_cross" type="checkbox"> Draw center cross</label>
 <label><input id="cam_guides_border" type="checkbox"> Draw border</label>
 <label><input id="cam_guides_corners" type="checkbox"> Draw corner marks</label>
+<p class="field-help">Adds border/cross/corner marks to help line up the overlay.</p>
 <p class="muted small">Snapshots are used as overlay/reference images. By default Ray5 Pilot overwrites latest.jpg/latest_raw.jpg and does not keep history.</p>
 </section>
 <section class="card">
 <h3>Camera Overlay Alignment</h3>
-<p>Fine-tune processed overlay alignment for your calibrated target area (for example 300 x 300 mm).</p>
-<label><input id="cam_align_enabled" type="checkbox"> Enable overlay alignment</label>
-<label>Physical width (mm) <input id="cam_align_width_mm" type="number" step="0.01"></label>
-<label>Physical height (mm) <input id="cam_align_height_mm" type="number" step="0.01"></label>
-<label>Source X offset (px) <input id="cam_align_offset_x" type="number" step="1"></label>
-<label>Source Y offset (px) <input id="cam_align_offset_y" type="number" step="1"></label>
-<label>Scale X <input id="cam_align_scale_x" type="number" step="0.0001"></label>
-<label>Scale Y <input id="cam_align_scale_y" type="number" step="0.0001"></label>
-<label>Fine rotation (degrees) <input id="cam_align_rotation" type="number" step="0.01"></label>
-<p class="muted small">Physical width/height controls the real-world LightBurn import size of latest.jpg. Source X/Y offset moves the selected camera area before deskew to avoid blank/cropped edges. Scale X/Y corrects small size mismatch. Fine rotation corrects small angle mismatch.</p>
+<p>Fine-tunes the processed overlay when the camera calibration is close but the burn lands slightly off.</p>
+<label><input id="cam_align_enabled" type="checkbox"> Enable overlay alignment</label><p class="field-help">Turns fine alignment correction on/off.</p>
+<label>Physical width (mm) <input id="cam_align_width_mm" type="number" step="0.01"></label><p class="field-help">Real-world width that latest.jpg should represent in LightBurn. Example: 300 for a 300 mm calibration grid.</p>
+<label>Physical height (mm) <input id="cam_align_height_mm" type="number" step="0.01"></label><p class="field-help">Real-world height that latest.jpg should represent in LightBurn. Example: 300 for a 300 mm calibration grid.</p>
+<label>Source X offset (px) <input id="cam_align_offset_x" type="number" step="1"></label><p class="field-help">Moves selected camera area before deskew. Positive samples farther right; negative samples farther left.</p>
+<label>Source Y offset (px) <input id="cam_align_offset_y" type="number" step="1"></label><p class="field-help">Moves selected camera area before deskew. Positive samples farther down; negative samples farther up.</p>
+<label>Scale X <input id="cam_align_scale_x" type="number" step="0.0001"></label><p class="field-help">Fine horizontal scaling. Example: 1.010 makes overlay ~1% wider; 0.990 makes it ~1% narrower.</p>
+<label>Scale Y <input id="cam_align_scale_y" type="number" step="0.0001"></label><p class="field-help">Fine vertical scaling. Example: 1.010 makes overlay ~1% taller; 0.990 makes it ~1% shorter.</p>
+<label>Fine rotation (degrees) <input id="cam_align_rotation" type="number" step="0.01"></label><p class="field-help">Small rotation correction after deskew. Positive rotates counter-clockwise in current pipeline; verify with a small test.</p>
+<p class="field-help">Recommended tuning order: first redo calibration if badly off, then adjust Source X/Y offset, then scale, then fine rotation.</p>
+<p class="field-help">Examples: if overlay needs to sample farther right, increase Source X offset. If overlay needs to sample farther up, use a negative Source Y offset. Start with small values like 10 or 20.</p>
 </section>
-<section class="card"><h3>Imported Jobs</h3><p>Folders, watch polling, and file extensions for G-code imports.</p><label>Imported folder <input id="jobs_imported"></label><label>Watched folder <input id="jobs_watched"></label><label><input id="jobs_watch_enabled" type="checkbox"> Enable watched-folder auto import</label><label>Watch poll seconds <input id="jobs_watch_poll" type="number"></label><label>Extensions comma list <input id="jobs_ext"></label></section>
+<section class="card"><h3>Imported Jobs</h3><p>Imports .gc, .nc, and .gcode files into Ray5 Pilot so they can be framed, uploaded, or uploaded and run.</p><label>Imported folder <input id="jobs_imported"></label><p class="field-help">Local folder where Ray5 Pilot stores imported jobs.</p><label>Watched folder <input id="jobs_watched"></label><p class="field-help">Drop files here to auto-import them.</p><label><input id="jobs_watch_enabled" type="checkbox"> Enable watched-folder auto import</label><p class="field-help">When enabled, Ray5 Pilot checks the watched folder and imports new G-code files.</p><label>Watch poll seconds <input id="jobs_watch_poll" type="number"></label><p class="field-help">How often the watched folder is checked.</p><label>Extensions comma list <input id="jobs_ext"></label><p class="field-help">Allowed G-code file types. Example: .gcode,.gc,.nc</p></section>
 <section class="card">
 <h3>Framing</h3>
-<p>Outline frame behavior around bounds and enforce machine-safe limits.</p>
-<label>Feedrate <input id="frame_feed" type="number"></label>
-<label>Margin mm <input id="frame_margin" type="number" step="0.1"></label>
-<label><input id="frame_laser_off" type="checkbox"> Force laser off</label>
-<label><input id="frame_validate_bounds" type="checkbox"> Validate bounds before frame</label>
-<label><input id="frame_clamp_bounds" type="checkbox"> Clamp frame margin to machine area</label>
+<p>Controls the outline frame generated from imported job bounds.</p>
+<label>Feedrate <input id="frame_feed" type="number"></label><p class="field-help">Movement speed used while framing.</p>
+<label>Margin mm <input id="frame_margin" type="number" step="0.1"></label><p class="field-help">Extra space around job bounds. Example: 2 mm expands frame by 2 mm on each side.</p>
+<label><input id="frame_laser_off" type="checkbox"> Force laser off</label><p class="field-help">Sends laser-off command before framing for safety.</p>
+<label><input id="frame_validate_bounds" type="checkbox"> Validate bounds before frame</label><p class="field-help">Blocks frames that would move outside configured machine area.</p>
+<label><input id="frame_clamp_bounds" type="checkbox"> Clamp frame margin to machine area</label><p class="field-help">If margin would go outside machine area, clamp it instead of failing.</p>
 <label>Machine min X <input id="machine_min_x" type="number" step="0.1"></label>
 <label>Machine min Y <input id="machine_min_y" type="number" step="0.1"></label>
 <label>Machine max X <input id="machine_max_x" type="number" step="0.1"></label>
-<label>Machine max Y <input id="machine_max_y" type="number" step="0.1"></label>
+<label>Machine max Y <input id="machine_max_y" type="number" step="0.1"></label><p class="field-help">Safe movement limits for the laser.</p>
 <label>Bed width (mm) <input id="machine_bed_w" type="number" step="0.1"></label>
 <label>Bed height (mm) <input id="machine_bed_h" type="number" step="0.1"></label>
 </section>
-<section class="card"><h3>Manual Controls</h3><p>These settings control jog defaults, preset move behavior, and whether Z jog is shown.</p><label>Default jog step (mm) <input id="jog_step" type="number" step="0.1"></label><label>Default feedrate <input id="jog_feed" type="number"></label><label><input id="jog_z" type="checkbox"> Enable Z jog</label><label><input id="preset_enabled" type="checkbox"> Enable preset button</label><p class="muted small">Shows a preset move button in Manual Controls.</p><label>Preset button label <input id="preset_label"></label><label>Preset X (mm) <input id="preset_x" type="number" step="0.1"></label><label>Preset Y (mm) <input id="preset_y" type="number" step="0.1"></label><label>Preset feedrate <input id="preset_feedrate" type="number" step="1"></label></section>
-<section class="card"><h3>SD Files</h3><p>SD file card behavior and refresh preferences.</p><label>Auto refresh seconds (0=manual) <input id="sd_auto_refresh" type="number"></label><label><input id="sd_show_storage" type="checkbox"> Show storage summary</label><label><input id="sd_enable_start" type="checkbox"> Enable start actions</label><label><input id="sd_enable_delete" type="checkbox"> Enable delete actions</label><label><input id="sd_enable_preview" type="checkbox"> Enable preview (if firmware supports it)</label></section>
-<section class="card"><h3>Upload</h3><p>Preserve original is recommended so Ray5 screen Border/Frame can parse LightBurn metadata.</p><label><input id="upload_preserve_original" type="checkbox"> Preserve original file content</label><label><input id="upload_sanitize_filename" type="checkbox"> Sanitize uploaded filenames</label><p class="muted small">Replaces spaces/special characters with underscores. Leave off to preserve filenames exactly.</p><label><input id="upload_rewrite" type="checkbox"> Screen-compatible rewrite (optional)</label><label><input id="upload_convert_m4" type="checkbox"> Convert M4 to M3</label><label>Force extension (blank recommended) <input id="upload_force_ext"></label><label><input id="upload_normalize_eol" type="checkbox"> Normalize line endings</label></section>
-<section class="card"><h3>Status / Live Status</h3><p>Live GRBL status via ESP3D WebSocket + PAGEID command flow.</p><label><input id="status_prefer_live" type="checkbox"> Prefer live status</label><label><input id="status_ws_enabled" type="checkbox"> WebSocket enabled</label><label><input id="status_debug_logging" type="checkbox"> Debug status logging</label><p class="muted small">Logs every status trigger and raw websocket parse. Keep off unless troubleshooting.</p><label>WebSocket port <input id="status_ws_port" type="number"></label><label>WebSocket path <input id="status_ws_path"></label><label>WebSocket subprotocol <input id="status_ws_subprotocol"></label><label>Poll seconds <input id="status_poll_seconds" type="number" step="0.1"></label><label>Reconnect seconds <input id="status_reconnect_seconds" type="number" step="0.1"></label><label>Stale after seconds <input id="status_stale_after" type="number" step="0.1"></label><label><input id="status_synth_fallback" type="checkbox"> Synthetic fallback enabled</label><label><input id="status_show_source" type="checkbox"> Show status source</label><label><input id="status_show_pos_source" type="checkbox"> Show position source</label></section>
-<section class="card"><h3>Safety</h3><p>Test fire is disabled by default. Keep power and duration low. Laser off is always available.</p><label><input id="safe_test_enable" type="checkbox"> Enable test fire</label><label>Test fire power <input id="safe_power" type="number"></label><label>Test fire max power <input id="safe_power_max" type="number"></label><label>Test fire duration (ms) <input id="safe_dur" type="number" step="10"></label><label>Test fire max duration (ms) <input id="safe_dur_max" type="number" step="10"></label><p class="muted small">Duration is capped by max duration.</p></section>
+<section class="card"><h3>Manual Controls</h3><p>Jog controls, feedrate defaults, and preset move settings.</p><label>Default jog step (mm) <input id="jog_step" type="number" step="0.1"></label><p class="field-help">Default movement distance in mm.</p><label>Default feedrate <input id="jog_feed" type="number"></label><p class="field-help">Default jog speed.</p><label><input id="jog_z" type="checkbox"> Enable Z jog</label><p class="field-help">Usually off for Ray5 laser use.</p><label><input id="preset_enabled" type="checkbox"> Enable preset button</label><p class="field-help">Shows a button on the dashboard to move to a configured X/Y position.</p><label>Preset button label <input id="preset_label"></label><label>Preset X (mm) <input id="preset_x" type="number" step="0.1"></label><label>Preset Y (mm) <input id="preset_y" type="number" step="0.1"></label><p class="field-help">Target machine coordinates in mm.</p><label>Preset feedrate <input id="preset_feedrate" type="number" step="1"></label><p class="field-help">Speed used for preset move. Example: Preset X=0, Y=355 can move near a preferred loading/camera position if within safe limits.</p></section>
+<section class="card"><h3>SD Files</h3><p>Controls the SD card file browser on the dashboard.</p><label>Auto refresh seconds (0=manual) <input id="sd_auto_refresh" type="number"></label><p class="field-help">0 means manual refresh only.</p><label><input id="sd_show_storage" type="checkbox"> Show storage summary</label><p class="field-help">Shows total/used SD card space if the Ray5 reports it.</p><label><input id="sd_enable_start" type="checkbox"> Enable start actions</label><p class="field-help">Allows starting files from the SD list.</p><label><input id="sd_enable_delete" type="checkbox"> Enable delete actions</label><p class="field-help">Allows deleting files from the SD list.</p><label><input id="sd_enable_preview" type="checkbox"> Enable preview (if firmware supports it)</label></section>
+<section class="card"><h3>Upload</h3><p>Controls how Ray5 Pilot uploads files to the Ray5 SD card.</p><label><input id="upload_preserve_original" type="checkbox"> Preserve original file content</label><p class="field-help">Recommended. Uploads file bytes exactly without rewriting G-code.</p><label><input id="upload_sanitize_filename" type="checkbox"> Sanitize uploaded filenames</label><p class="field-help">Replaces spaces/special characters with underscores. Leave off if you want uploaded names to match direct SD copies.</p><label><input id="upload_rewrite" type="checkbox"> Screen-compatible rewrite (optional)</label><p class="field-help">Optional rewrite mode. Can change file contents; leave off unless troubleshooting.</p><label><input id="upload_convert_m4" type="checkbox"> Convert M4 to M3</label><p class="field-help">Optional laser command conversion. Leave off unless firmware needs it.</p><label>Force extension (blank recommended) <input id="upload_force_ext"></label><p class="field-help">Leave blank unless your Ray5 requires a specific extension.</p><label><input id="upload_normalize_eol" type="checkbox"> Normalize line endings</label></section>
+<section class="card"><h3>Status / Live Status</h3><p>Live machine state and position are read through the Ray5 ESP3D WebSocket.</p><label><input id="status_prefer_live" type="checkbox"> Prefer live status</label><p class="field-help">Uses WebSocket status instead of synthetic fallback.</p><label><input id="status_ws_enabled" type="checkbox"> WebSocket enabled</label><p class="field-help">Connects to the Ray5 live status WebSocket.</p><label><input id="status_debug_logging" type="checkbox"> Debug status logging</label><p class="field-help">Logs every poll/raw status message. Keep off unless troubleshooting.</p><label>WebSocket port <input id="status_ws_port" type="number"></label><p class="field-help">Ray5 live status port. Confirmed Ray5 value: 8849.</p><label>WebSocket path <input id="status_ws_path"></label><p class="field-help">Usually /</p><label>WebSocket subprotocol <input id="status_ws_subprotocol"></label><p class="field-help">Usually arduino</p><label>Poll seconds <input id="status_poll_seconds" type="number" step="0.1"></label><p class="field-help">How often Ray5 Pilot asks for a fresh status line.</p><label>Reconnect seconds <input id="status_reconnect_seconds" type="number" step="0.1"></label><label>Stale after seconds <input id="status_stale_after" type="number" step="0.1"></label><p class="field-help">How old live status can be before it is considered stale.</p><label><input id="status_synth_fallback" type="checkbox"> Synthetic fallback enabled</label><label><input id="status_show_source" type="checkbox"> Show status source</label><label><input id="status_show_pos_source" type="checkbox"> Show position source</label></section>
+<section class="card"><h3>Safety</h3><p>Low-power laser test-fire and dangerous-action settings.</p><label><input id="safe_test_enable" type="checkbox"> Enable test fire</label><p class="field-help">Allows the Test Fire button. Keep disabled unless needed.</p><label>Test fire power <input id="safe_power" type="number"></label><p class="field-help">Low laser power for test pulse.</p><label>Test fire max power <input id="safe_power_max" type="number"></label><p class="field-help">Safety cap for test fire power.</p><label>Test fire duration (ms) <input id="safe_dur" type="number" step="10"></label><p class="field-help">Pulse duration in milliseconds.</p><label>Test fire max duration (ms) <input id="safe_dur_max" type="number" step="10"></label><p class="field-help">Safety cap. Duration is clamped to this value.</p><label><input id="safe_reject_3d" type="checkbox"> Reject 3D-printer G-code</label><p class="field-help">Blocks common 3D printer slicer files before import/upload/run.</p><label>G-code safety scan lines <input id="safe_scan_lines" type="number" step="100"></label><p class="field-help">Number of lines to scan for printer-only commands.</p><label><input id="safe_allow_unknown" type="checkbox"> Allow unknown G-code</label><p class="field-help">Allows files that are not clearly printer G-code. Keep on for simple laser files.</p><p class="muted small">Use eye protection and fire safety. Test fire still emits laser light.</p></section>
 </div>
 <div class="card"><button id="saveCfg">Save Config</button><pre id="saveOut"></pre></div>
 </main>

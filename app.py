@@ -100,6 +100,13 @@ def _watch_loop() -> None:
             if bool(jobs_cfg.get("watch_enabled", True)):
                 imported = jobs.poll_watched_imports()
                 for item in imported:
+                    if item.get("rejected"):
+                        console.add(
+                            "error",
+                            f"G-code safety scan failed: {item.get('name','unknown')} blocked as 3D printer G-code; "
+                            f"matches={','.join(item.get('matches', []))}",
+                        )
+                        continue
                     src = item.get("source_name", item.get("name"))
                     dst = item.get("name")
                     if item.get("removed_source", False):
@@ -297,6 +304,7 @@ def api_status() -> Any:
         {
             "ok": True,
             "online": online,
+            "message": ("Ray5 host is not configured. Set ray5.host in Settings." if not _is_ray5_host_configured() else None),
             "connected": online,
             "machine_state": state,
             "state": state,
@@ -528,10 +536,29 @@ def api_jobs_import() -> Any:
     content = f.read()
     if len(content) > _max_upload_bytes():
         return jsonify({"ok": False, "error": "file exceeds upload size limit"}), 400
+    safety = jobs.validate_gcode_bytes(str(f.filename or ""), content)
+    if not safety.get("ok"):
+        console.add(
+            "error",
+            f"G-code safety scan failed: {f.filename} blocked as 3D printer G-code; matches={','.join(safety.get('matches', []))}",
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "message": "Blocked: this looks like 3D printer G-code, not laser G-code.",
+                "reason": safety.get("reason", ""),
+                "detected_type": safety.get("detected_type", "3d_printer"),
+                "matches": safety.get("matches", []),
+            }
+        ), 400
     try:
         meta = jobs.import_uploaded_bytes(f.filename, content)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
+    if safety.get("detected_type") == "unknown":
+        console.add("warn", f"G-code safety scan warning: {meta.get('name')} detected=unknown allowed_by_config=true")
+    else:
+        console.add("info", f"G-code safety scan passed: {meta.get('name')} detected={safety.get('detected_type')}")
     console.add("info", f"Imported job: {meta.get('name')}")
     return jsonify({"ok": True, "job": meta})
 
@@ -642,6 +669,25 @@ def api_jobs_upload() -> Any:
         return jsonify({"ok": False, "error": "Invalid job file type"}), 400
     if p.stat().st_size > _max_upload_bytes():
         return jsonify({"ok": False, "error": "file exceeds upload size limit"}), 400
+    safety = jobs.validate_gcode_path(p)
+    if not safety.get("ok"):
+        console.add(
+            "error",
+            f"G-code safety scan failed: {filename} blocked as 3D printer G-code; matches={','.join(safety.get('matches', []))}",
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "message": "Blocked: this looks like 3D printer G-code, not laser G-code.",
+                "reason": safety.get("reason", ""),
+                "detected_type": safety.get("detected_type", "3d_printer"),
+                "matches": safety.get("matches", []),
+            }
+        ), 400
+    if safety.get("detected_type") == "unknown":
+        console.add("warn", f"G-code safety scan warning: {filename} detected=unknown allowed_by_config=true")
+    else:
+        console.add("info", f"G-code safety scan passed: {filename} detected={safety.get('detected_type')}")
     detail = ray5.upload_file_detailed(p)
     console.add(
         "info",
@@ -693,6 +739,25 @@ def api_jobs_start() -> Any:
         return jsonify({"ok": False, "error": "Invalid job file type"}), 400
     if local_path.stat().st_size > _max_upload_bytes():
         return jsonify({"ok": False, "error": "file exceeds upload size limit"}), 400
+    safety = jobs.validate_gcode_path(local_path)
+    if not safety.get("ok"):
+        console.add(
+            "error",
+            f"G-code safety scan failed: {filename} blocked as 3D printer G-code; matches={','.join(safety.get('matches', []))}",
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "message": "Blocked: this looks like 3D printer G-code, not laser G-code.",
+                "reason": safety.get("reason", ""),
+                "detected_type": safety.get("detected_type", "3d_printer"),
+                "matches": safety.get("matches", []),
+            }
+        ), 400
+    if safety.get("detected_type") == "unknown":
+        console.add("warn", f"G-code safety scan warning: {filename} detected=unknown allowed_by_config=true")
+    else:
+        console.add("info", f"G-code safety scan passed: {filename} detected={safety.get('detected_type')}")
     console.add("info", f"Start request: {filename}")
     upload_detail = ray5.upload_file_detailed(local_path)
     upload_ok = bool(upload_detail.get("ok"))
@@ -967,6 +1032,25 @@ def api_files_upload() -> Any:
     data = f.read()
     if len(data) > _max_upload_bytes():
         return jsonify({"ok": False, "message": "file exceeds upload size limit"}), 400
+    safety = jobs.validate_gcode_bytes(filename, data)
+    if not safety.get("ok"):
+        console.add(
+            "error",
+            f"G-code safety scan failed: {filename} blocked as 3D printer G-code; matches={','.join(safety.get('matches', []))}",
+        )
+        return jsonify(
+            {
+                "ok": False,
+                "message": "Blocked: this looks like 3D printer G-code, not laser G-code.",
+                "reason": safety.get("reason", ""),
+                "detected_type": safety.get("detected_type", "3d_printer"),
+                "matches": safety.get("matches", []),
+            }
+        ), 400
+    if safety.get("detected_type") == "unknown":
+        console.add("warn", f"G-code safety scan warning: {filename} detected=unknown allowed_by_config=true")
+    else:
+        console.add("info", f"G-code safety scan passed: {filename} detected={safety.get('detected_type')}")
     console.add("info", f"SD direct upload start: {filename} size={len(data)} path={req_path}")
     result = ray5.upload_bytes_to_sd(filename=filename, data=data, path=req_path)
     if result.get("ok"):
@@ -1056,11 +1140,6 @@ def api_config_get() -> Any:
     return jsonify({"ok": True, "config": loaded})
 
 
-@app.get("/api/version")
-def api_version() -> Any:
-    return jsonify({"ok": True, "name": "Ray5 Pilot", "version": APP_VERSION})
-
-
 @app.get("/api/config/debug")
 def api_config_debug() -> Any:
     loaded = cfg_mgr.load()
@@ -1087,6 +1166,11 @@ def api_config_debug() -> Any:
             "using_placeholder_host": host.upper() == "YOUR_RAY5_IP" or host == "",
         }
     )
+
+
+@app.get("/api/version")
+def api_version() -> Any:
+    return jsonify({"ok": True, "name": "Ray5 Pilot", "version": APP_VERSION})
 
 
 @app.post("/api/config")

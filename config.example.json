@@ -137,7 +137,10 @@
                    "test_fire_duration_seconds":  0.1,
                    "test_fire_max_power":  5,
                    "test_fire_max_duration_ms":  500,
-                   "confirm_dangerous_actions":  true
+                   "confirm_dangerous_actions":  true,
+                   "reject_3d_printer_gcode":  true,
+                   "gcode_safety_scan_lines":  5000,
+                   "allow_unknown_gcode":  true
                },
     "air_assist":  {
                        "supported":  true,

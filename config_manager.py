@@ -116,6 +116,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "test_fire_max_power": 5,
         "test_fire_max_duration_ms": 500,
         "confirm_dangerous_actions": True,
+        "reject_3d_printer_gcode": True,
+        "gcode_safety_scan_lines": 5000,
+        "allow_unknown_gcode": True,
     },
     "sd_files": {
         "auto_refresh_seconds": 0,

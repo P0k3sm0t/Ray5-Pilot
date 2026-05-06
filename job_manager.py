@@ -6,16 +6,21 @@ import time
 from pathlib import Path
 from typing import Any
 
+from gcode_safety import validate_laser_gcode_safety
+
 
 class JobManager:
     def __init__(self, base_dir: Path, cfg: dict[str, Any]) -> None:
+        self.cfg = cfg
         jobs = cfg.get("jobs", {})
         self.imported_dir = (base_dir / str(jobs.get("imported_jobs_dir") or jobs.get("imported_jobs_folder", "imported_jobs"))).resolve()
         self.watched_dir = (base_dir / str(jobs.get("watched_gcode_dir") or jobs.get("watched_folder", "watched_gcode"))).resolve()
+        self.rejected_dir = (base_dir / "rejected_jobs").resolve()
         self.delete_watched_after_import = bool(jobs.get("delete_watched_after_import", True))
         self.allowed = {str(x).lower() for x in jobs.get("allowed_extensions", [".gcode", ".nc", ".gc"])}
         self.imported_dir.mkdir(parents=True, exist_ok=True)
         self.watched_dir.mkdir(parents=True, exist_ok=True)
+        self.rejected_dir.mkdir(parents=True, exist_ok=True)
         self._watch_state: dict[str, tuple[int, int]] = {}
         self._imported_signatures: set[tuple[str, int]] = set()
         self._currently_importing: set[str] = set()
@@ -24,6 +29,12 @@ class JobManager:
         limits = cfg.get("limits", {}) if isinstance(cfg.get("limits"), dict) else {}
         self.max_upload_bytes = int(float(limits.get("max_gcode_upload_mb", 50)) * 1024 * 1024)
         self.max_bounds_parse_bytes = int(float(limits.get("max_bounds_parse_mb", 50)) * 1024 * 1024)
+
+    def validate_gcode_bytes(self, filename: str, content: bytes) -> dict[str, Any]:
+        return validate_laser_gcode_safety(content, filename, self.cfg)
+
+    def validate_gcode_path(self, path: Path) -> dict[str, Any]:
+        return validate_laser_gcode_safety(path, path.name, self.cfg)
 
     def safe_imported_path(self, filename: str) -> Path:
         p = (self.imported_dir / str(filename or "")).resolve()
@@ -71,6 +82,12 @@ class JobManager:
             raise ValueError("File extension not allowed")
         if src_path.stat().st_size > self.max_upload_bytes:
             raise ValueError(f"File exceeds upload limit ({self.max_upload_bytes} bytes)")
+        safety = self.validate_gcode_path(src_path)
+        if not safety.get("ok"):
+            raise ValueError(
+                f"Blocked: this looks like 3D printer G-code, not laser G-code. "
+                f"reason={safety.get('reason','')} matches={','.join(safety.get('matches',[]))}"
+            )
         target = self._safe_target(src_path.name)
         target.write_bytes(src_path.read_bytes())
         s = target.stat()
@@ -89,6 +106,12 @@ class JobManager:
             raise ValueError("File extension not allowed")
         if len(content) > self.max_upload_bytes:
             raise ValueError(f"File exceeds upload limit ({self.max_upload_bytes} bytes)")
+        safety = self.validate_gcode_bytes(filename, content)
+        if not safety.get("ok"):
+            raise ValueError(
+                f"Blocked: this looks like 3D printer G-code, not laser G-code. "
+                f"reason={safety.get('reason','')} matches={','.join(safety.get('matches',[]))}"
+            )
         target = self._safe_target(filename)
         target.write_bytes(content)
         s = target.stat()
@@ -172,6 +195,22 @@ class JobManager:
         target = self._safe_target(src.name)
         if src.stat().st_size > self.max_upload_bytes:
             return None
+        safety = self.validate_gcode_path(src)
+        if not safety.get("ok"):
+            rej_target = self._safe_rejected_target(src.name)
+            try:
+                shutil.move(str(src), str(rej_target))
+            except OSError:
+                pass
+            return {
+                "name": src.name,
+                "filename": src.name,
+                "rejected": True,
+                "detected_type": safety.get("detected_type", "3d_printer"),
+                "reason": safety.get("reason", ""),
+                "matches": safety.get("matches", []),
+                "rejected_path": str(rej_target),
+            }
         shutil.copy2(src, target)
         if not target.exists() or target.stat().st_size <= 0:
             return None
@@ -191,6 +230,21 @@ class JobManager:
             "source_name": src.name,
             "removed_source": self.delete_watched_after_import,
         }
+
+    def _safe_rejected_target(self, name: str) -> Path:
+        base = Path(name).name
+        stem = Path(base).stem
+        suffix = Path(base).suffix
+        candidate = self.rejected_dir / base
+        if not candidate.exists():
+            return candidate
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        idx = 1
+        while True:
+            c = self.rejected_dir / f"{stem}_{stamp}_{idx:02d}{suffix}"
+            if not c.exists():
+                return c
+            idx += 1
 
     def delete_job(self, filename: str) -> None:
         p = self.safe_imported_path(filename)

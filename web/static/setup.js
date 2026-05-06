@@ -105,6 +105,9 @@ function load(cfg){
   const durMs = (safety.test_fire_duration_ms ?? Math.round((safety.test_fire_duration_seconds ?? 0.1)*1000));
   setVal('safe_dur', durMs, 100);
   setVal('safe_dur_max', (safety.test_fire_max_duration_ms ?? 500), 500);
+  setChecked('safe_reject_3d', (safety.reject_3d_printer_gcode !== false), true);
+  setVal('safe_scan_lines', (safety.gcode_safety_scan_lines ?? 5000), 5000);
+  setChecked('safe_allow_unknown', (safety.allow_unknown_gcode !== false), true);
 
   setVal('sd_auto_refresh', sd.auto_refresh_seconds??0, 0);
   setChecked('sd_show_storage', sd.show_storage_summary!==false, true);
@@ -231,7 +234,10 @@ function collect(){
       test_fire_max_power:Number(v('safe_power_max').value)||5,
       test_fire_duration_ms:Number(v('safe_dur').value),
       test_fire_max_duration_ms:Number(v('safe_dur_max').value)||500,
-      test_fire_duration_seconds:Number(v('safe_dur').value)/1000
+      test_fire_duration_seconds:Number(v('safe_dur').value)/1000,
+      reject_3d_printer_gcode:v('safe_reject_3d').checked,
+      gcode_safety_scan_lines:Number(v('safe_scan_lines').value)||5000,
+      allow_unknown_gcode:v('safe_allow_unknown').checked
     },
     sd_files:{
       auto_refresh_seconds:Number(v('sd_auto_refresh').value)||0,
