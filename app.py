@@ -22,7 +22,6 @@ from ray5_client import Ray5Client
 from ray5_status_monitor import Ray5StatusMonitor
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.0.1"
 app = Flask(__name__, template_folder=str(BASE_DIR / "web" / "templates"), static_folder=str(BASE_DIR / "web" / "static"))
 
 cfg_mgr = ConfigManager(BASE_DIR)
@@ -1321,11 +1320,6 @@ def api_config_get() -> Any:
     if cfg_mgr.config_path.exists() and host.upper() == "YOUR_RAY5_IP":
         console.add("warn", "Settings are showing placeholder Ray5 host. Do not save until config.json is loaded correctly.")
     return jsonify({"ok": True, "config": loaded})
-
-
-@app.get("/api/version")
-def api_version() -> Any:
-    return jsonify({"ok": True, "name": "Ray5 Pilot", "version": APP_VERSION})
 
 
 @app.get("/api/config/debug")
