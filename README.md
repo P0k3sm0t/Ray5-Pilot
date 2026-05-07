@@ -1,4 +1,7 @@
-﻿# Ray5 Pilot v1.0.1
+<img width="1440" height="2298" alt="ray5_pilot_dashboard_screenshot" src="https://github.com/user-attachments/assets/25582ae1-ad2a-43f3-bcbe-e65f4d51ffe1" />
+<img width="1440" height="6155" alt="ray5_pilot_settings_screenshot" src="https://github.com/user-attachments/assets/277e5b54-8db4-417c-9d10-0725c7917f8f" />
+
+# Ray5 Pilot v1.0.1
 
 A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-style HTTP/WebSocket interface.
 
