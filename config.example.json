@@ -164,8 +164,11 @@
                    "start_after_upload":  false
                },
     "job_control":  {
-                        "stop_mode":  "hold_only",
-                        "allow_soft_reset_stop":  false
+                        "stop_mode":  "soft_reset",
+                        "allow_soft_reset_stop":  true,
+                        "stop_sends_laser_off_first":  true,
+                        "stop_unlock_after_reset":  false,
+                        "stop_refresh_status_after":  true
                     },
     "limits":  {
                    "max_gcode_upload_mb":  50,

@@ -250,19 +250,44 @@ class Ray5Client:
         ctrl = self.cfg.get("job_control", {}) if isinstance(self.cfg.get("job_control"), dict) else {}
         stop_mode = str(ctrl.get("stop_mode", "hold_only")).strip().lower()
         allow_soft_reset = bool(ctrl.get("allow_soft_reset_stop", False))
-        if stop_mode == "soft_reset" and allow_soft_reset:
-            result = self.send_gcode("\x18")
-            result["message"] = "soft reset stop sent"
+        send_laser_off = bool(ctrl.get("stop_sends_laser_off_first", True))
+        unlock_after = bool(ctrl.get("stop_unlock_after_reset", False))
+        if stop_mode == "disabled":
+            return {"ok": False, "message": "Stop is disabled in settings.", "raw": "", "mode": "disabled"}
+        if stop_mode == "hold_only":
+            result = self.send_gcode("!")
+            result["message"] = "Feed hold sent. Job paused, not aborted."
+            result["mode"] = "hold_only"
             return result
-        result = self.send_gcode("!")
-        result["message"] = "feed hold stop sent (hold_only mode)"
-        return result
+        if stop_mode == "soft_reset":
+            if not allow_soft_reset:
+                return {"ok": False, "message": "Soft reset stop is not allowed by settings.", "raw": "", "mode": "soft_reset"}
+            steps: dict[str, Any] = {}
+            if send_laser_off:
+                steps["M5"] = self.send_gcode("M5")
+            steps["CTRL_X"] = self.send_gcode("\x18")
+            time.sleep(0.3)
+            if unlock_after:
+                steps["$X"] = self.send_gcode("$X")
+            ok = all(bool(v.get("ok")) for v in steps.values()) if steps else False
+            return {
+                "ok": ok,
+                "mode": "soft_reset",
+                "message": "Stop/abort sent." if ok else "Stop/abort failed.",
+                "steps": steps,
+                "raw": {k: v.get("raw", "") for k, v in steps.items()},
+            }
+        return {"ok": False, "message": f"Unknown stop_mode: {stop_mode}", "raw": "", "mode": stop_mode}
 
     def pause_job(self) -> dict[str, Any]:
-        return self.send_gcode("!")
+        r = self.send_gcode("!")
+        r["message"] = "Pause/feed hold sent."
+        return r
 
     def resume_job(self) -> dict[str, Any]:
-        return self.send_gcode("~")
+        r = self.send_gcode("~")
+        r["message"] = "Resume sent."
+        return r
 
     def status(self) -> dict[str, Any]:
         # Ray5 HTTP commandText mode returns "Error" for "?" on some firmware; avoid polling status with it.

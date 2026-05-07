@@ -7,6 +7,8 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Live Ray5 status via ESP3D WebSocket port 8849
 - X/Y live MPos display
 - Manual controls with jog pad
+- Pause, Resume, and true Stop/Abort controls
+- Stop Job defaults to M5 + Ctrl-X soft reset
 - Unlock / Clear Alarm using M5 + $X
 - Preset move button
 - Imported Jobs workflow: import, frame, upload, upload + run, delete
@@ -37,6 +39,12 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Ray5 live status WebSocket port: 8849
 - WebSocket path: /
 - WebSocket subprotocol: arduino
+
+## Stop/Pause behavior
+- Pause sends GRBL feed hold: !
+- Resume sends GRBL cycle start: ~
+- Stop Job defaults to M5 followed by Ctrl-X soft reset to terminate the run.
+- Users can change Stop Mode to hold_only in Settings if they prefer pause-only behavior.
 
 ## Camera overlay notes
 - latest_raw.jpg is the raw camera snapshot.
@@ -69,6 +77,7 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Do not expose this app to the internet.
 - No authentication is currently included.
 - Binding to 0.0.0.0 allows LAN devices to access machine-control endpoints.
+- Stop/Abort uses soft reset by default; verify behavior on your machine with a safe test job.
 
 ## Config notes
 - config.json is local/private and is not committed.
@@ -81,4 +90,6 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Added 3D-printer G-code rejection safety scanning for SD upload, watched-folder import, manual import, Imported Jobs upload, and Upload + Run.
 - Added sanitized Ray5 debug diagnostics endpoints.
 - Sanitized ESP400 settings output so passwords/secrets are masked.
+- Set Stop Job default behavior to true abort using M5 + Ctrl-X soft reset.
+- Added Ray5 Pilot favicon/logo branding.
 - Improved release safety around local-only config and private runtime files.

@@ -1036,10 +1036,32 @@ def api_stop() -> Any:
     guard = _require_ray5_configured()
     if guard:
         return guard
-    console.add("warn", "Stop requested")
+    console.add("warn", "Stop Job requested")
+    jc = cfg.get("job_control", {}) if isinstance(cfg.get("job_control"), dict) else {}
+    stop_mode = str(jc.get("stop_mode", "hold_only")).strip().lower()
+    console.add("warn", f"Stop mode: {stop_mode}")
     result = ray5.stop_job()
-    console.add("warn", f"Stop result: {'ok' if result.get('ok') else 'fail'} {str(result.get('message',''))[:120]}")
-    return jsonify(result)
+    if stop_mode == "soft_reset":
+        steps = result.get("steps", {}) if isinstance(result.get("steps"), dict) else {}
+        if "M5" in steps:
+            console.add("warn", f"Command M5 => {'ok' if steps.get('M5', {}).get('ok') else 'fail'}")
+        if "CTRL_X" in steps:
+            console.add("warn", f"Command Ctrl-X soft reset => {'ok' if steps.get('CTRL_X', {}).get('ok') else 'fail'}")
+        if "$X" in steps:
+            console.add("warn", f"Command $X => {'ok' if steps.get('$X', {}).get('ok') else 'fail'}")
+    console.add("warn", f"Stop Job result: {'ok' if result.get('ok') else 'fail'} {str(result.get('message',''))[:120]}")
+    status_after = None
+    if bool(jc.get("stop_refresh_status_after", True)):
+        try:
+            if status_monitor is not None:
+                pid = status_monitor.get_page_id()
+                if pid not in (None, ""):
+                    ray5.trigger_live_status(str(pid))
+            time.sleep(0.25)
+            status_after = status_monitor.get_latest_status() if status_monitor is not None else None
+        except Exception:
+            status_after = None
+    return jsonify(result | {"status_after": status_after})
 
 
 @app.post("/api/pause")
@@ -1047,8 +1069,9 @@ def api_pause() -> Any:
     guard = _require_ray5_configured()
     if guard:
         return guard
+    console.add("warn", "Pause requested")
     result = ray5.pause_job()
-    console.add("warn", f"Pause requested => {'ok' if result.get('ok') else 'fail'}")
+    console.add("warn", f"Pause result: {'ok' if result.get('ok') else 'fail'} {str(result.get('message',''))[:120]}")
     return jsonify(result)
 
 
@@ -1057,8 +1080,9 @@ def api_resume() -> Any:
     guard = _require_ray5_configured()
     if guard:
         return guard
+    console.add("warn", "Resume requested")
     result = ray5.resume_job()
-    console.add("warn", f"Resume requested => {'ok' if result.get('ok') else 'fail'}")
+    console.add("warn", f"Resume result: {'ok' if result.get('ok') else 'fail'} {str(result.get('message',''))[:120]}")
     return jsonify(result)
 
 

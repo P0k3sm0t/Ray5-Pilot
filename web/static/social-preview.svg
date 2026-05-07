@@ -1,0 +1,27 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="Ray5 Pilot social preview">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#050914"/>
+      <stop offset="100%" stop-color="#0e223d"/>
+    </linearGradient>
+    <linearGradient id="n" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#3b82f6"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <g transform="translate(280 315)" fill="none" stroke="url(#n)">
+    <circle r="180" stroke-width="4" opacity=".7"/>
+    <circle r="118" stroke-width="3"/>
+    <path d="M-28 -146 L28 -146 L62 -78 L62 36 L0 112 L-62 36 L-62 -78 Z" stroke-width="5"/>
+    <path d="M-74 -10 Q0 48 74 -10" stroke-width="4"/>
+    <line x1="-222" y1="0" x2="-152" y2="0" stroke-width="4"/>
+    <line x1="152" y1="0" x2="222" y2="0" stroke-width="4"/>
+    <line x1="0" y1="-222" x2="0" y2="-152" stroke-width="4"/>
+    <line x1="0" y1="152" x2="0" y2="222" stroke-width="4"/>
+    <line x1="84" y1="84" x2="178" y2="178" stroke-width="5"/>
+  </g>
+  <text x="520" y="280" fill="#e2e8f0" font-size="110" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Ray5</text>
+  <text x="830" y="280" fill="#38bdf8" font-size="110" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Pilot</text>
+  <text x="520" y="350" fill="#94a3b8" font-size="34" font-family="Segoe UI, Arial, sans-serif">Local HUD controller for Longer Ray5 laser workflow</text>
+</svg>

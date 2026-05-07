@@ -22,6 +22,7 @@ function load(cfg){
   const safety = cfg.safety || {};
   const sd = cfg.sd_files || {};
   const up = cfg.upload || {};
+  const jc = cfg.job_control || {};
   const st = cfg.status || {};
 
   setVal('ray_host', ray.host, '');
@@ -121,6 +122,11 @@ function load(cfg){
   setChecked('upload_convert_m4', !!up.convert_m4_to_m3, false);
   setVal('upload_force_ext', up.force_extension||'', '');
   setChecked('upload_normalize_eol', !!up.normalize_line_endings, false);
+  setVal('job_stop_mode', (jc.stop_mode || 'soft_reset'), 'soft_reset');
+  setChecked('job_allow_soft_reset', !!jc.allow_soft_reset_stop, false);
+  setChecked('job_stop_laser_off_first', (jc.stop_sends_laser_off_first !== false), true);
+  setChecked('job_stop_unlock_after', !!jc.stop_unlock_after_reset, false);
+  setChecked('job_stop_refresh_status', (jc.stop_refresh_status_after !== false), true);
 
   setChecked('status_prefer_live', (st.prefer_live_status!==false), true);
   setChecked('status_ws_enabled', (st.websocket_enabled!==false), true);
@@ -254,6 +260,13 @@ function collect(){
       force_extension:v('upload_force_ext').value.trim(),
       normalize_line_endings:v('upload_normalize_eol').checked,
       start_after_upload:false
+    },
+    job_control:{
+      stop_mode:v('job_stop_mode').value || 'soft_reset',
+      allow_soft_reset_stop:v('job_allow_soft_reset').checked,
+      stop_sends_laser_off_first:v('job_stop_laser_off_first').checked,
+      stop_unlock_after_reset:v('job_stop_unlock_after').checked,
+      stop_refresh_status_after:v('job_stop_refresh_status').checked,
     },
     status:{
       prefer_live_status:v('status_prefer_live').checked,

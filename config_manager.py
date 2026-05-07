@@ -137,8 +137,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "start_after_upload": False,
     },
     "job_control": {
-        "stop_mode": "hold_only",
-        "allow_soft_reset_stop": False,
+        "stop_mode": "soft_reset",
+        "allow_soft_reset_stop": True,
+        "stop_sends_laser_off_first": True,
+        "stop_unlock_after_reset": False,
+        "stop_refresh_status_after": True,
     },
     "limits": {
         "max_gcode_upload_mb": 50,

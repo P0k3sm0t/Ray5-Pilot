@@ -1,0 +1,24 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Ray5 Pilot favicon">
+  <defs>
+    <linearGradient id="b" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1220"/>
+      <stop offset="100%" stop-color="#0f1f37"/>
+    </linearGradient>
+    <linearGradient id="n" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#3b82f6"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="12" fill="url(#b)" stroke="#334155"/>
+  <g transform="translate(32 32)" fill="none" stroke="url(#n)" stroke-linecap="round">
+    <circle r="19" stroke-width="1.8" opacity=".9"/>
+    <circle r="11" stroke-width="1.4"/>
+    <path d="M-3 -16 L3 -16 L9 -8 L9 4 L0 12 L-9 4 L-9 -8 Z" stroke-width="1.8"/>
+    <path d="M-10 -1 Q0 6 10 -1" stroke-width="1.6"/>
+    <line x1="-25" y1="0" x2="-17" y2="0" stroke-width="1.6"/>
+    <line x1="17" y1="0" x2="25" y2="0" stroke-width="1.6"/>
+    <line x1="0" y1="-25" x2="0" y2="-17" stroke-width="1.6"/>
+    <line x1="0" y1="17" x2="0" y2="25" stroke-width="1.6"/>
+    <line x1="8" y1="8" x2="18" y2="18" stroke-width="1.8"/>
+  </g>
+</svg>
