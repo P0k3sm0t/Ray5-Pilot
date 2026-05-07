@@ -22,6 +22,7 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Settings page with expanded descriptions and examples
 - 3D-printer G-code rejection safety scanner
 - Optional sanitized Ray5 diagnostic endpoints
+- Ray5 Pilot logo/favicon branding
 - Portable Windows startup BAT file
 - No old LightBurn TCP bridge
 
