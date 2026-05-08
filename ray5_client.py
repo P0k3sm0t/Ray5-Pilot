@@ -46,9 +46,14 @@ class Ray5Client:
         if not cleaned:
             return {"ok": False, "message": "no commands provided", "raw": "", "endpoint": "/command", "param": "commandText", "count": 0}
         previews: list[str] = []
+        page_id_used: str | None = None
+        page_id_fallback = False
         for cmd in cleaned:
             result = self._request_single_command(cmd)
             previews.append(f"{cmd}: {str(result.get('raw',''))[:80]}")
+            if page_id_used is None:
+                page_id_used = str(result.get("page_id_used") or "")
+            page_id_fallback = page_id_fallback or bool(result.get("page_id_fallback"))
             if not result.get("ok"):
                 return {
                     "ok": False,
@@ -57,21 +62,38 @@ class Ray5Client:
                     "endpoint": result.get("endpoint", "/command"),
                     "param": "commandText",
                     "count": len(cleaned),
+                    "page_id_used": page_id_used,
+                    "page_id_fallback": page_id_fallback,
                 }
-        return {"ok": True, "message": "ok", "raw": "\n".join(previews), "endpoint": "/command", "param": "commandText", "count": len(cleaned)}
+        return {
+            "ok": True,
+            "message": "ok",
+            "raw": "\n".join(previews),
+            "endpoint": "/command",
+            "param": "commandText",
+            "count": len(cleaned),
+            "page_id_used": page_id_used,
+            "page_id_fallback": page_id_fallback,
+        }
 
     def _request_single_command(self, command: str, tolerate_error_text: bool = False) -> dict[str, Any]:
         ray = self.cfg.get("ray5", {})
         endpoint = str(ray.get("command_endpoint", "/command"))
         url = self._base() + endpoint
         params = {"commandText": command}
+        page_id_used: str | None = None
+        page_id_fallback = False
         try:
             if callable(self._page_id_getter):
                 pid = self._page_id_getter()
                 if pid not in (None, ""):
-                    params["PAGEID"] = str(pid)
+                    page_id_used = str(pid)
         except Exception:
             pass
+        if page_id_used is None:
+            page_id_used = "0"
+            page_id_fallback = True
+        params["PAGEID"] = page_id_used
         try:
             resp = self.session.get(url, params=params, timeout=self._timeout())
             text = (resp.text or "").strip()
@@ -95,6 +117,8 @@ class Ray5Client:
                 "endpoint": endpoint,
                 "param": "commandText",
                 "count": 1,
+                "page_id_used": page_id_used,
+                "page_id_fallback": page_id_fallback,
             }
         except requests.RequestException as exc:
             self.last_debug = {
@@ -107,7 +131,16 @@ class Ray5Client:
                 "preview": "",
                 "error": str(exc),
             }
-            return {"ok": False, "message": str(exc), "raw": "", "endpoint": endpoint, "param": "commandText", "count": 1}
+            return {
+                "ok": False,
+                "message": str(exc),
+                "raw": "",
+                "endpoint": endpoint,
+                "param": "commandText",
+                "count": 1,
+                "page_id_used": page_id_used,
+                "page_id_fallback": page_id_fallback,
+            }
 
     def _request_plain_command(self, command: str) -> dict[str, Any]:
         ray = self.cfg.get("ray5", {})
@@ -247,15 +280,116 @@ class Ray5Client:
         cmd = str(self.cfg.get("air_assist", {}).get("off_command", "M9"))
         return self.send_gcode(cmd)
 
-    def test_fire(self, power: int, duration_ms: int) -> dict[str, Any]:
+    def test_fire(
+        self,
+        s_value: int,
+        duration_ms: int,
+        command: str = "M3",
+        mode: str = "stationary_m3",
+        motion_axis: str = "X",
+        motion_mm: float = 1.0,
+        motion_feedrate: float = 300.0,
+    ) -> dict[str, Any]:
         duration_s = max(0.01, float(duration_ms) / 1000.0)
-        dwell = max(0.01, duration_s)
-        on = self.send_gcode([f"M3 S{int(power)}", f"G4 P{dwell:.3f}", "M5"])
-        off = self.send_gcode("M5")
+        cmd = str(command or "M3").strip().upper()
+        fire_mode = str(mode or "stationary_m3").strip().lower()
+        if cmd not in {"M3", "M4"}:
+            return {
+                "ok": False,
+                "message": f"invalid test fire command: {cmd}",
+                "raw": {"on": "", "off": ""},
+                "steps": {"M3": {"ok": False, "message": "not sent", "raw": ""}, "M5": {"ok": False, "message": "not sent", "raw": ""}},
+            }
+        if fire_mode not in {"stationary_m3", "stationary_m4", "motion_pulse"}:
+            fire_mode = "stationary_m3"
+
+        if fire_mode == "stationary_m3":
+            cmd = "M3"
+        elif fire_mode == "stationary_m4":
+            cmd = "M4"
+
+        on_result: dict[str, Any] = {"ok": False, "message": "not sent", "raw": ""}
+        off_result: dict[str, Any] = {"ok": False, "message": "not sent", "raw": ""}
+        steps: dict[str, Any] = {}
+        commands: list[str] = []
+        try:
+            if fire_mode == "motion_pulse":
+                axis = str(motion_axis or "X").strip().upper()
+                if axis not in {"X", "Y"}:
+                    return {
+                        "ok": False,
+                        "message": f"invalid test fire motion axis: {axis}",
+                        "raw": {"on": "", "off": ""},
+                        "steps": {"M5": {"ok": False, "message": "not sent", "raw": ""}},
+                    }
+                move_mm = float(motion_mm)
+                feed = max(1.0, float(motion_feedrate))
+                commands = [
+                    "G91",
+                    f"{cmd} S{int(s_value)}",
+                    f"G1 {axis}{move_mm:.3f} F{feed:.0f}",
+                    "M5",
+                    "G90",
+                ]
+                steps["G91"] = self.send_gcode("G91")
+                if not steps["G91"].get("ok"):
+                    return {"ok": False, "message": f"test fire failed: {steps['G91'].get('message','G91 failed')}", "raw": {"on": "", "off": ""}, "steps": steps, "commands": commands}
+                on_result = self.send_gcode(f"{cmd} S{int(s_value)}")
+                steps[cmd] = on_result
+                if not on_result.get("ok"):
+                    return {
+                        "ok": False,
+                        "message": f"test fire failed to start: {on_result.get('message', 'unknown')}",
+                        "raw": {"on": on_result.get("raw", ""), "off": off_result.get("raw", "")},
+                        "steps": steps,
+                        "commands": commands,
+                    }
+                move_cmd = f"G1 {axis}{move_mm:.3f} F{feed:.0f}"
+                steps["MOVE"] = self.send_gcode(move_cmd)
+                if not steps["MOVE"].get("ok"):
+                    return {
+                        "ok": False,
+                        "message": f"test fire motion failed: {steps['MOVE'].get('message', 'unknown')}",
+                        "raw": {"on": on_result.get("raw", ""), "off": off_result.get("raw", "")},
+                        "steps": steps,
+                        "commands": commands,
+                    }
+            else:
+                commands = [f"{cmd} S{int(s_value)}", "M5"]
+                on_result = self.send_gcode(f"{cmd} S{int(s_value)}")
+                steps[cmd] = on_result
+                if not on_result.get("ok"):
+                    return {
+                        "ok": False,
+                        "message": f"test fire failed to start: {on_result.get('message', 'unknown')}",
+                        "raw": {"on": on_result.get("raw", ""), "off": off_result.get("raw", "")},
+                        "steps": steps,
+                        "commands": commands,
+                    }
+                time.sleep(duration_s)
+        finally:
+            off_result = self.send_gcode("M5")
+            steps["M5"] = off_result
+            if fire_mode == "motion_pulse":
+                g90_result = self.send_gcode("G90")
+                steps["G90"] = g90_result
+
+        ok = all(bool(step.get("ok")) for step in steps.values()) if steps else False
+        page_id_used = None
+        page_id_fallback = False
+        for step in steps.values():
+            if page_id_used is None and step.get("page_id_used") is not None:
+                page_id_used = str(step.get("page_id_used"))
+            page_id_fallback = page_id_fallback or bool(step.get("page_id_fallback"))
         return {
-            "ok": bool(on.get("ok")) and bool(off.get("ok")),
-            "message": "test fire complete" if on.get("ok") and off.get("ok") else "test fire failed",
-            "raw": {"on": on.get("raw", ""), "off": off.get("raw", "")},
+            "ok": ok,
+            "mode": fire_mode,
+            "message": "test fire complete" if ok else "test fire completed but one or more steps failed",
+            "raw": {"on": on_result.get("raw", ""), "off": off_result.get("raw", "")},
+            "steps": steps,
+            "commands": commands,
+            "page_id_used": page_id_used,
+            "page_id_fallback": page_id_fallback,
         }
 
     def stop_job(self) -> dict[str, Any]:

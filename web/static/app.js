@@ -412,7 +412,28 @@ async function manualCall(url, body=null, confirmText=''){
   setManualBusy(true);
   try{
     const r = await api(url,'POST',body);
-    document.getElementById('manualMsg').textContent = r.ok ? 'OK: '+(r.message||'command sent') : 'Error: '+(r.message||r.error||'request failed');
+    let msg = r.ok ? 'OK: '+(r.message||'command sent') : 'Error: '+(r.message||r.error||'request failed');
+    if(r && r.ok && url === '/api/laser/test-fire'){
+      const pct = Number(r.power_percent);
+      const sVal = Number(r.s_value);
+      const dur = Number(r.duration_ms);
+      const mode = String(r.mode || '').trim();
+      if(Number.isFinite(pct) && Number.isFinite(sVal) && Number.isFinite(dur)){
+        if(mode === 'motion_pulse'){
+          const axis = String(r.motion_axis || 'X');
+          const mm = Number(r.motion_mm);
+          const feed = Number(r.motion_feedrate);
+          if(Number.isFinite(mm) && Number.isFinite(feed)){
+            msg = `Test fire complete: ${pct}% / S${sVal} / ${axis}${mm} / F${feed}`;
+          } else {
+            msg = `Test fire complete: ${pct}% / S${sVal} / motion pulse`;
+          }
+        } else {
+          msg = `Test fire complete: ${pct}% / S${sVal} / ${dur} ms`;
+        }
+      }
+    }
+    document.getElementById('manualMsg').textContent = msg;
     await refreshConsole();
     await refreshStatus();
   } finally {

@@ -101,11 +101,14 @@ function load(cfg){
   setVal('preset_feedrate', (mc.preset_feedrate ?? 1500), 1500);
 
   setChecked('safe_test_enable', (safety.test_fire_enabled ?? safety.enable_test_fire ?? false), false);
-  setVal('safe_power', (safety.test_fire_power ?? 1), 1);
-  setVal('safe_power_max', (safety.test_fire_max_power ?? 5), 5);
+  setVal('safe_test_mode', (safety.test_fire_mode ?? 'stationary_m4'), 'stationary_m4');
+  setVal('safe_test_cmd', (safety.test_fire_command ?? 'M4'), 'M4');
+  setVal('safe_s_max', (safety.test_fire_s_max ?? 1000), 1000);
+  setVal('safe_power', (safety.test_fire_power ?? 5), 5);
+  setVal('safe_power_max', (safety.test_fire_max_power ?? 12), 12);
   const durMs = (safety.test_fire_duration_ms ?? Math.round((safety.test_fire_duration_seconds ?? 0.1)*1000));
   setVal('safe_dur', durMs, 100);
-  setVal('safe_dur_max', (safety.test_fire_max_duration_ms ?? 500), 500);
+  setVal('safe_dur_max', (safety.test_fire_max_duration_ms ?? 2000), 2000);
   setChecked('safe_reject_3d', (safety.reject_3d_printer_gcode !== false), true);
   setVal('safe_scan_lines', (safety.gcode_safety_scan_lines ?? 5000), 5000);
   setChecked('safe_allow_unknown', (safety.allow_unknown_gcode !== false), true);
@@ -239,10 +242,14 @@ function collect(){
     safety:{
       test_fire_enabled:v('safe_test_enable').checked,
       enable_test_fire:v('safe_test_enable').checked,
+      test_fire_mode:(v('safe_test_mode').value.trim() || 'stationary_m4'),
+      test_fire_power_is_percent:true,
+      test_fire_command:(v('safe_test_cmd').value.trim().toUpperCase() || 'M3'),
+      test_fire_s_max:Number(v('safe_s_max').value)||1000,
       test_fire_power:Number(v('safe_power').value),
-      test_fire_max_power:Number(v('safe_power_max').value)||5,
+      test_fire_max_power:Number(v('safe_power_max').value)||12,
       test_fire_duration_ms:Number(v('safe_dur').value),
-      test_fire_max_duration_ms:Number(v('safe_dur_max').value)||500,
+      test_fire_max_duration_ms:Number(v('safe_dur_max').value)||2000,
       test_fire_duration_seconds:Number(v('safe_dur').value)/1000,
       reject_3d_printer_gcode:v('safe_reject_3d').checked,
       gcode_safety_scan_lines:Number(v('safe_scan_lines').value)||5000,
@@ -334,9 +341,9 @@ async function init(){
     const camStream = v('cam_stream').value.trim();
     const camSnapshot = v('cam_snapshot').value.trim();
     const testDur = Number(v('safe_dur').value);
-    const testDurMax = Number(v('safe_dur_max').value)||500;
+    const testDurMax = Number(v('safe_dur_max').value)||2000;
     const testPower = Number(v('safe_power').value);
-    const testPowerMax = Number(v('safe_power_max').value)||5;
+    const testPowerMax = Number(v('safe_power_max').value)||12;
 
     if(!rayHost){ v('saveOut').textContent='Save failed: ray5 host cannot be empty'; return; }
     if(!webHost){ v('saveOut').textContent='Save failed: web host cannot be empty'; return; }
@@ -354,6 +361,10 @@ async function init(){
     if(camEnabled && !camStream && !camSnapshot){ v('saveOut').textContent='Save failed: camera enabled requires stream or snapshot URL'; return; }
     if(testDur > testDurMax){ v('saveOut').textContent='Save failed: test fire duration exceeds max duration'; return; }
     if(testPower > testPowerMax){ v('saveOut').textContent='Save failed: test fire power exceeds max power'; return; }
+    const testMode = (v('safe_test_mode').value || '').trim();
+    if(testMode && !['stationary_m3','stationary_m4'].includes(testMode)){ v('saveOut').textContent='Save failed: invalid test fire mode'; return; }
+    const testCmd = (v('safe_test_cmd').value || '').trim().toUpperCase();
+    if(testCmd && testCmd !== 'M3' && testCmd !== 'M4'){ v('saveOut').textContent='Save failed: test fire command must be M3 or M4'; return; }
 
     const payload = collect();
     payload.safety.test_fire_duration_ms = Math.min(payload.safety.test_fire_duration_ms, payload.safety.test_fire_max_duration_ms);

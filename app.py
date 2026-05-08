@@ -582,11 +582,18 @@ def api_console_command() -> Any:
             console.add("info", "Raw command result: ok")
         else:
             console.add("error", f"Raw command failed: {result.get('message') or result.get('raw') or 'unknown'}")
+    response_text = str(result.get("raw", "") or "").strip()
+    if response_text:
+        # Keep multiline device responses visible in Live Console (e.g. $$, $I, $G).
+        preview = response_text[:12000]
+        console.add("info", f"Raw command response:\n{preview}")
     return jsonify(
         {
             "ok": ok,
             "message": "Command sent" if ok else (result.get("message") or "Command failed"),
             "command": command,
+            "response": response_text,
+            "raw": response_text,
             "result": result,
         }
     )
@@ -1144,25 +1151,103 @@ def api_test_fire() -> Any:
     guard = _require_ray5_configured()
     if guard:
         return guard
-    console.add("warn", "Test fire requested")
-    safety = cfg.get("safety", {})
-    enabled = bool(safety.get("test_fire_enabled", safety.get("enable_test_fire", False)))
-    if not enabled:
-        console.add("warn", "Test fire blocked by safety config")
-        return jsonify({"ok": False, "error": "test fire disabled"}), 403
-    body = request.get_json(silent=True) or {}
-    req_power = int(body.get("power", safety.get("test_fire_power", 1)))
-    req_duration_ms = int(body.get("duration_ms", safety.get("test_fire_duration_ms", 100)))
-    max_power = int(safety.get("test_fire_max_power", 5))
-    max_duration_ms = int(safety.get("test_fire_max_duration_ms", 500))
-    power = max(0, min(max_power, req_power))
-    duration_ms = max(10, min(max_duration_ms, req_duration_ms))
-    console.add("warn", f"Test fire pulse sent power={power} duration_ms={duration_ms}")
-    result = ray5.test_fire(power=power, duration_ms=duration_ms)
-    if not result.get("ok"):
-        console.add("error", f"Test fire failed: {str(result.get('message','unknown'))[:120]}")
-    console.add("warn", f"Test fire completed; laser forced off (power={power}, duration_ms={duration_ms})")
-    return jsonify(result | {"power": power, "duration_ms": duration_ms})
+    try:
+        console.add("warn", "Test fire requested")
+        safety = cfg.get("safety", {})
+        enabled = bool(safety.get("test_fire_enabled", safety.get("enable_test_fire", False)))
+        if not enabled:
+            console.add("warn", "Test fire blocked by safety config")
+            return jsonify({"ok": False, "error": "test fire disabled"}), 403
+        body = request.get_json(silent=True) or {}
+        req_power = int(body.get("power", safety.get("test_fire_power", 1)))
+        req_duration_ms = int(body.get("duration_ms", safety.get("test_fire_duration_ms", 100)))
+        max_power = int(safety.get("test_fire_max_power", 12))
+        max_duration_ms = int(safety.get("test_fire_max_duration_ms", 1000))
+        power_is_percent = bool(safety.get("test_fire_power_is_percent", True))
+        s_max = max(1, int(safety.get("test_fire_s_max", 1000)))
+        test_mode = str(safety.get("test_fire_mode", "stationary_m4")).strip().lower()
+        test_cmd = str(safety.get("test_fire_command", "M4")).strip().upper()
+        motion_axis = str(safety.get("test_fire_motion_axis", "X")).strip().upper() or "X"
+        motion_mm = float(safety.get("test_fire_motion_mm", 1.0))
+        motion_feedrate = float(safety.get("test_fire_motion_feedrate", 300))
+        if test_mode not in {"stationary_m3", "stationary_m4", "motion_pulse"}:
+            test_mode = "stationary_m4"
+        if test_mode == "stationary_m3":
+            test_cmd = "M3"
+        elif test_mode == "stationary_m4":
+            test_cmd = "M4"
+        if test_cmd not in {"M3", "M4"}:
+            test_cmd = "M4" if test_mode in {"stationary_m4", "motion_pulse"} else "M3"
+        console.add("warn", f"Test Fire requested: input_power={req_power} duration_ms={req_duration_ms}")
+        power = max(0, min(max_power, req_power))
+        duration_ms = max(10, min(max_duration_ms, req_duration_ms))
+        if power_is_percent:
+            s_value = int(round((float(power) / 100.0) * float(s_max)))
+            power_percent = power
+        else:
+            s_value = power
+            power_percent = int(round((float(s_value) / float(s_max)) * 100.0))
+        if s_value <= 0:
+            msg = "Test fire S value is 0. Increase test fire power or check test_fire_s_max."
+            console.add("error", msg)
+            return jsonify({"ok": False, "message": msg, "power_percent": power_percent, "s_value": s_value, "duration_ms": duration_ms}), 400
+        console.add("warn", f"Test Fire clamped: percent={power_percent} s_value={s_value} duration_ms={duration_ms}")
+        result = ray5.test_fire(
+            s_value=s_value,
+            duration_ms=duration_ms,
+            command=test_cmd,
+            mode=test_mode,
+            motion_axis=motion_axis,
+            motion_mm=motion_mm,
+            motion_feedrate=motion_feedrate,
+        )
+        page_id_used = str(result.get("page_id_used") or result.get("page_id") or "0")
+        if page_id_used == "0" and bool(result.get("page_id_fallback")):
+            console.add("warn", "No active PAGEID found; using PAGEID=0")
+        console.add("warn", f"PAGEID used: {page_id_used}")
+        command_list = result.get("commands") if isinstance(result.get("commands"), list) else []
+        if not command_list:
+            command_list = [f"{test_cmd} S{s_value}", "M5"]
+        if test_mode == "motion_pulse":
+            console.add("warn", f"Test Fire command on: {test_cmd} S{s_value}")
+            for cmd_line in command_list:
+                if str(cmd_line).strip().upper() == "M5":
+                    console.add("warn", "Test Fire command off: M5")
+                else:
+                    console.add("warn", f"Test Fire command step: {cmd_line}")
+        else:
+            for idx, cmd_line in enumerate(command_list):
+                if idx == 0:
+                    console.add("warn", f"Test Fire command on: {cmd_line}")
+                elif idx == len(command_list) - 1 and str(cmd_line).strip().upper() == "M5":
+                    console.add("warn", "Test Fire command off: M5")
+                else:
+                    console.add("warn", f"Test Fire command step: {cmd_line}")
+        steps = result.get("steps", {}) if isinstance(result.get("steps"), dict) else {}
+        if steps:
+            for step_name, step_result in steps.items():
+                console.add("warn", f"Test fire step {step_name}: {'ok' if step_result.get('ok') else 'fail'} {str(step_result.get('message',''))[:120]}")
+        if not result.get("ok"):
+            console.add("error", f"Test fire failed: {str(result.get('message','unknown'))[:120]}")
+        console.add("warn", "Test Fire complete")
+        return jsonify(
+            result
+            | {
+                "power": power,
+                "mode": test_mode,
+                "power_percent": power_percent,
+                "s_value": s_value,
+                "duration_ms": duration_ms,
+                "motion_mm": motion_mm,
+                "motion_axis": motion_axis,
+                "motion_feedrate": motion_feedrate,
+                "page_id": page_id_used,
+                "commands": command_list,
+            }
+        )
+    except Exception as exc:
+        console.add("error", f"Test fire failed: {exc}")
+        return jsonify({"ok": False, "message": f"Test fire failed: {exc}"}), 500
 
 
 @app.post("/api/air/on")
@@ -1541,3 +1626,9 @@ if __name__ == "__main__":
         debug=bool(c.get("web_ui", {}).get("debug", False)),
         use_reloader=False,
     )
+    page_id_used = str(result.get("page_id_used") or "")
+    if not page_id_used:
+        page_id_used = "0"
+    console.add("warn", f"PAGEID used: {page_id_used}")
+    if bool(result.get("page_id_fallback")):
+        console.add("warn", "No active PAGEID found; using PAGEID=0")
