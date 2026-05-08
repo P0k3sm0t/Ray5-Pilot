@@ -1,5 +1,5 @@
-<img width="1440" height="2298" alt="ray5_pilot_dashboard_screenshot" src="https://github.com/user-attachments/assets/25582ae1-ad2a-43f3-bcbe-e65f4d51ffe1" />
-<img width="1440" height="6155" alt="ray5_pilot_settings_screenshot" src="https://github.com/user-attachments/assets/277e5b54-8db4-417c-9d10-0725c7917f8f" />
+<img width="1600" height="2301" alt="ray5_dashboard_github_demo" src="https://github.com/user-attachments/assets/12c1ba5d-8ceb-4b87-aa7b-f083c6fd7aa0" />
+<img width="1600" height="5340" alt="ray5_settings_github_demo" src="https://github.com/user-attachments/assets/f0df8dcb-9d3f-4788-a0ab-e66fc432d360" />
 
 # Ray5 Pilot v1.0.1
 
