@@ -3,26 +3,280 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Camera Calibration</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <title>Camera Overlay Calibration</title>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;background:#0b1020;color:#e5e7eb;font:14px/1.4 Segoe UI,Arial,sans-serif}
+    .wrap{padding:12px}
+    .card{background:#111827;border:1px solid rgba(255,255,255,.14);border-radius:12px;padding:12px}
+    .head{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
+    .head h1{margin:0;font-size:1.05rem}
+    .row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+    button{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:8px 10px;cursor:pointer}
+    button.secondary{background:#334155}
+    button.warn{background:#b45309}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    .msg{margin-top:10px;color:#94a3b8;min-height:20px}
+    .msg.ok{color:#86efac}
+    .msg.err{color:#fca5a5}
+    .msg.warn{color:#fde68a}
+    .imgWrap{margin-top:12px;border:1px solid rgba(255,255,255,.12);border-radius:10px;overflow:auto;max-height:64vh;background:#05070c}
+    .imgStage{position:relative;display:inline-block;line-height:0}
+    #calImg{display:block;max-width:100%;height:auto}
+    #ov{position:absolute;inset:0;pointer-events:none}
+    .pts{margin-top:10px;display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:8px}
+    .pt{background:#0f172a;border:1px solid #243041;border-radius:8px;padding:8px}
+    .muted{color:#94a3b8}
+    .meta{margin-top:10px;display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:8px}
+    .meta .k{color:#93c5fd}
+    .meta .v{font-weight:600}
+    code{background:#0f172a;padding:2px 6px;border-radius:6px}
+    @media (max-width:900px){.pts,.meta{grid-template-columns:1fr}}
+  </style>
 </head>
 <body>
-  <header>
-    <h1>Camera Calibration</h1>
-    <nav>
-      <a href="/">Dashboard</a>
-      <a href="/setup">Setup</a>
-      <a href="/camera-calibration">Camera Calibration</a>
-    </nav>
-  </header>
-  <main class="grid">
+  <div class="wrap">
     <section class="card">
-      <h2>Calibration Tool</h2>
-      <p>Run the local OpenCV point picker from terminal:</p>
-      <pre>python calibrate_camera.py</pre>
-      <p>Point order: Top-left, Top-right, Bottom-right, Bottom-left.</p>
-      <p>Hotkeys: S save, R reset, Q quit.</p>
+      <div class="head">
+        <h1>Camera Overlay Calibration</h1>
+        <div class="muted">Point order: top-left, top-right, bottom-right, bottom-left</div>
+      </div>
+
+      <div class="row">
+        <button id="takeSnap">Take Snapshot</button>
+        <button id="reloadImg" class="secondary">Reload Image</button>
+        <button id="savePts">Save Calibration</button>
+        <button id="resetPts" class="warn">Reset</button>
+      </div>
+
+      <div id="msg" class="msg">Capture a snapshot, then click 4 points on the image.</div>
+
+      <div class="imgWrap">
+        <div id="stage" class="imgStage">
+          <img id="calImg" alt="latest raw snapshot">
+          <svg id="ov"></svg>
+        </div>
+      </div>
+
+      <div class="pts">
+        <div class="pt"><b>1.</b> Top-left: <span id="p0" class="muted">not set</span></div>
+        <div class="pt"><b>2.</b> Top-right: <span id="p1" class="muted">not set</span></div>
+        <div class="pt"><b>3.</b> Bottom-right: <span id="p2" class="muted">not set</span></div>
+        <div class="pt"><b>4.</b> Bottom-left: <span id="p3" class="muted">not set</span></div>
+      </div>
+
+      <div class="meta">
+        <div class="pt"><div class="k">Overlay Rotation</div><div id="metaRot" class="v">---</div></div>
+        <div class="pt"><div class="k">Source Offset X/Y</div><div id="metaOff" class="v">---</div></div>
+        <div class="pt"><div class="k">Fine Rotation</div><div id="metaFine" class="v">---</div></div>
+      </div>
     </section>
-  </main>
+  </div>
+
+  <script>
+    const img = document.getElementById('calImg');
+    const ov = document.getElementById('ov');
+    const msg = document.getElementById('msg');
+    const pointEls = [0,1,2,3].map(i => document.getElementById('p'+i));
+    const labels = ['Top-left','Top-right','Bottom-right','Bottom-left'];
+    let points = [];
+    let cfg = null;
+
+    function setMsg(text, kind=''){
+      msg.textContent = text || '';
+      msg.className = 'msg' + (kind ? (' ' + kind) : '');
+    }
+
+    function px(v){ return Number(v).toFixed(1); }
+
+    function draw(){
+      const r = img.getBoundingClientRect();
+      ov.setAttribute('width', r.width);
+      ov.setAttribute('height', r.height);
+      ov.innerHTML = '';
+      points.forEach((p, i) => {
+        const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        c.setAttribute('cx', p.x);
+        c.setAttribute('cy', p.y);
+        c.setAttribute('r', 6);
+        c.setAttribute('fill', '#ef4444');
+        c.setAttribute('stroke', '#fff');
+        c.setAttribute('stroke-width', '1.5');
+        ov.appendChild(c);
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        t.setAttribute('x', p.x + 9);
+        t.setAttribute('y', p.y - 9);
+        t.setAttribute('fill', '#fff');
+        t.setAttribute('font-size', '13');
+        t.textContent = String(i+1);
+        ov.appendChild(t);
+      });
+    }
+
+    function renderPoints(){
+      for(let i=0;i<4;i++){
+        if(points[i]) pointEls[i].textContent = `${px(points[i].x)}, ${px(points[i].y)}`;
+        else pointEls[i].textContent = 'not set';
+      }
+      draw();
+    }
+
+    function toNaturalPoint(clientX, clientY){
+      const r = img.getBoundingClientRect();
+      if(!r.width || !r.height || !img.naturalWidth || !img.naturalHeight) return null;
+      const sx = img.naturalWidth / r.width;
+      const sy = img.naturalHeight / r.height;
+      return {
+        x: (clientX - r.left) * sx,
+        y: (clientY - r.top) * sy,
+      };
+    }
+
+    function fromNaturalPoint(p){
+      const r = img.getBoundingClientRect();
+      const sx = r.width / img.naturalWidth;
+      const sy = r.height / img.naturalHeight;
+      return { x: p.x * sx, y: p.y * sy };
+    }
+
+    function redrawScaled(){
+      const scaled = points.map(fromNaturalPoint);
+      const r = img.getBoundingClientRect();
+      ov.setAttribute('width', r.width);
+      ov.setAttribute('height', r.height);
+      ov.innerHTML = '';
+      scaled.forEach((p, i) => {
+        const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        c.setAttribute('cx', p.x);
+        c.setAttribute('cy', p.y);
+        c.setAttribute('r', 6);
+        c.setAttribute('fill', '#ef4444');
+        c.setAttribute('stroke', '#fff');
+        c.setAttribute('stroke-width', '1.5');
+        ov.appendChild(c);
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        t.setAttribute('x', p.x + 9);
+        t.setAttribute('y', p.y - 9);
+        t.setAttribute('fill', '#fff');
+        t.setAttribute('font-size', '13');
+        t.textContent = String(i+1);
+        ov.appendChild(t);
+      });
+    }
+
+    function loadMeta(){
+      const cam = (cfg && cfg.camera) || {};
+      const pp = cam.postprocess || {};
+      const oa = cam.overlay_alignment || {};
+      document.getElementById('metaRot').textContent = `${Number(pp.rotate_degrees ?? 0)} deg`;
+      document.getElementById('metaOff').textContent = `${Number(oa.source_offset_x_px ?? 0)}, ${Number(oa.source_offset_y_px ?? 0)} px`;
+      document.getElementById('metaFine').textContent = `${Number(oa.fine_rotation_degrees ?? 0)} deg`;
+    }
+
+    async function loadConfig(){
+      const r = await fetch('/api/config');
+      const d = await r.json();
+      cfg = d && d.config ? d.config : d;
+      const cam = (cfg && cfg.camera) || {};
+      const deskew = cam.deskew || {};
+      const src = Array.isArray(deskew.source_points) ? deskew.source_points : [];
+      points = src.slice(0,4).map(p => ({x:Number(p[0]), y:Number(p[1])})).filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+      renderPoints();
+      loadMeta();
+    }
+
+    function reloadImage(){
+      img.src = '/api/snapshots/open/latest_raw.jpg?_=' + Date.now();
+    }
+
+    img.addEventListener('load', ()=> {
+      redrawScaled();
+      setMsg('Image loaded. Click points in order: top-left, top-right, bottom-right, bottom-left.');
+    });
+
+    img.addEventListener('error', ()=> {
+      setMsg('No latest_raw.jpg found yet. Click "Take Snapshot" first.', 'warn');
+    });
+
+    img.addEventListener('click', (ev)=>{
+      const p = toNaturalPoint(ev.clientX, ev.clientY);
+      if(!p) return;
+      if(points.length < 4) points.push(p);
+      else points[3] = p;
+      renderPoints();
+      if(points.length < 4){
+        setMsg(`Point ${points.length}/4 set (${labels[points.length-1]}).`, 'ok');
+      }else{
+        setMsg('All 4 points set. Click "Save Calibration" to apply.', 'ok');
+      }
+    });
+
+    document.getElementById('reloadImg').addEventListener('click', ()=> reloadImage());
+
+    document.getElementById('resetPts').addEventListener('click', ()=>{
+      points = [];
+      renderPoints();
+      setMsg('Points reset. Click 4 points again.', 'warn');
+    });
+
+    document.getElementById('takeSnap').addEventListener('click', async()=>{
+      const b = document.getElementById('takeSnap');
+      b.disabled = true;
+      setMsg('Capturing snapshot...');
+      try{
+        const r = await fetch('/api/camera/capture', {method:'POST'});
+        const d = await r.json();
+        if(d.ok){
+          setMsg('Snapshot captured. Reloading image...', 'ok');
+          reloadImage();
+        }else{
+          setMsg(`Snapshot failed: ${d.error || d.message || 'unknown'}`, 'err');
+        }
+      }catch(err){
+        setMsg(`Snapshot failed: ${err && err.message ? err.message : err}`, 'err');
+      }finally{
+        b.disabled = false;
+      }
+    });
+
+    document.getElementById('savePts').addEventListener('click', async()=>{
+      if(points.length !== 4){
+        setMsg('Set all 4 points before saving.', 'warn');
+        return;
+      }
+      const btn = document.getElementById('savePts');
+      btn.disabled = true;
+      setMsg('Saving calibration...');
+      try{
+        if(!cfg) await loadConfig();
+        cfg.camera = cfg.camera || {};
+        cfg.camera.deskew = cfg.camera.deskew || {};
+        cfg.camera.deskew.enabled = true;
+        cfg.camera.deskew.source_points = points.map(p => [Number(p.x.toFixed(3)), Number(p.y.toFixed(3))]);
+        const resp = await fetch('/api/config', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(cfg),
+        });
+        const out = await resp.json();
+        if(out && out.ok){
+          setMsg('Calibration points saved.', 'ok');
+        }else{
+          setMsg(`Save failed: ${(out && (out.error || out.message)) || 'unknown'}`, 'err');
+        }
+      }catch(err){
+        setMsg(`Save failed: ${err && err.message ? err.message : err}`, 'err');
+      }finally{
+        btn.disabled = false;
+      }
+    });
+
+    window.addEventListener('resize', ()=> redrawScaled());
+
+    (async()=>{
+      await loadConfig();
+      reloadImage();
+    })();
+  </script>
 </body>
 </html>

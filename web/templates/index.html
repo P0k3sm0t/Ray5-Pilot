@@ -26,7 +26,7 @@
       <button id="camCalibrate">Calibrate Overlay</button>
       <button id="camVideoToggle">Disable Video</button>
     </div>
-    <div id="cameraStatus" class="muted small"></div>
+    <div id="camera-test-status" class="camera-test-status muted small"></div>
     <div class="video-frame-wrap">
       <img id="cam" class="camera-feed" src="" alt="camera stream">
       <div id="cameraOffline" class="camera-offline" style="display:none;">Camera unavailable</div>
@@ -177,6 +177,18 @@
     </div>
   </section>
 </main>
+<div id="camera-calibration-modal" class="modal-backdrop hidden" aria-hidden="true">
+  <div class="calibration-modal" role="dialog" aria-modal="true" aria-label="Camera Overlay Calibration">
+    <div class="calibration-modal-header">
+      <h2>Camera Overlay Calibration</h2>
+      <div class="calibration-modal-actions">
+        <button type="button" id="open-calibration-window">Open in New Window</button>
+        <button type="button" id="close-calibration-modal">Close</button>
+      </div>
+    </div>
+    <iframe id="camera-calibration-frame" title="Camera Overlay Calibration"></iframe>
+  </div>
+</div>
 <script src="/static/app.js"></script>
 </body>
 </html>

@@ -186,6 +186,18 @@ class Ray5Client:
             }
             return {"ok": False, "message": str(exc), "raw": ""}
 
+    def query_status_command(self) -> dict[str, Any]:
+        # Console "?" status query should use PAGEID=0 on Ray5/ESP3D command endpoint.
+        r = self.trigger_live_status("0")
+        return {
+            "ok": bool(r.get("ok")),
+            "message": str(r.get("message", "ok" if r.get("ok") else "error")),
+            "raw": str(r.get("raw", "")),
+            "endpoint": "/command",
+            "param": "commandText",
+            "count": 1,
+        }
+
     def send_command(self, command: str) -> tuple[bool, str]:
         r = self._request_command(command)
         return bool(r.get("ok")), str(r.get("raw", ""))

@@ -503,6 +503,7 @@ def api_status() -> Any:
             "alarm_message": alarm_message,
             "camera_enabled": cam["enabled"],
             "camera_video_enabled": cam["video_enabled"],
+            "camera_configured": bool(cam_url),
             "camera_preview_supported": bool(cam["enabled"] and cam["video_enabled"] and cam["proxy_enabled"] and cam_url),
             "camera_proxy_path": cam["proxy_path"],
             "camera_url_masked": cam_masked,
@@ -567,12 +568,20 @@ def api_console_command() -> Any:
         command_to_send = command
 
     console.add("info", f"Raw command requested: {command}")
-    result = ray5.send_gcode(command_to_send)
-    ok = bool(result.get("ok"))
-    if ok:
-        console.add("info", "Raw command result: ok")
+    if command == "?":
+        result = ray5.query_status_command()
+        ok = bool(result.get("ok"))
+        if ok:
+            console.add("info", "Raw command status query result: ok")
+        else:
+            console.add("error", f"Raw command status query failed: {result.get('message') or result.get('raw') or 'unknown'}")
     else:
-        console.add("error", f"Raw command failed: {result.get('message') or result.get('raw') or 'unknown'}")
+        result = ray5.send_gcode(command_to_send)
+        ok = bool(result.get("ok"))
+        if ok:
+            console.add("info", "Raw command result: ok")
+        else:
+            console.add("error", f"Raw command failed: {result.get('message') or result.get('raw') or 'unknown'}")
     return jsonify(
         {
             "ok": ok,
@@ -699,9 +708,14 @@ def api_camera_capture() -> Any:
         return jsonify({"ok": False, "error": str(exc)})
 
 
-@app.get("/camera-calibration")
+@app.get("/camera/calibration")
 def camera_calibration_page() -> Any:
-    return render_template("setup.html")
+    return render_template("camera_calibration.html")
+
+
+@app.get("/camera-calibration")
+def camera_calibration_page_legacy() -> Any:
+    return render_template("camera_calibration.html")
 
 
 @app.get("/api/camera/config-status")

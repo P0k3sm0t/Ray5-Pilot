@@ -79,10 +79,28 @@ async function refreshStatus(){
   const msg=document.getElementById('camMsg');
   const off=document.getElementById('cameraOffline');
   const statusLine=document.getElementById('cameraStatusLine');
+  const cameraStatus=document.getElementById('cameraStatus');
   const videoToggleBtn = document.getElementById('camVideoToggle');
   cameraVideoEnabled = (d.camera_video_enabled !== false);
   if(videoToggleBtn) videoToggleBtn.textContent = cameraVideoEnabled ? 'Disable Video' : 'Enable Video';
-  if(d.camera_preview_supported){
+
+  const showPlaceholder = (text) => {
+    cam.removeAttribute('src');
+    cameraActivePath = '';
+    cam.src = cameraPlaceholderPath;
+    cam.style.opacity='1';
+    cam.style.display='block';
+    if(off) off.style.display='none';
+    if(msg) msg.textContent = text;
+    if(statusLine) statusLine.textContent = text;
+    if(cameraStatus) cameraStatus.textContent = text;
+  };
+
+  if(!cameraVideoEnabled){
+    showPlaceholder('Camera video disabled.');
+  } else if(!d.camera_configured){
+    showPlaceholder('Camera not configured.');
+  } else if(d.camera_preview_supported){
     cam.style.opacity='1';
     const nextPath = (d.camera_proxy_path||'/camera/stream');
     if(cameraActivePath !== nextPath || !cam.getAttribute('src')){
@@ -90,26 +108,12 @@ async function refreshStatus(){
       cam.src = cameraActivePath + '?_=' + Date.now();
     }
     msg.textContent='Camera: '+(d.camera_url_masked||'configured');
+    if(cameraStatus) cameraStatus.textContent = msg.textContent;
     if(statusLine) statusLine.textContent='Camera source: '+(d.camera_url_masked||'configured');
     off.style.display='none';
     cam.style.display='block';
-  } else if(d.camera_enabled && !cameraVideoEnabled) {
-    cam.removeAttribute('src');
-    cameraActivePath = '';
-    cam.src = cameraPlaceholderPath;
-    cam.style.opacity='1';
-    msg.textContent='Camera video disabled.';
-    if(statusLine) statusLine.textContent='Camera video disabled.';
-    off.style.display='none';
-    cam.style.display='block';
   } else {
-    cam.removeAttribute('src');
-    cameraActivePath = '';
-    cam.style.opacity='0.35';
-    msg.textContent='Camera unavailable or disabled.';
-    if(statusLine) statusLine.textContent='Camera unavailable or disabled.';
-    off.style.display='block';
-    cam.style.display='none';
+    showPlaceholder('Camera stream unavailable.');
   }
 }
 
@@ -481,32 +485,100 @@ async function loadManualConfig(){
 
 function bind(){
   const cam=document.getElementById('cam');
-  const cameraStatus=document.getElementById('cameraStatus');
+  const calibrationModal = document.getElementById('camera-calibration-modal');
+  const calibrationFrame = document.getElementById('camera-calibration-frame');
+  const closeCalibrationBtn = document.getElementById('close-calibration-modal');
+  const openCalibrationWindowBtn = document.getElementById('open-calibration-window');
+  const calibrationUrl = '/camera/calibration';
+  const cameraStatus=document.getElementById('camera-test-status');
+  let cameraTestStatusToken = 0;
+  const setCameraTestStatus = (message, kind='muted', autoClearMs=0)=>{
+    if(!cameraStatus) return;
+    cameraStatus.textContent = message || '';
+    cameraStatus.classList.remove('ok','warn','error','muted');
+    cameraStatus.classList.add(kind || 'muted');
+    if(autoClearMs > 0 && message){
+      const token = ++cameraTestStatusToken;
+      setTimeout(()=>{
+        if(!cameraStatus) return;
+        if(token !== cameraTestStatusToken) return;
+        cameraStatus.textContent = '';
+        cameraStatus.classList.remove('ok','warn','error');
+        cameraStatus.classList.add('muted');
+      }, autoClearMs);
+    }
+  };
   document.getElementById('camRefresh').onclick=()=>{
     if(!cameraVideoEnabled){
-      if(cameraStatus) cameraStatus.textContent = 'Camera video is disabled. Enable video first.';
+      setCameraTestStatus('Camera video is disabled. Enable video first.', 'warn', 8000);
       return;
     }
     const path = cameraActivePath || '/camera/stream';
     cam.src = path + '?_=' + Date.now();
-    if(cameraStatus) cameraStatus.textContent = 'Camera stream reloaded.';
+    setCameraTestStatus('Camera stream reloaded.', 'muted', 5000);
     refreshConsole();
   };
-  document.getElementById('camTest').onclick=()=>api('/api/camera/test','POST').then((r)=>{
-    if(cameraStatus){
-      cameraStatus.textContent = r.ok ? (r.message || 'Camera test passed.') : `Camera test failed: ${r.message || r.error || 'unknown error'}`;
+  const camTestBtn = document.getElementById('camTest');
+  camTestBtn.onclick=async()=>{
+    camTestBtn.disabled = true;
+    setCameraTestStatus('Testing camera...', 'muted');
+    try{
+      const r = await api('/api/camera/test','POST');
+      if(r && r.ok){
+        setCameraTestStatus('Camera test passed.', 'ok', 10000);
+      }else{
+        setCameraTestStatus(`Camera test failed: ${(r && (r.error || r.message)) || 'Unknown error'}`, 'error', 10000);
+      }
+      refreshConsole();
+    }catch(err){
+      const errMsg = (err && err.message) ? err.message : String(err || 'Network error');
+      setCameraTestStatus(`Camera test failed: ${errMsg}`, 'error', 10000);
+    }finally{
+      camTestBtn.disabled = false;
     }
-    refreshConsole();
-  });
+  };
   document.getElementById('camCapture').onclick=()=>api('/api/camera/capture','POST').then((r)=>{refreshConsole();loadSnapshots();if(r.ok)document.getElementById('camMsg').textContent='Snapshot saved: '+r.filename;});
   document.getElementById('snapOpenFolder').onclick=()=>api('/api/snapshots/open-folder','POST').then(refreshConsole);
-  document.getElementById('camCalibrate').onclick=()=>api('/api/camera/calibration/run','POST').then((r)=>{refreshConsole();document.getElementById('camMsg').textContent=r.ok?'Calibration launched':(r.error||'Calibration failed');});
+  const openCalibrationModal = ()=>{
+    if(!calibrationModal || !calibrationFrame) return;
+    calibrationFrame.src = calibrationUrl;
+    calibrationModal.classList.remove('hidden');
+    calibrationModal.setAttribute('aria-hidden', 'false');
+  };
+  const closeCalibrationModal = ()=>{
+    if(!calibrationModal || !calibrationFrame) return;
+    calibrationModal.classList.add('hidden');
+    calibrationModal.setAttribute('aria-hidden', 'true');
+    calibrationFrame.src = '';
+  };
+  document.getElementById('camCalibrate').onclick=()=>{
+    openCalibrationModal();
+    document.getElementById('camMsg').textContent='Calibration opened.';
+  };
+  if(closeCalibrationBtn){
+    closeCalibrationBtn.onclick=()=>closeCalibrationModal();
+  }
+  if(calibrationModal){
+    calibrationModal.onclick=(ev)=>{
+      if(ev.target === calibrationModal) closeCalibrationModal();
+    };
+  }
+  if(openCalibrationWindowBtn){
+    openCalibrationWindowBtn.onclick=()=>{
+      const win = window.open(calibrationUrl, 'ray5_camera_calibration', 'popup=yes,width=1200,height=850,resizable=yes,scrollbars=yes');
+      if(win) win.focus();
+    };
+  }
+  document.addEventListener('keydown', (ev)=>{
+    if(ev.key === 'Escape' && calibrationModal && !calibrationModal.classList.contains('hidden')){
+      closeCalibrationModal();
+    }
+  });
   document.getElementById('camVideoToggle').onclick=async()=>{
-    const cameraStatus = document.getElementById('cameraStatus');
     const nextEnabled = !cameraVideoEnabled;
     const r = await api('/api/camera/video-enabled','POST',{enabled: nextEnabled});
     if(!r.ok){
-      if(cameraStatus) cameraStatus.textContent = `Camera video toggle failed: ${r.message || 'unknown error'}`;
+      setCameraTestStatus(`Camera video toggle failed: ${r.message || 'unknown error'}`, 'error', 10000);
       return;
     }
     cameraVideoEnabled = !!r.enabled;
@@ -515,21 +587,27 @@ function bind(){
       const path = cameraActivePath || '/camera/stream';
       cam.removeAttribute('src');
       cam.src = path + '?_=' + Date.now();
-      if(cameraStatus) cameraStatus.textContent = 'Camera video enabled.';
+      setCameraTestStatus('Camera video enabled.', 'ok', 8000);
     }else{
       cam.removeAttribute('src');
       cameraActivePath = '';
       cam.src = cameraPlaceholderPath;
-      if(cameraStatus) cameraStatus.textContent = 'Camera video disabled.';
+      setCameraTestStatus('Camera video disabled.', 'muted', 8000);
     }
     refreshConsole();
     refreshStatus();
   };
   cam.onerror=()=>{
-    document.getElementById('camMsg').textContent='Camera unavailable or disabled.';
+    if((cam.src||'').includes('camera_placeholder.svg')) return;
+    cam.removeAttribute('src');
+    cameraActivePath = '';
+    cam.src = cameraPlaceholderPath;
+    cam.style.opacity='1';
+    cam.style.display='block';
     const off=document.getElementById('cameraOffline');
-    if(off) off.style.display='block';
-    cam.style.display='none';
+    if(off) off.style.display='none';
+    document.getElementById('camMsg').textContent='Camera stream unavailable.';
+    setCameraTestStatus('Camera stream unavailable.', 'error', 10000);
   };
 
   document.getElementById('importBtn').onclick=async()=>{
