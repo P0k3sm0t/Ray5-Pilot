@@ -9,6 +9,7 @@ function unwrapConfigResponse(d){
   throw new Error("Invalid /api/config response shape");
 }
 let settingsLoaded = false;
+let loadedSafetyConfig = {};
 
 function load(cfg){
   cfg = cfg || {};
@@ -20,6 +21,7 @@ function load(cfg){
   const machine = cfg.machine || {};
   const mc = cfg.manual_controls || {};
   const safety = cfg.safety || {};
+  loadedSafetyConfig = {...safety};
   const sd = cfg.sd_files || {};
   const up = cfg.upload || {};
   const jc = cfg.job_control || {};
@@ -101,14 +103,19 @@ function load(cfg){
   setVal('preset_feedrate', (mc.preset_feedrate ?? 1500), 1500);
 
   setChecked('safe_test_enable', (safety.test_fire_enabled ?? safety.enable_test_fire ?? false), false);
-  setVal('safe_test_mode', (safety.test_fire_mode ?? 'stationary_m4'), 'stationary_m4');
-  setVal('safe_test_cmd', (safety.test_fire_command ?? 'M4'), 'M4');
-  setVal('safe_s_max', (safety.test_fire_s_max ?? 1000), 1000);
-  setVal('safe_power', (safety.test_fire_power ?? 5), 5);
-  setVal('safe_power_max', (safety.test_fire_max_power ?? 12), 12);
+  setVal('safe_s_value', (safety.test_fire_s_value ?? 200), 200);
   const durMs = (safety.test_fire_duration_ms ?? Math.round((safety.test_fire_duration_seconds ?? 0.1)*1000));
-  setVal('safe_dur', durMs, 100);
-  setVal('safe_dur_max', (safety.test_fire_max_duration_ms ?? 2000), 2000);
+  setVal('safe_dur', durMs, 1000);
+  const hiddenSMax = Number(safety.test_fire_max_s_value ?? 500) || 500;
+  const hiddenDurMax = Number(safety.test_fire_max_duration_ms ?? 5000) || 5000;
+  const sHelp = v('safe_s_value_help');
+  const dHelp = v('safe_dur_help');
+  if(sHelp){
+    sHelp.textContent = `Known working Ray5 value may vary by machine. Current value is sent directly as M4 S-value. Allowed range: 0 to ${hiddenSMax}.`;
+  }
+  if(dHelp){
+    dHelp.textContent = `Ray5 Pilot sends M5 after this delay. Allowed range: up to ${hiddenDurMax} ms.`;
+  }
   setChecked('safe_reject_3d', (safety.reject_3d_printer_gcode !== false), true);
   setVal('safe_scan_lines', (safety.gcode_safety_scan_lines ?? 5000), 5000);
   setChecked('safe_allow_unknown', (safety.allow_unknown_gcode !== false), true);
@@ -242,15 +249,21 @@ function collect(){
     safety:{
       test_fire_enabled:v('safe_test_enable').checked,
       enable_test_fire:v('safe_test_enable').checked,
-      test_fire_mode:(v('safe_test_mode').value.trim() || 'stationary_m4'),
-      test_fire_power_is_percent:true,
-      test_fire_command:(v('safe_test_cmd').value.trim().toUpperCase() || 'M3'),
-      test_fire_s_max:Number(v('safe_s_max').value)||1000,
-      test_fire_power:Number(v('safe_power').value),
-      test_fire_max_power:Number(v('safe_power_max').value)||12,
+      test_fire_mode:String(loadedSafetyConfig.test_fire_mode || 'stationary_m4'),
+      test_fire_power_is_percent:Boolean(loadedSafetyConfig.test_fire_power_is_percent ?? false),
+      test_fire_use_direct_s_value:Boolean(loadedSafetyConfig.test_fire_use_direct_s_value ?? true),
+      test_fire_command:String(loadedSafetyConfig.test_fire_command || 'M4'),
+      test_fire_s_value:Number(v('safe_s_value').value)||200,
+      test_fire_max_s_value:Number(loadedSafetyConfig.test_fire_max_s_value ?? 500)||500,
+      test_fire_s_max:Number(loadedSafetyConfig.test_fire_s_max ?? 1000)||1000,
+      test_fire_power:Number(loadedSafetyConfig.test_fire_power ?? 0)||0,
+      test_fire_max_power:Number(loadedSafetyConfig.test_fire_max_power ?? 12)||12,
       test_fire_duration_ms:Number(v('safe_dur').value),
-      test_fire_max_duration_ms:Number(v('safe_dur_max').value)||2000,
+      test_fire_max_duration_ms:Number(loadedSafetyConfig.test_fire_max_duration_ms ?? 5000)||5000,
       test_fire_duration_seconds:Number(v('safe_dur').value)/1000,
+      test_fire_motion_axis:String(loadedSafetyConfig.test_fire_motion_axis || 'X'),
+      test_fire_motion_mm:Number(loadedSafetyConfig.test_fire_motion_mm ?? 1.0)||1.0,
+      test_fire_motion_feedrate:Number(loadedSafetyConfig.test_fire_motion_feedrate ?? 300)||300,
       reject_3d_printer_gcode:v('safe_reject_3d').checked,
       gcode_safety_scan_lines:Number(v('safe_scan_lines').value)||5000,
       allow_unknown_gcode:v('safe_allow_unknown').checked
@@ -341,9 +354,9 @@ async function init(){
     const camStream = v('cam_stream').value.trim();
     const camSnapshot = v('cam_snapshot').value.trim();
     const testDur = Number(v('safe_dur').value);
-    const testDurMax = Number(v('safe_dur_max').value)||2000;
-    const testPower = Number(v('safe_power').value);
-    const testPowerMax = Number(v('safe_power_max').value)||12;
+    const hiddenDurMax = Number(loadedSafetyConfig.test_fire_max_duration_ms ?? 5000) || 5000;
+    const testS = Number(v('safe_s_value').value)||200;
+    const hiddenSMax = Number(loadedSafetyConfig.test_fire_max_s_value ?? 500) || 500;
 
     if(!rayHost){ v('saveOut').textContent='Save failed: ray5 host cannot be empty'; return; }
     if(!webHost){ v('saveOut').textContent='Save failed: web host cannot be empty'; return; }
@@ -359,16 +372,12 @@ async function init(){
       if(presetY < machineMinY || presetY > machineMaxY){ v('saveOut').textContent='Save failed: preset Y is outside machine limits'; return; }
     }
     if(camEnabled && !camStream && !camSnapshot){ v('saveOut').textContent='Save failed: camera enabled requires stream or snapshot URL'; return; }
-    if(testDur > testDurMax){ v('saveOut').textContent='Save failed: test fire duration exceeds max duration'; return; }
-    if(testPower > testPowerMax){ v('saveOut').textContent='Save failed: test fire power exceeds max power'; return; }
-    const testMode = (v('safe_test_mode').value || '').trim();
-    if(testMode && !['stationary_m3','stationary_m4'].includes(testMode)){ v('saveOut').textContent='Save failed: invalid test fire mode'; return; }
-    const testCmd = (v('safe_test_cmd').value || '').trim().toUpperCase();
-    if(testCmd && testCmd !== 'M3' && testCmd !== 'M4'){ v('saveOut').textContent='Save failed: test fire command must be M3 or M4'; return; }
+    if(testDur > hiddenDurMax){ v('saveOut').textContent='Save failed: test fire duration exceeds max duration'; return; }
+    if(testS > hiddenSMax){ v('saveOut').textContent='Save failed: test fire S value exceeds max S value'; return; }
 
     const payload = collect();
     payload.safety.test_fire_duration_ms = Math.min(payload.safety.test_fire_duration_ms, payload.safety.test_fire_max_duration_ms);
-    payload.safety.test_fire_power = Math.min(payload.safety.test_fire_power, payload.safety.test_fire_max_power);
+    payload.safety.test_fire_s_value = Math.min(payload.safety.test_fire_s_value, payload.safety.test_fire_max_s_value);
     payload.safety.test_fire_duration_seconds = payload.safety.test_fire_duration_ms/1000;
     const r=await api('/api/config','POST',payload);
     v('saveOut').textContent=r.ok?'Config saved successfully':('Save failed: '+(r.error||'unknown error'));

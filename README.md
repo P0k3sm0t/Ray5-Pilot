@@ -93,6 +93,23 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - config.example.json is only a template.
 - Old LightBurn TCP bridge behavior is intentionally not included.
 
+## v1.0.3
+- Fixed Test Fire for Ray5 screen-style stationary M4 behavior.
+- Test Fire now uses direct S-value mode and sends the command with PAGEID.
+- Test Fire sequence now uses `M4 S<value>` followed by forced `M5` cleanup.
+- Simplified the Safety settings card so Test Fire only shows the needed user-facing controls.
+- Moved 3D-printer G-code scanner settings from the Safety card to the Upload card.
+- Fixed `/api/camera/snapshot` so it no longer calls a nonexistent camera method.
+- `/api/camera/snapshot` now returns the latest processed snapshot or a clean JSON message when no snapshot exists.
+- Improved watched-folder reload reliability to avoid duplicate watcher threads after repeated settings saves.
+- Cleaned duplicate status monitor reload logging.
+- Cleaned up Camera card controls and layout.
+- Added dashboard camera video enable/disable behavior with a placeholder image.
+- Fixed video stream containment so the camera feed cannot overlap the header/banner.
+- Added/kept responsive two-column Settings page layout on desktop.
+- Moved the Live Console raw command input under the console feed.
+- Verified camera calibration route/template alignment for the overlay calibration page.
+
 ## v1.0.2
 - Added send-command support through the web/manual console area.
 - Added Enable Video / Disable Video button near camera controls.

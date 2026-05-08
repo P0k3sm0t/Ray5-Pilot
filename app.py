@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import json
 import subprocess
 import sys
@@ -23,6 +22,7 @@ from ray5_client import Ray5Client
 from ray5_status_monitor import Ray5StatusMonitor
 
 BASE_DIR = Path(__file__).resolve().parent
+APP_VERSION = "1.0.3"
 app = Flask(__name__, template_folder=str(BASE_DIR / "web" / "templates"), static_folder=str(BASE_DIR / "web" / "static"))
 
 cfg_mgr = ConfigManager(BASE_DIR)
@@ -269,6 +269,9 @@ def _stop_watch_thread() -> None:
         thread.join(timeout=2.0)
     except Exception:
         pass
+    if thread.is_alive():
+        console.add("warn", "Watcher stop timeout: previous watched-folder thread still alive; keeping stop event set.")
+        return
     with app_state_lock:
         _watch_thread = None
     _watch_stop.clear()
@@ -394,6 +397,11 @@ def dashboard() -> str:
 @app.get("/setup")
 def setup_page() -> str:
     return render_template("setup.html")
+
+
+@app.get("/api/version")
+def api_version() -> Any:
+    return jsonify({"ok": True, "name": "Ray5 Pilot", "version": APP_VERSION})
 
 
 @app.get("/api/status")
@@ -635,10 +643,10 @@ def camera_stream() -> Any:
 
 @app.get("/api/camera/snapshot")
 def camera_snapshot() -> Any:
-    ok, data, ctype = camera.snapshot()
-    if not ok:
-        return jsonify({"ok": False, "error": data.decode(errors="ignore")})
-    return send_file(io.BytesIO(data), mimetype=ctype)
+    latest_path = camera.latest_path
+    if latest_path.exists():
+        return send_file(latest_path, mimetype="image/jpeg")
+    return jsonify({"ok": False, "error": "No latest snapshot available. Take a snapshot first."}), 404
 
 
 @app.post("/api/camera/test")
@@ -1161,8 +1169,11 @@ def api_test_fire() -> Any:
         body = request.get_json(silent=True) or {}
         req_power = int(body.get("power", safety.get("test_fire_power", 1)))
         req_duration_ms = int(body.get("duration_ms", safety.get("test_fire_duration_ms", 100)))
+        req_s_value = int(body.get("s_value", safety.get("test_fire_s_value", 200)))
         max_power = int(safety.get("test_fire_max_power", 12))
-        max_duration_ms = int(safety.get("test_fire_max_duration_ms", 1000))
+        max_duration_ms = int(safety.get("test_fire_max_duration_ms", 5000))
+        max_s_value = int(safety.get("test_fire_max_s_value", 500))
+        use_direct_s = bool(safety.get("test_fire_use_direct_s_value", True))
         power_is_percent = bool(safety.get("test_fire_power_is_percent", True))
         s_max = max(1, int(safety.get("test_fire_s_max", 1000)))
         test_mode = str(safety.get("test_fire_mode", "stationary_m4")).strip().lower()
@@ -1181,12 +1192,16 @@ def api_test_fire() -> Any:
         console.add("warn", f"Test Fire requested: input_power={req_power} duration_ms={req_duration_ms}")
         power = max(0, min(max_power, req_power))
         duration_ms = max(10, min(max_duration_ms, req_duration_ms))
-        if power_is_percent:
-            s_value = int(round((float(power) / 100.0) * float(s_max)))
-            power_percent = power
-        else:
-            s_value = power
+        if use_direct_s:
+            s_value = max(0, min(max_s_value, req_s_value))
             power_percent = int(round((float(s_value) / float(s_max)) * 100.0))
+        else:
+            if power_is_percent:
+                s_value = int(round((float(power) / 100.0) * float(s_max)))
+                power_percent = power
+            else:
+                s_value = power
+                power_percent = int(round((float(s_value) / float(s_max)) * 100.0))
         if s_value <= 0:
             msg = "Test fire S value is 0. Increase test fire power or check test_fire_s_max."
             console.add("error", msg)
@@ -1201,7 +1216,11 @@ def api_test_fire() -> Any:
             motion_mm=motion_mm,
             motion_feedrate=motion_feedrate,
         )
-        page_id_used = str(result.get("page_id_used") or result.get("page_id") or "0")
+        page_id_used = str(
+            result.get("page_id_used")
+            or result.get("page_id")
+            or ("0" if result.get("page_id_fallback") else "0")
+        )
         if page_id_used == "0" and bool(result.get("page_id_fallback")):
             console.add("warn", "No active PAGEID found; using PAGEID=0")
         console.add("warn", f"PAGEID used: {page_id_used}")
@@ -1229,22 +1248,27 @@ def api_test_fire() -> Any:
                 console.add("warn", f"Test fire step {step_name}: {'ok' if step_result.get('ok') else 'fail'} {str(step_result.get('message',''))[:120]}")
         if not result.get("ok"):
             console.add("error", f"Test fire failed: {str(result.get('message','unknown'))[:120]}")
-        console.add("warn", "Test Fire complete")
-        return jsonify(
+        console.add("warn", "Test Fire complete; laser forced off")
+        response = (
             result
             | {
                 "power": power,
                 "mode": test_mode,
+                "command": test_cmd,
                 "power_percent": power_percent,
                 "s_value": s_value,
                 "duration_ms": duration_ms,
-                "motion_mm": motion_mm,
-                "motion_axis": motion_axis,
-                "motion_feedrate": motion_feedrate,
                 "page_id": page_id_used,
                 "commands": command_list,
             }
         )
+        if test_mode == "motion_pulse":
+            response |= {
+                "motion_mm": motion_mm,
+                "motion_axis": motion_axis,
+                "motion_feedrate": motion_feedrate,
+            }
+        return jsonify(response)
     except Exception as exc:
         console.add("error", f"Test fire failed: {exc}")
         return jsonify({"ok": False, "message": f"Test fire failed: {exc}"}), 500
@@ -1626,9 +1650,3 @@ if __name__ == "__main__":
         debug=bool(c.get("web_ui", {}).get("debug", False)),
         use_reloader=False,
     )
-    page_id_used = str(result.get("page_id_used") or "")
-    if not page_id_used:
-        page_id_used = "0"
-    console.add("warn", f"PAGEID used: {page_id_used}")
-    if bool(result.get("page_id_fallback")):
-        console.add("warn", "No active PAGEID found; using PAGEID=0")

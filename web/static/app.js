@@ -342,7 +342,7 @@ let manualCfg = {
   test_fire_enabled: false,
   preset_enabled: true,
   preset_label: 'Go To Preset',
-  test_fire_power: 1,
+  test_fire_s_value: 200,
   test_fire_duration_ms: 100,
   raw_command_enabled: true,
   confirm_dangerous_raw_commands: true
@@ -414,23 +414,11 @@ async function manualCall(url, body=null, confirmText=''){
     const r = await api(url,'POST',body);
     let msg = r.ok ? 'OK: '+(r.message||'command sent') : 'Error: '+(r.message||r.error||'request failed');
     if(r && r.ok && url === '/api/laser/test-fire'){
-      const pct = Number(r.power_percent);
       const sVal = Number(r.s_value);
       const dur = Number(r.duration_ms);
-      const mode = String(r.mode || '').trim();
-      if(Number.isFinite(pct) && Number.isFinite(sVal) && Number.isFinite(dur)){
-        if(mode === 'motion_pulse'){
-          const axis = String(r.motion_axis || 'X');
-          const mm = Number(r.motion_mm);
-          const feed = Number(r.motion_feedrate);
-          if(Number.isFinite(mm) && Number.isFinite(feed)){
-            msg = `Test fire complete: ${pct}% / S${sVal} / ${axis}${mm} / F${feed}`;
-          } else {
-            msg = `Test fire complete: ${pct}% / S${sVal} / motion pulse`;
-          }
-        } else {
-          msg = `Test fire complete: ${pct}% / S${sVal} / ${dur} ms`;
-        }
+      const cmd = String(r.command || 'M4').trim();
+      if(Number.isFinite(sVal) && Number.isFinite(dur)){
+        msg = `Test fire complete: ${cmd} S${sVal} / ${dur} ms`;
       }
     }
     document.getElementById('manualMsg').textContent = msg;
@@ -458,8 +446,8 @@ async function loadManualConfig(){
       test_fire_enabled: !!(safety.test_fire_enabled ?? safety.enable_test_fire ?? false),
       preset_enabled: (mc.preset_enabled !== false),
       preset_label: String(mc.preset_label || 'Go To Preset'),
-      test_fire_power: Number(safety.test_fire_power ?? 1),
-      test_fire_duration_ms: Number(safety.test_fire_duration_ms ?? 100),
+      test_fire_s_value: Number(safety.test_fire_s_value ?? 200),
+      test_fire_duration_ms: Number(safety.test_fire_duration_ms ?? 1000),
       raw_command_enabled: (consoleCfg.raw_command_enabled !== false),
       confirm_dangerous_raw_commands: (consoleCfg.confirm_dangerous_raw_commands !== false)
     };
@@ -663,7 +651,7 @@ function bind(){
     const confirmText = manualCfg.confirm_dangerous_actions ? 'Run low-power test fire?' : '';
     return manualCall(
       '/api/laser/test-fire',
-      {power: manualCfg.test_fire_power || 1, duration_ms: manualCfg.test_fire_duration_ms || 100},
+      {s_value: manualCfg.test_fire_s_value || 200, duration_ms: manualCfg.test_fire_duration_ms || 1000},
       confirmText
     );
   };
