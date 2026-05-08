@@ -24,15 +24,11 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Live Console with smart auto-scroll
 - Send commands through the web/manual console area
 - Enable/Disable Video button near the camera controls
-- Setting support so video can default to enabled or disabled
 - Disabled-video placeholder when camera preview is turned off
-- Dashboard/settings UI cleanup and layout refinements
 - Settings page with expanded descriptions and examples
 - 3D-printer G-code rejection safety scanner
 - Optional sanitized Ray5 diagnostic endpoints
-- Ray5 Pilot logo/favicon branding
 - Portable Windows startup BAT file
-- No old LightBurn TCP bridge
 
 ## Setup
 1. Download/clone Ray5-Pilot.
@@ -91,7 +87,6 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 ## Config notes
 - config.json is local/private and is not committed.
 - config.example.json is only a template.
-- Old LightBurn TCP bridge behavior is intentionally not included.
 
 ## v1.0.3
 - Fixed Test Fire for Ray5 screen-style stationary M4 behavior.
