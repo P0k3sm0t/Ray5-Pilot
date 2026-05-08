@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import math
 import re
 import shutil
 import time
@@ -22,7 +24,7 @@ class JobManager:
         self.watched_dir.mkdir(parents=True, exist_ok=True)
         self.rejected_dir.mkdir(parents=True, exist_ok=True)
         self._watch_state: dict[str, tuple[int, int]] = {}
-        self._imported_signatures: set[tuple[str, int]] = set()
+        self._imported_signatures: set[tuple[str, int, str]] = set()
         self._currently_importing: set[str] = set()
         self._recently_processed: dict[str, float] = {}
         self._recent_ttl_seconds = 300.0
@@ -57,6 +59,13 @@ class JobManager:
                 return c
             idx += 1
 
+    def _file_sha256(self, path: Path) -> str:
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
     def list_jobs(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for p in sorted(self.imported_dir.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True):
@@ -72,7 +81,11 @@ class JobManager:
                     "size": s.st_size,
                     "modified": s.st_mtime,
                     "bounds": bounds,
-                    "bounds_warning": None if bounds else "Bounds unknown",
+                    "bounds_warning": (
+                        "Bounds unknown"
+                        if not bounds
+                        else ("; ".join(bounds.get("warnings", [])) if bounds.get("warnings") else None)
+                    ),
                 }
             )
         return out
@@ -91,7 +104,7 @@ class JobManager:
         target = self._safe_target(src_path.name)
         target.write_bytes(src_path.read_bytes())
         s = target.stat()
-        self._imported_signatures.add((target.name.lower(), s.st_size))
+        self._imported_signatures.add((target.name.lower(), s.st_size, self._file_sha256(target)))
         return {
             "name": target.name,
             "filename": target.name,
@@ -115,7 +128,7 @@ class JobManager:
         target = self._safe_target(filename)
         target.write_bytes(content)
         s = target.stat()
-        self._imported_signatures.add((target.name.lower(), s.st_size))
+        self._imported_signatures.add((target.name.lower(), s.st_size, self._file_sha256(target)))
         return {
             "name": target.name,
             "filename": target.name,
@@ -183,7 +196,17 @@ class JobManager:
         except OSError:
             return None
 
-        sig = (src.name.lower(), s2)
+        try:
+            sha = self._file_sha256(src)
+        except OSError as exc:
+            # File may still be writing/locked; retry next poll cycle.
+            print(f"[WATCHER] Hash read deferred for {src.name}: {exc}")
+            return None
+        except Exception as exc:
+            print(f"[WATCHER] Hash read failed for {src.name}: {exc}")
+            return None
+
+        sig = (src.name.lower(), s2, sha)
         if sig in self._imported_signatures:
             if self.delete_watched_after_import:
                 try:
@@ -220,7 +243,12 @@ class JobManager:
             except OSError:
                 pass
         s = target.stat()
-        self._imported_signatures.add((target.name.lower(), s.st_size))
+        try:
+            imported_sha = self._file_sha256(target)
+            self._imported_signatures.add((target.name.lower(), s.st_size, imported_sha))
+        except Exception:
+            # If hashing imported copy fails unexpectedly, keep import success path.
+            pass
         return {
             "name": target.name,
             "filename": target.name,
@@ -274,7 +302,8 @@ class JobManager:
         absolute = True
         motion = re.compile(r"([A-Z])\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))", re.IGNORECASE)
         finish_marker_seen = False
-        laser_off_seen = False
+        laser_off_mode = False
+        warnings: list[str] = []
         for line in text.splitlines():
             raw = line.strip()
             low = raw.lower()
@@ -289,8 +318,35 @@ class JobManager:
                 continue
             if clean in {"M2", "M30"}:
                 break
-            if clean.startswith("M5") or clean.startswith("M9") or " S0" in f" {clean}":
-                laser_off_seen = True
+            g_match = re.search(r"\bG0*([0-9]+)\b", clean)
+            g_num = int(g_match.group(1)) if g_match else None
+            g_is_motion = g_num in {0, 1, 2, 3}
+            g_is_arc = g_num in {2, 3}
+            g_cw = g_num == 2
+
+            if re.search(r"\bM5\b", clean) or re.search(r"\bM9\b", clean):
+                laser_off_mode = True
+            if re.search(r"\bS\s*0(?:\.0+)?\b", clean):
+                laser_off_mode = True
+
+            # Resume from laser-off travel mode when explicit laser-on power is set.
+            if re.search(r"\bM[34]\b", clean):
+                s_resume = re.search(r"\bS\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\b", clean)
+                if s_resume:
+                    try:
+                        if float(s_resume.group(1)) > 0:
+                            laser_off_mode = False
+                    except ValueError:
+                        pass
+            if g_num in {1, 2, 3}:
+                s_resume = re.search(r"\bS\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\b", clean)
+                if s_resume:
+                    try:
+                        if float(s_resume.group(1)) > 0:
+                            laser_off_mode = False
+                    except ValueError:
+                        pass
+
             if "G90" in clean:
                 absolute = True
             if "G91" in clean:
@@ -298,9 +354,9 @@ class JobManager:
             tokens = {m.group(1).upper(): float(m.group(2)) for m in motion.finditer(clean)}
             if "X" not in tokens and "Y" not in tokens:
                 continue
-            if laser_off_seen and clean.startswith(("G0", "G00", "G1", "G01")):
-                # Ignore final laser-off travel/parking motion for design bounds.
+            if not g_is_motion:
                 continue
+            start_x, start_y = x, y
             nx, ny = x, y
             if absolute:
                 if "X" in tokens:
@@ -312,15 +368,89 @@ class JobManager:
                     nx = x + tokens["X"]
                 if "Y" in tokens:
                     ny = y + tokens["Y"]
+            if g_is_arc:
+                if ("I" in tokens or "J" in tokens):
+                    cx = start_x + float(tokens.get("I", 0.0))
+                    cy = start_y + float(tokens.get("J", 0.0))
+                    r = math.hypot(start_x - cx, start_y - cy)
+                    if not laser_off_mode:
+                        min_x, min_y, max_x, max_y = self._include_point(min_x, min_y, max_x, max_y, start_x, start_y)
+                        min_x, min_y, max_x, max_y = self._include_point(min_x, min_y, max_x, max_y, nx, ny)
+                        min_x, min_y, max_x, max_y = self._include_arc_extrema(
+                            min_x, min_y, max_x, max_y, start_x, start_y, nx, ny, cx, cy, r, clockwise=g_cw
+                        )
+                else:
+                    if "R" in tokens:
+                        warn = "Arc bounds approximated; framing may be slightly inaccurate for this file."
+                        if warn not in warnings:
+                            warnings.append(warn)
+                    if not laser_off_mode:
+                        min_x, min_y, max_x, max_y = self._include_point(min_x, min_y, max_x, max_y, start_x, start_y)
+                        min_x, min_y, max_x, max_y = self._include_point(min_x, min_y, max_x, max_y, nx, ny)
+            else:
+                if not laser_off_mode:
+                    min_x, min_y, max_x, max_y = self._include_point(min_x, min_y, max_x, max_y, nx, ny)
             x, y = nx, ny
-            min_x = min(min_x, x)
-            max_x = max(max_x, x)
-            min_y = min(min_y, y)
-            max_y = max(max_y, y)
 
         if min_x == float("inf") or min_y == float("inf"):
             return None
-        return {"min_x": min_x, "min_y": min_y, "max_x": max_x, "max_y": max_y, "source": "motion_parse"}
+        out: dict[str, Any] = {"min_x": min_x, "min_y": min_y, "max_x": max_x, "max_y": max_y, "source": "motion_parse"}
+        if warnings:
+            out["warnings"] = warnings
+        return out
+
+    def _include_point(
+        self,
+        min_x: float,
+        min_y: float,
+        max_x: float,
+        max_y: float,
+        px: float,
+        py: float,
+    ) -> tuple[float, float, float, float]:
+        return min(min_x, px), min(min_y, py), max(max_x, px), max(max_y, py)
+
+    def _include_arc_extrema(
+        self,
+        min_x: float,
+        min_y: float,
+        max_x: float,
+        max_y: float,
+        start_x: float,
+        start_y: float,
+        end_x: float,
+        end_y: float,
+        cx: float,
+        cy: float,
+        r: float,
+        clockwise: bool,
+    ) -> tuple[float, float, float, float]:
+        start_a = self._norm_angle(math.atan2(start_y - cy, start_x - cx))
+        end_a = self._norm_angle(math.atan2(end_y - cy, end_x - cx))
+        for a in (0.0, math.pi / 2.0, math.pi, 3.0 * math.pi / 2.0):
+            if self._angle_on_sweep(a, start_a, end_a, clockwise):
+                px = cx + r * math.cos(a)
+                py = cy + r * math.sin(a)
+                min_x, min_y, max_x, max_y = self._include_point(min_x, min_y, max_x, max_y, px, py)
+        return min_x, min_y, max_x, max_y
+
+    def _norm_angle(self, ang: float) -> float:
+        two = 2.0 * math.pi
+        out = ang % two
+        if out < 0:
+            out += two
+        return out
+
+    def _angle_on_sweep(self, test: float, start: float, end: float, clockwise: bool) -> bool:
+        eps = 1e-9
+        two = 2.0 * math.pi
+        if clockwise:
+            sweep = (start - end) % two
+            dist = (start - test) % two
+            return dist <= sweep + eps
+        sweep = (end - start) % two
+        dist = (test - start) % two
+        return dist <= sweep + eps
 
     def _parse_lightburn_bounds_comment(self, text: str) -> dict[str, float] | None:
         pat = re.compile(

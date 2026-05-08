@@ -25,6 +25,8 @@ function shortDate(ts){
 let consoleAutoScroll = true;
 const consoleBottomThreshold = 40;
 let cameraActivePath = '';
+const cameraPlaceholderPath = '/static/camera_placeholder.svg';
+let cameraVideoEnabled = true;
 
 function isConsoleNearBottom(el){
   if(!el) return true;
@@ -77,6 +79,9 @@ async function refreshStatus(){
   const msg=document.getElementById('camMsg');
   const off=document.getElementById('cameraOffline');
   const statusLine=document.getElementById('cameraStatusLine');
+  const videoToggleBtn = document.getElementById('camVideoToggle');
+  cameraVideoEnabled = (d.camera_video_enabled !== false);
+  if(videoToggleBtn) videoToggleBtn.textContent = cameraVideoEnabled ? 'Disable Video' : 'Enable Video';
   if(d.camera_preview_supported){
     cam.style.opacity='1';
     const nextPath = (d.camera_proxy_path||'/camera/stream');
@@ -85,7 +90,16 @@ async function refreshStatus(){
       cam.src = cameraActivePath + '?_=' + Date.now();
     }
     msg.textContent='Camera: '+(d.camera_url_masked||'configured');
-    statusLine.textContent='Camera source: '+(d.camera_url_masked||'configured');
+    if(statusLine) statusLine.textContent='Camera source: '+(d.camera_url_masked||'configured');
+    off.style.display='none';
+    cam.style.display='block';
+  } else if(d.camera_enabled && !cameraVideoEnabled) {
+    cam.removeAttribute('src');
+    cameraActivePath = '';
+    cam.src = cameraPlaceholderPath;
+    cam.style.opacity='1';
+    msg.textContent='Camera video disabled.';
+    if(statusLine) statusLine.textContent='Camera video disabled.';
     off.style.display='none';
     cam.style.display='block';
   } else {
@@ -93,7 +107,7 @@ async function refreshStatus(){
     cameraActivePath = '';
     cam.style.opacity='0.35';
     msg.textContent='Camera unavailable or disabled.';
-    statusLine.textContent='Camera unavailable or disabled.';
+    if(statusLine) statusLine.textContent='Camera unavailable or disabled.';
     off.style.display='block';
     cam.style.display='none';
   }
@@ -325,8 +339,63 @@ let manualCfg = {
   preset_enabled: true,
   preset_label: 'Go To Preset',
   test_fire_power: 1,
-  test_fire_duration_ms: 100
+  test_fire_duration_ms: 100,
+  raw_command_enabled: true,
+  confirm_dangerous_raw_commands: true
 };
+const rawCommandHistory = [];
+let rawCommandHistoryIndex = -1;
+
+function isDangerousRawCommand(cmd){
+  const s = String(cmd || '').trim();
+  if(!s) return false;
+  const u = s.toUpperCase();
+  if(u === '?' || u === '$G' || u === '$I' || u === 'M5') return false;
+  if(/(^|\s)(M3|M4|G0|G1|G2|G3|\$X|\$H|RUNZIP|M8|M9)\b/i.test(s)) return true;
+  if(/(\$SD\/RUN|\$SD\/RUNZIP|\$SD\/RUN=|\$SD\/RUNZIP=|\$SD\/RUNZIP=\/)/i.test(s)) return true;
+  if(/CTRL-?X|\^X|\\X18|SOFT_RESET/i.test(s)) return true;
+  if(/M[34].*S\s*\d+/i.test(s)) return true;
+  return false;
+}
+
+async function sendRawConsoleCommand(){
+  const input = document.getElementById('consoleCommandInput');
+  const sendBtn = document.getElementById('consoleCommandSend');
+  const statusEl = document.getElementById('consoleCommandStatus');
+  if(!input || !sendBtn || !statusEl) return;
+  if(sendBtn.disabled) return;
+  const command = String(input.value || '').trim();
+  if(!command){
+    statusEl.textContent = 'Enter a command first.';
+    return;
+  }
+  if(manualCfg.confirm_dangerous_raw_commands && isDangerousRawCommand(command)){
+    const ok = confirm(`Send raw command '${command}'? This may move the laser or trigger machine actions.`);
+    if(!ok) return;
+  }
+  sendBtn.disabled = true;
+  statusEl.textContent = 'Sending...';
+  try{
+    const r = await api('/api/console/command','POST',{command});
+    if(r.ok){
+      statusEl.textContent = `Sent: ${r.command}`;
+      if(rawCommandHistory.length === 0 || rawCommandHistory[rawCommandHistory.length-1] !== command){
+        rawCommandHistory.push(command);
+        if(rawCommandHistory.length > 20) rawCommandHistory.shift();
+      }
+      rawCommandHistoryIndex = rawCommandHistory.length;
+      input.value = '';
+    }else{
+      statusEl.textContent = `Failed: ${r.message || 'unknown error'}`;
+    }
+    await refreshConsole();
+    await refreshStatus();
+  }catch(err){
+    statusEl.textContent = `Failed: ${String(err)}`;
+  }finally{
+    sendBtn.disabled = false;
+  }
+}
 let jobImportBusy = false;
 function setManualBusy(state){
   manualBusy = state;
@@ -357,6 +426,7 @@ async function loadManualConfig(){
     const mc = cfg.manual_controls || {};
     const safety = cfg.safety || {};
     const sdCfg = cfg.sd_files || {};
+    const consoleCfg = cfg.console || {};
     manualCfg = {
       confirm_dangerous_actions: (safety.confirm_dangerous_actions !== false),
       enable_z_jog: !!(mc.enable_z_jog ?? mc.enable_jog_z ?? false),
@@ -364,7 +434,9 @@ async function loadManualConfig(){
       preset_enabled: (mc.preset_enabled !== false),
       preset_label: String(mc.preset_label || 'Go To Preset'),
       test_fire_power: Number(safety.test_fire_power ?? 1),
-      test_fire_duration_ms: Number(safety.test_fire_duration_ms ?? 100)
+      test_fire_duration_ms: Number(safety.test_fire_duration_ms ?? 100),
+      raw_command_enabled: (consoleCfg.raw_command_enabled !== false),
+      confirm_dangerous_raw_commands: (consoleCfg.confirm_dangerous_raw_commands !== false)
     };
     sdPreviewSupported = !!sdCfg.enable_preview;
     sdEnableStart = sdCfg.enable_start !== false;
@@ -392,6 +464,16 @@ async function loadManualConfig(){
     const presetRow = document.getElementById('presetRow');
     if(presetBtn) presetBtn.textContent = manualCfg.preset_label || 'Go To Preset';
     if(presetRow) presetRow.style.display = manualCfg.preset_enabled ? 'flex' : 'none';
+    const cmdWrap = document.getElementById('consoleCommandWrap');
+    const cmdStatus = document.getElementById('consoleCommandStatus');
+    const cmdInput = document.getElementById('consoleCommandInput');
+    const cmdSend = document.getElementById('consoleCommandSend');
+    if(cmdWrap) cmdWrap.style.display = manualCfg.raw_command_enabled ? 'block' : 'none';
+    if(cmdInput) cmdInput.disabled = !manualCfg.raw_command_enabled;
+    if(cmdSend) cmdSend.disabled = !manualCfg.raw_command_enabled;
+    if(cmdStatus && !manualCfg.raw_command_enabled){
+      cmdStatus.textContent = 'Raw console command sender is disabled in Settings.';
+    }
   } catch(_err){
     // keep defaults if config fetch fails
   }
@@ -399,14 +481,50 @@ async function loadManualConfig(){
 
 function bind(){
   const cam=document.getElementById('cam');
+  const cameraStatus=document.getElementById('cameraStatus');
   document.getElementById('camRefresh').onclick=()=>{
+    if(!cameraVideoEnabled){
+      if(cameraStatus) cameraStatus.textContent = 'Camera video is disabled. Enable video first.';
+      return;
+    }
     const path = cameraActivePath || '/camera/stream';
     cam.src = path + '?_=' + Date.now();
+    if(cameraStatus) cameraStatus.textContent = 'Camera stream reloaded.';
+    refreshConsole();
   };
-  document.getElementById('camTest').onclick=()=>api('/api/camera/test','POST').then(refreshConsole);
+  document.getElementById('camTest').onclick=()=>api('/api/camera/test','POST').then((r)=>{
+    if(cameraStatus){
+      cameraStatus.textContent = r.ok ? (r.message || 'Camera test passed.') : `Camera test failed: ${r.message || r.error || 'unknown error'}`;
+    }
+    refreshConsole();
+  });
   document.getElementById('camCapture').onclick=()=>api('/api/camera/capture','POST').then((r)=>{refreshConsole();loadSnapshots();if(r.ok)document.getElementById('camMsg').textContent='Snapshot saved: '+r.filename;});
   document.getElementById('snapOpenFolder').onclick=()=>api('/api/snapshots/open-folder','POST').then(refreshConsole);
   document.getElementById('camCalibrate').onclick=()=>api('/api/camera/calibration/run','POST').then((r)=>{refreshConsole();document.getElementById('camMsg').textContent=r.ok?'Calibration launched':(r.error||'Calibration failed');});
+  document.getElementById('camVideoToggle').onclick=async()=>{
+    const cameraStatus = document.getElementById('cameraStatus');
+    const nextEnabled = !cameraVideoEnabled;
+    const r = await api('/api/camera/video-enabled','POST',{enabled: nextEnabled});
+    if(!r.ok){
+      if(cameraStatus) cameraStatus.textContent = `Camera video toggle failed: ${r.message || 'unknown error'}`;
+      return;
+    }
+    cameraVideoEnabled = !!r.enabled;
+    document.getElementById('camVideoToggle').textContent = cameraVideoEnabled ? 'Disable Video' : 'Enable Video';
+    if(cameraVideoEnabled){
+      const path = cameraActivePath || '/camera/stream';
+      cam.removeAttribute('src');
+      cam.src = path + '?_=' + Date.now();
+      if(cameraStatus) cameraStatus.textContent = 'Camera video enabled.';
+    }else{
+      cam.removeAttribute('src');
+      cameraActivePath = '';
+      cam.src = cameraPlaceholderPath;
+      if(cameraStatus) cameraStatus.textContent = 'Camera video disabled.';
+    }
+    refreshConsole();
+    refreshStatus();
+  };
   cam.onerror=()=>{
     document.getElementById('camMsg').textContent='Camera unavailable or disabled.';
     const off=document.getElementById('cameraOffline');
@@ -467,6 +585,32 @@ function bind(){
     consoleAutoScroll = true;
     return refreshConsole();
   });
+  const cmdInput = document.getElementById('consoleCommandInput');
+  const cmdSend = document.getElementById('consoleCommandSend');
+  if(cmdSend) cmdSend.onclick = sendRawConsoleCommand;
+  if(cmdInput){
+    cmdInput.addEventListener('keydown', (ev)=>{
+      if(ev.key === 'Enter'){
+        ev.preventDefault();
+        sendRawConsoleCommand();
+        return;
+      }
+      if(ev.key === 'ArrowUp'){
+        if(!rawCommandHistory.length) return;
+        ev.preventDefault();
+        if(rawCommandHistoryIndex < 0) rawCommandHistoryIndex = rawCommandHistory.length - 1;
+        else rawCommandHistoryIndex = Math.max(0, rawCommandHistoryIndex - 1);
+        cmdInput.value = rawCommandHistory[rawCommandHistoryIndex] || '';
+        return;
+      }
+      if(ev.key === 'ArrowDown'){
+        if(!rawCommandHistory.length) return;
+        ev.preventDefault();
+        rawCommandHistoryIndex = Math.min(rawCommandHistory.length, rawCommandHistoryIndex + 1);
+        cmdInput.value = rawCommandHistoryIndex >= rawCommandHistory.length ? '' : (rawCommandHistory[rawCommandHistoryIndex] || '');
+      }
+    });
+  }
   document.getElementById('filesRefresh').onclick=loadSdFiles;
   document.getElementById('sdUploadBtn').onclick=async()=>{
     const input = document.getElementById('sdUploadFile');

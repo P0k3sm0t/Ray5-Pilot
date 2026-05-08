@@ -21,6 +21,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "web_ui": {"host": "127.0.0.1", "port": 5050, "debug": False},
     "camera": {
         "enabled": False,
+        "video_enabled": True,
         "url": "rtsp://USERNAME:PASSWORD@CAMERA_IP:554/stream2",
         "stream_url": "",
         "snapshot_url": "",
@@ -160,6 +161,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "synthetic_fallback_enabled": True,
         "show_status_source": True,
         "show_position_source": True,
+    },
+    "console": {
+        "raw_command_enabled": True,
+        "confirm_dangerous_raw_commands": True,
     },
     "air_assist": {"supported": True, "on_command": "M8", "off_command": "M9"},
 }

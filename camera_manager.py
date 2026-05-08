@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 import webbrowser
 from pathlib import Path
@@ -199,31 +200,47 @@ class CameraManager:
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             raise CameraCaptureError("ffmpeg not found in PATH")
-        tmp = self.output_dir / f".tmp_capture_{int(time.time())}.jpg"
-        cmd = [
-            ffmpeg,
-            "-y",
-            "-rtsp_transport",
-            "tcp",
-            "-i",
-            stream_url,
-            "-frames:v",
-            "1",
-            "-q:v",
-            "2",
-            str(tmp),
-        ]
+        tmp: Path | None = None
         try:
-            subprocess.run(cmd, check=True, capture_output=True, timeout=self.timeout_seconds + 8)
-        except subprocess.TimeoutExpired as exc:
-            raise CameraCaptureError("ffmpeg capture timed out") from exc
-        except subprocess.CalledProcessError as exc:
-            raise CameraCaptureError(f"ffmpeg capture failed: {exc.stderr.decode(errors='ignore')[:180]}") from exc
-        if not tmp.exists():
-            raise CameraCaptureError("ffmpeg did not produce output")
-        data = tmp.read_bytes()
-        tmp.unlink(missing_ok=True)
-        return data
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=".jpg",
+                prefix=".tmp_capture_",
+                dir=str(self.output_dir),
+            ) as tmp_file:
+                tmp = Path(tmp_file.name)
+
+            cmd = [
+                ffmpeg,
+                "-y",
+                "-rtsp_transport",
+                "tcp",
+                "-i",
+                stream_url,
+                "-frames:v",
+                "1",
+                "-q:v",
+                "2",
+                str(tmp),
+            ]
+
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, timeout=self.timeout_seconds + 8)
+            except subprocess.TimeoutExpired as exc:
+                raise CameraCaptureError("ffmpeg capture timed out") from exc
+            except subprocess.CalledProcessError as exc:
+                raise CameraCaptureError(f"ffmpeg capture failed: {exc.stderr.decode(errors='ignore')[:180]}") from exc
+
+            if not tmp.exists():
+                raise CameraCaptureError("ffmpeg did not produce output")
+
+            return tmp.read_bytes()
+        finally:
+            if tmp and tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
 
     def _capture_opencv_frame(self, stream_url: str) -> bytes:
         cap = cv2.VideoCapture(stream_url)

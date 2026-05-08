@@ -17,34 +17,33 @@
 </header>
 <main>
   <section class="card video-card">
-    <div class="video-card-header">
-      <div class="video-card-title">
-        <h2>Video / Camera</h2>
-        <div id="cameraStatusLine" class="muted small"></div>
-      </div>
-      <div class="video-actions">
-        <button id="camRefresh">Reload Camera</button>
-        <button id="camTest">Test Camera</button>
-        <button id="camCapture">Take Snapshot</button>
-        <button id="snapOpenFolder">Open Snapshot Folder</button>
-        <button id="camCalibrate">Calibrate Camera</button>
-      </div>
+    <div class="video-card-title">
+      <h2>Video / Camera</h2>
     </div>
+    <div class="camera-top-actions">
+      <button id="camRefresh">Reload Camera</button>
+      <button id="camTest">Test Camera</button>
+      <button id="camCalibrate">Calibrate Overlay</button>
+      <button id="camVideoToggle">Disable Video</button>
+    </div>
+    <div id="cameraStatus" class="muted small"></div>
     <div class="video-frame-wrap">
       <img id="cam" class="camera-feed" src="" alt="camera stream">
       <div id="cameraOffline" class="camera-offline" style="display:none;">Camera unavailable</div>
     </div>
     <div id="camMsg" class="muted small"></div>
-    <div class="camera-overlay-row">
-      <div>
+    <div class="camera-footer-row">
+      <div class="latest-overlay-info">
         <strong>Latest Overlay</strong>
         <span id="latestSnapshotInfo" class="muted small">No snapshot yet</span>
       </div>
-      <div class="overlay-actions">
-        <a id="openLatestSnapshot" href="#" target="_blank">Open Latest</a>
-        <a id="downloadLatestSnapshot" href="#" target="_blank">Download Latest</a>
-        <a id="openLatestRaw" href="#" target="_blank">Open Raw</a>
-        <a id="downloadLatestRaw" href="#" target="_blank">Download Raw</a>
+      <div class="camera-bottom-actions">
+        <button id="camCapture">Take Snapshot</button>
+        <button id="snapOpenFolder">Open Folder</button>
+        <a id="openLatestSnapshot" href="#" target="_blank" class="camera-link-btn">Open Latest</a>
+        <a id="openLatestRaw" href="#" target="_blank" class="camera-link-btn">Open Raw</a>
+        <a id="downloadLatestSnapshot" href="#" target="_blank" class="camera-action-hidden" aria-hidden="true" tabindex="-1">Download Latest</a>
+        <a id="downloadLatestRaw" href="#" target="_blank" class="camera-action-hidden" aria-hidden="true" tabindex="-1">Download Raw</a>
       </div>
     </div>
   </section>
@@ -169,6 +168,13 @@
       <div class="card-actions"><button id="consoleClear">Clear</button></div>
     </div>
     <pre id="console" class="console-output"></pre>
+    <div id="consoleCommandWrap" class="console-command-wrap">
+      <div class="console-command-row">
+        <input id="consoleCommandInput" placeholder="Raw command, e.g. $X, M5, G0 X10 Y10 F1000">
+        <button id="consoleCommandSend">Send</button>
+      </div>
+      <div id="consoleCommandStatus" class="muted small"></div>
+    </div>
   </section>
 </main>
 <script src="/static/app.js"></script>

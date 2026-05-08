@@ -24,6 +24,7 @@ function load(cfg){
   const up = cfg.upload || {};
   const jc = cfg.job_control || {};
   const st = cfg.status || {};
+  const csl = cfg.console || {};
 
   setVal('ray_host', ray.host, '');
   setVal('ray_port', ray.port, 8848);
@@ -32,6 +33,7 @@ function load(cfg){
   setVal('web_port', web.port, 5050);
 
   setChecked('cam_enabled', !!cam.enabled, false);
+  setChecked('cam_video_enabled', (cam.video_enabled !== false), true);
   setVal('cam_stream', cam.url||cam.stream_url||'', '');
   setVal('cam_snapshot', cam.snapshot_url||'', '');
   setChecked('cam_proxy_enabled', (cam.proxy_enabled!==false), true);
@@ -88,8 +90,6 @@ function load(cfg){
   setVal('machine_min_y', (machine.min_y ?? 0), 0);
   setVal('machine_max_x', (machine.max_x ?? machine.bed_width_mm ?? 390), 390);
   setVal('machine_max_y', (machine.max_y ?? machine.bed_height_mm ?? 360), 360);
-  setVal('machine_bed_w', (machine.bed_width_mm ?? 390), 390);
-  setVal('machine_bed_h', (machine.bed_height_mm ?? 360), 360);
 
   setVal('jog_step', (mc.default_jog_step ?? mc.default_jog_step_mm ?? 10), 10);
   setVal('jog_feed', (mc.default_feedrate ?? 500), 500);
@@ -140,6 +140,8 @@ function load(cfg){
   setChecked('status_synth_fallback', (st.synthetic_fallback_enabled!==false), true);
   setChecked('status_show_source', (st.show_status_source!==false), true);
   setChecked('status_show_pos_source', (st.show_position_source!==false), true);
+  setChecked('console_raw_enabled', (csl.raw_command_enabled !== false), true);
+  setChecked('console_confirm_dangerous', (csl.confirm_dangerous_raw_commands !== false), true);
 }
 
 function collect(){
@@ -152,6 +154,7 @@ function collect(){
     web_ui:{host:v('web_host').value.trim(),port:Number(v('web_port').value)},
     camera:{
       enabled:v('cam_enabled').checked,
+      video_enabled:v('cam_video_enabled').checked,
       url:v('cam_stream').value.trim(),
       stream_url:'',
       snapshot_url:v('cam_snapshot').value.trim(),
@@ -218,8 +221,8 @@ function collect(){
       min_y:Number(v('machine_min_y').value),
       max_x:Number(v('machine_max_x').value),
       max_y:Number(v('machine_max_y').value),
-      bed_width_mm:Number(v('machine_bed_w').value),
-      bed_height_mm:Number(v('machine_bed_h').value)
+      bed_width_mm:Number(v('machine_max_x').value),
+      bed_height_mm:Number(v('machine_max_y').value)
     },
     manual_controls:{
       default_jog_step:Number(v('jog_step').value),
@@ -281,6 +284,10 @@ function collect(){
       synthetic_fallback_enabled:v('status_synth_fallback').checked,
       show_status_source:v('status_show_source').checked,
       show_position_source:v('status_show_pos_source').checked
+    },
+    console:{
+      raw_command_enabled:v('console_raw_enabled').checked,
+      confirm_dangerous_raw_commands:v('console_confirm_dangerous').checked
     },
   }
 }

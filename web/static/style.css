@@ -8,14 +8,16 @@ nav a{color:#93c5fd;margin-left:12px;text-decoration:none}
 main{max-width:100%;overflow-x:hidden;padding:8px;position:relative;z-index:1}
 .card{background:#1a1f2b;border:1px solid #2b3345;border-radius:10px;padding:14px;margin:10px 0;width:100%;max-width:100%;overflow:hidden}
 .video-card{width:100%;max-width:100%;padding:14px;overflow:hidden}
-.video-card-header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;width:100%}
-.video-card-title{min-width:240px;flex:1 1 280px}
-.video-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;align-items:center;flex:1 1 420px;min-width:0;max-width:100%}
-.video-actions button{white-space:nowrap;flex:0 1 auto;max-width:100%}
+.video-card-title{min-width:240px}
+.camera-top-actions{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0 12px}
+.camera-link-btn{display:inline-flex;align-items:center;justify-content:center;background:#2563eb;color:#fff;border:none;border-radius:8px;padding:8px 10px;cursor:pointer;min-height:38px;text-decoration:none}
 .video-frame-wrap{margin-top:14px;width:100%;max-width:100%;max-height:420px;min-height:260px;background:#05070c;border:1px solid rgba(255,255,255,.12);border-radius:14px;overflow:hidden;display:flex;justify-content:center;align-items:center;position:relative}
 .camera-feed{display:block;max-width:100%;max-height:420px;width:auto;height:auto;object-fit:contain;position:static}
 .camera-offline{padding:40px;text-align:center;color:rgba(255,255,255,.7)}
-.camera-overlay-row{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.10);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center;width:100%;max-width:100%}
+.camera-footer-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,.08);width:100%;max-width:100%}
+.latest-overlay-info{display:flex;align-items:baseline;gap:8px;min-width:220px;flex-wrap:wrap}
+.camera-bottom-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}
+.camera-action-hidden{display:none !important}
 .overlay-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;max-width:100%}
 .overlay-actions a{display:inline-block;background:#1d4ed8;color:#fff;border-radius:8px;padding:7px 10px;text-decoration:none;font-size:13px}
 .overlay-actions a,.overlay-actions button{white-space:nowrap;max-width:100%}
@@ -99,7 +101,11 @@ input[type='checkbox']{width:auto}
 
 .card-header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
 .card-actions{display:flex;flex-wrap:wrap;gap:8px}
-.console-output{min-height:220px;max-height:360px;overflow-y:auto;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9rem;line-height:1.35;background:rgba(0,0,0,.25);border-radius:12px;padding:12px}
+.console-card{display:flex;flex-direction:column}
+.console-command-wrap{margin-top:10px}
+.console-command-row{display:flex;gap:10px;align-items:center;margin-bottom:6px}
+.console-command-row input{flex:1;min-width:220px}
+.console-output{flex:1 1 auto;min-height:220px;max-height:360px;overflow-y:auto;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9rem;line-height:1.35;background:rgba(0,0,0,.25);border-radius:12px;padding:12px}
 
 @media (max-width:1300px){
   .dashboard-grid{grid-template-columns:1fr 1fr}
@@ -114,6 +120,7 @@ input[type='checkbox']{width:auto}
   .manual-settings-row label{flex:1 1 160px}
   .jog-pad{grid-template-columns:58px 58px 58px;grid-template-rows:58px 58px 58px}
   .jog-btn{width:58px;height:58px}
+  .console-command-row{flex-direction:column;align-items:stretch}
 }
 
 @media (max-width:800px){
@@ -123,6 +130,11 @@ input[type='checkbox']{width:auto}
 @media (max-width:900px){
   .settings-grid{grid-template-columns:1fr}
   .video-frame-wrap,.camera-feed{max-height:300px}
+}
+
+@media (max-width:800px){
+  .camera-footer-row{flex-direction:column;align-items:stretch}
+  .camera-bottom-actions{justify-content:flex-start}
 }
 
 @media (max-width:700px){

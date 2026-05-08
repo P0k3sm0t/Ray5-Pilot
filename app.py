@@ -8,6 +8,7 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
+from threading import RLock
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -38,6 +39,8 @@ _watch_thread: threading.Thread | None = None
 status_monitor: Ray5StatusMonitor | None = None
 _placeholder_host_warned = False
 _placeholder_api_warned = False
+app_state_lock = RLock()
+runtime_started = False
 console.add("info", f"CONFIG PATH: {cfg_mgr.config_path}")
 console.add("info", f"CONFIG EXISTS: {cfg_mgr.config_path.exists()}")
 console.add("info", f"RAY5 HOST: {cfg.get('ray5', {}).get('host', '')}")
@@ -143,27 +146,44 @@ def _sanitize_plain_text_lines(raw: str) -> list[str]:
 
 def reload_components() -> None:
     global cfg, ray5, camera, jobs, status_monitor, _placeholder_api_warned, _placeholder_host_warned
-    _stop_watch_thread()
-    _placeholder_api_warned = False
-    _placeholder_host_warned = False
-    cfg = cfg_mgr.load()
-    if status_monitor is not None:
-        status_monitor.stop()
-    ray5 = Ray5Client(cfg)
-    camera = CameraManager(cfg, BASE_DIR)
-    jobs = JobManager(BASE_DIR, cfg)
-    status_monitor = None
-    if _is_ray5_host_configured():
-        status_monitor = Ray5StatusMonitor(ray5, cfg, console)
-        status_monitor.start()
-        ray5.set_page_id_getter(status_monitor.get_page_id)
+    new_cfg = cfg_mgr.load()
+    new_ray5 = Ray5Client(new_cfg)
+    new_camera = CameraManager(new_cfg, BASE_DIR)
+    new_jobs = JobManager(BASE_DIR, new_cfg)
+    new_monitor: Ray5StatusMonitor | None = None
+    if _is_ray5_host_configured(new_cfg):
+        new_monitor = Ray5StatusMonitor(new_ray5, new_cfg, console)
+        new_ray5.set_page_id_getter(new_monitor.get_page_id)
     else:
-        ray5.set_page_id_getter(lambda: None)
+        new_ray5.set_page_id_getter(lambda: None)
+
+    with app_state_lock:
+        old_monitor = status_monitor
+        cfg = new_cfg
+        ray5 = new_ray5
+        camera = new_camera
+        jobs = new_jobs
+        status_monitor = new_monitor
+        _placeholder_api_warned = False
+        _placeholder_host_warned = False
+
+    _stop_watch_thread()
+    if old_monitor is not None:
+        try:
+            old_monitor.stop()
+        except Exception as exc:
+            console.add("warn", f"Status monitor stop warning during reload: {exc}")
+    if new_monitor is not None:
+        try:
+            new_monitor.start()
+        except Exception as exc:
+            console.add("error", f"Status monitor start failed after reload: {exc}")
+    else:
         _warn_placeholder_host_once()
     console.add("info", f"CONFIG PATH: {cfg_mgr.config_path}")
-    console.add("info", f"RAY5 HOST: {cfg.get('ray5', {}).get('host', '')}")
-    console.add("info", f"RAY5 PORT: {cfg.get('ray5', {}).get('port', '')}")
-    console.add("info", f"RAY5 BASE URL: {ray5._base()}")
+    console.add("info", f"RAY5 HOST: {new_cfg.get('ray5', {}).get('host', '')}")
+    console.add("info", f"RAY5 PORT: {new_cfg.get('ray5', {}).get('port', '')}")
+    console.add("info", f"RAY5 BASE URL: {new_ray5._base()}")
     _warn_if_non_local_bind()
     _ensure_watch_thread()
 
@@ -189,12 +209,17 @@ def _status_fallback(live: dict[str, Any]) -> dict[str, Any]:
 
 
 def _watch_loop() -> None:
-    console.add("info", f"Watcher started: {jobs.watched_dir.name} -> {jobs.imported_dir.name}")
+    with app_state_lock:
+        active_jobs = jobs
+    console.add("info", f"Watcher started: {active_jobs.watched_dir.name} -> {active_jobs.imported_dir.name}")
     while not _watch_stop.is_set():
         try:
-            jobs_cfg = cfg.get("jobs", {})
+            with app_state_lock:
+                active_cfg = cfg
+                active_jobs = jobs
+            jobs_cfg = active_cfg.get("jobs", {})
             if bool(jobs_cfg.get("watch_enabled", True)):
-                imported = jobs.poll_watched_imports()
+                imported = active_jobs.poll_watched_imports()
                 for item in imported:
                     if item.get("rejected"):
                         console.add(
@@ -218,50 +243,66 @@ def _watch_loop() -> None:
 
 def _ensure_watch_thread() -> None:
     global _watch_thread
-    if _watch_thread is not None and _watch_thread.is_alive():
+    with app_state_lock:
+        active_jobs = jobs
+        thread_running = _watch_thread is not None and _watch_thread.is_alive()
+    if thread_running:
         return
-    if jobs.watched_dir.resolve() == jobs.imported_dir.resolve():
+    if active_jobs.watched_dir.resolve() == active_jobs.imported_dir.resolve():
         console.add("error", "Watcher disabled: watched_gcode_dir and imported_jobs_dir are the same folder")
         return
     _watch_stop.clear()
-    _watch_thread = threading.Thread(target=_watch_loop, daemon=True, name="watched-folder-poller")
-    _watch_thread.start()
+    new_thread = threading.Thread(target=_watch_loop, daemon=True, name="watched-folder-poller")
+    with app_state_lock:
+        _watch_thread = new_thread
+    new_thread.start()
 
 
 def _stop_watch_thread() -> None:
     global _watch_thread
-    if _watch_thread is None:
+    with app_state_lock:
+        thread = _watch_thread
+    if thread is None:
         return
     _watch_stop.set()
     try:
-        _watch_thread.join(timeout=2.0)
+        thread.join(timeout=2.0)
     except Exception:
         pass
-    _watch_thread = None
+    with app_state_lock:
+        _watch_thread = None
     _watch_stop.clear()
 
 
 def _warn_if_non_local_bind() -> None:
-    host = str(cfg.get("web_ui", {}).get("host", "127.0.0.1")).strip().lower()
+    with app_state_lock:
+        active_cfg = cfg
+    host = str(active_cfg.get("web_ui", {}).get("host", "127.0.0.1")).strip().lower()
     if host not in {"127.0.0.1", "localhost"}:
         console.add("warn", "Web UI is bound to a non-local host. Ray5 Pilot exposes machine-control endpoints without authentication.")
 
 
 def _max_upload_bytes() -> int:
-    limits = cfg.get("limits", {}) if isinstance(cfg.get("limits"), dict) else {}
+    with app_state_lock:
+        active_cfg = cfg
+    limits = active_cfg.get("limits", {}) if isinstance(active_cfg.get("limits"), dict) else {}
     return int(float(limits.get("max_gcode_upload_mb", 50)) * 1024 * 1024)
 
 
-def _is_ray5_host_configured() -> bool:
-    host = str(cfg.get("ray5", {}).get("host", "")).strip()
+def _is_ray5_host_configured(config: dict[str, Any] | None = None) -> bool:
+    if config is None:
+        with app_state_lock:
+            config = cfg
+    host = str(config.get("ray5", {}).get("host", "")).strip()
     return bool(host) and host.upper() != "YOUR_RAY5_IP"
 
 
 def _warn_placeholder_host_once() -> None:
     global _placeholder_host_warned
-    if _placeholder_host_warned:
-        return
-    _placeholder_host_warned = True
+    with app_state_lock:
+        if _placeholder_host_warned:
+            return
+        _placeholder_host_warned = True
     console.add("warn", "Ray5 host is still placeholder; configure Settings > Ray5 Network.")
 
 
@@ -269,8 +310,11 @@ def _require_ray5_configured():
     global _placeholder_api_warned
     if _is_ray5_host_configured():
         return None
-    if not _placeholder_api_warned:
-        _placeholder_api_warned = True
+    with app_state_lock:
+        should_log = not _placeholder_api_warned
+        if should_log:
+            _placeholder_api_warned = True
+    if should_log:
         console.add("warn", "Ray5 API request blocked because host is not configured.")
     return (
         jsonify(
@@ -283,23 +327,56 @@ def _require_ray5_configured():
         400,
     )
 
-
-_ensure_watch_thread()
 if _is_ray5_host_configured():
     status_monitor = Ray5StatusMonitor(ray5, cfg, console)
-    status_monitor.start()
     ray5.set_page_id_getter(status_monitor.get_page_id)
 else:
     _warn_placeholder_host_once()
     status_monitor = None
     ray5.set_page_id_getter(lambda: None)
-_warn_if_non_local_bind()
 
 
-def _camera_cfg() -> dict[str, Any]:
-    c = cfg.get("camera", {}) if isinstance(cfg.get("camera"), dict) else {}
+def start_runtime() -> None:
+    global runtime_started
+    with app_state_lock:
+        if runtime_started:
+            return
+        active_monitor = status_monitor
+        runtime_started = True
+    _warn_if_non_local_bind()
+    _ensure_watch_thread()
+    if active_monitor is not None:
+        try:
+            active_monitor.start()
+        except Exception as exc:
+            console.add("error", f"Status monitor start failed: {exc}")
+    else:
+        _warn_placeholder_host_once()
+
+
+def stop_runtime() -> None:
+    global runtime_started
+    with app_state_lock:
+        if not runtime_started:
+            return
+        active_monitor = status_monitor
+        runtime_started = False
+    _stop_watch_thread()
+    if active_monitor is not None:
+        try:
+            active_monitor.stop()
+        except Exception as exc:
+            console.add("warn", f"Status monitor stop warning: {exc}")
+
+
+def _camera_cfg(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    if config is None:
+        with app_state_lock:
+            config = cfg
+    c = config.get("camera", {}) if isinstance(config.get("camera"), dict) else {}
     return {
         "enabled": bool(c.get("enabled", False)),
+        "video_enabled": bool(c.get("video_enabled", True)),
         "url": str(c.get("url") or c.get("stream_url") or "").strip(),
         "snapshot_url": str(c.get("snapshot_url") or "").strip(),
         "proxy_enabled": bool(c.get("proxy_enabled", True)),
@@ -322,10 +399,13 @@ def setup_page() -> str:
 @app.get("/api/status")
 def api_status() -> Any:
     global _last_logged_status_source, _status_error_logged
-    st_cfg = cfg.get("status", {}) if isinstance(cfg.get("status"), dict) else {}
+    with app_state_lock:
+        active_cfg = cfg
+        active_monitor = status_monitor
+    st_cfg = active_cfg.get("status", {}) if isinstance(active_cfg.get("status"), dict) else {}
     prefer_live = bool(st_cfg.get("prefer_live_status", True))
     synthetic_fallback = bool(st_cfg.get("synthetic_fallback_enabled", True))
-    monitor_status = status_monitor.get_latest_status() if (status_monitor and prefer_live) else None
+    monitor_status = active_monitor.get_latest_status() if (active_monitor and prefer_live) else None
     live_fresh = bool(monitor_status and not monitor_status.get("stale", True))
     if not _is_ray5_host_configured():
         state = "NOT_CONFIGURED"
@@ -376,8 +456,8 @@ def api_status() -> Any:
         feed = None
         spindle = None
         raw_status = ""
-        ws_connected = bool(status_monitor.is_connected()) if status_monitor else False
-        ws_page_id = status_monitor.get_page_id() if status_monitor else None
+        ws_connected = bool(active_monitor.is_connected()) if active_monitor else False
+        ws_page_id = active_monitor.get_page_id() if active_monitor else None
         last_error = None
         alarm_message = None
         online = ws_connected if synthetic_fallback else False
@@ -392,7 +472,7 @@ def api_status() -> Any:
             _status_error_logged = True
     else:
         _status_error_logged = False
-    cam = _camera_cfg()
+    cam = _camera_cfg(active_cfg)
     cam_url = cam["url"]
     cam_scheme = (urlsplit(cam_url).scheme or "").lower() if cam_url else ""
     cam_masked = mask_camera_url(cam_url) if cam["mask_credentials"] else cam_url
@@ -412,8 +492,8 @@ def api_status() -> Any:
             "raw_status": raw_status,
             "status_source": source,
             "position_source": "live_websocket" if source == "live_websocket" else ("cache" if source == "cache" else ("synthetic" if source == "synthetic" else "unknown")),
-            "ray5_host": cfg.get("ray5", {}).get("host"),
-            "ray5_port": cfg.get("ray5", {}).get("port"),
+            "ray5_host": active_cfg.get("ray5", {}).get("host"),
+            "ray5_port": active_cfg.get("ray5", {}).get("port"),
             "mainboard_online": online,
             "machine_state_label": "Connected / status estimated" if source in {"cache", "synthetic"} else state,
             "position_reliable": source == "live_websocket",
@@ -422,7 +502,8 @@ def api_status() -> Any:
             "last_error": last_error,
             "alarm_message": alarm_message,
             "camera_enabled": cam["enabled"],
-            "camera_preview_supported": bool(cam["enabled"] and cam["proxy_enabled"] and cam_url),
+            "camera_video_enabled": cam["video_enabled"],
+            "camera_preview_supported": bool(cam["enabled"] and cam["video_enabled"] and cam["proxy_enabled"] and cam_url),
             "camera_proxy_path": cam["proxy_path"],
             "camera_url_masked": cam_masked,
             "camera_scheme": cam_scheme,
@@ -432,7 +513,9 @@ def api_status() -> Any:
 
 @app.get("/api/status/debug")
 def api_status_debug() -> Any:
-    if status_monitor is None:
+    with app_state_lock:
+        active_monitor = status_monitor
+    if active_monitor is None:
         return jsonify(
             {
                 "monitor_exists": False,
@@ -450,7 +533,7 @@ def api_status_debug() -> Any:
                 "last_error": None,
             }
         )
-    return jsonify(status_monitor.get_debug_info())
+    return jsonify(active_monitor.get_debug_info())
 
 
 @app.get("/api/console")
@@ -462,6 +545,63 @@ def api_console() -> Any:
 def api_console_clear() -> Any:
     console.clear()
     return jsonify({"ok": True})
+
+
+@app.post("/api/console/command")
+def api_console_command() -> Any:
+    blocked = _require_ray5_configured()
+    if blocked:
+        return blocked
+    console_cfg = cfg.get("console", {}) if isinstance(cfg.get("console"), dict) else {}
+    if not bool(console_cfg.get("raw_command_enabled", True)):
+        return jsonify({"ok": False, "message": "Raw console commands are disabled in Settings."}), 403
+    body = request.get_json(silent=True) or {}
+    command = str(body.get("command", "")).strip()
+    if not command:
+        return jsonify({"ok": False, "message": "Command cannot be empty."}), 400
+
+    cmd_upper = command.upper()
+    if cmd_upper in {"CTRL-X", "CTRLX", "^X", "\\X18", "0X18", "SOFT_RESET"}:
+        command_to_send = "\x18"
+    else:
+        command_to_send = command
+
+    console.add("info", f"Raw command requested: {command}")
+    result = ray5.send_gcode(command_to_send)
+    ok = bool(result.get("ok"))
+    if ok:
+        console.add("info", "Raw command result: ok")
+    else:
+        console.add("error", f"Raw command failed: {result.get('message') or result.get('raw') or 'unknown'}")
+    return jsonify(
+        {
+            "ok": ok,
+            "message": "Command sent" if ok else (result.get("message") or "Command failed"),
+            "command": command,
+            "result": result,
+        }
+    )
+
+
+@app.get("/api/camera/video-enabled")
+def api_camera_video_enabled_get() -> Any:
+    cam = _camera_cfg()
+    return jsonify({"ok": True, "enabled": bool(cam["video_enabled"])})
+
+
+@app.post("/api/camera/video-enabled")
+def api_camera_video_enabled_post() -> Any:
+    body = request.get_json(silent=True) or {}
+    enabled = bool(body.get("enabled", True))
+    current = cfg_mgr.load()
+    cam = current.get("camera", {}) if isinstance(current.get("camera"), dict) else {}
+    cam["video_enabled"] = enabled
+    current["camera"] = cam
+    cfg_mgr.save(current)
+    reload_components()
+    msg = "Camera video enabled." if enabled else "Camera video disabled."
+    console.add("info", msg)
+    return jsonify({"ok": True, "enabled": enabled, "message": msg})
 
 
 @app.get("/camera/stream")
@@ -489,17 +629,17 @@ def camera_snapshot() -> Any:
 def api_camera_test() -> Any:
     cam = _camera_cfg()
     if not cam["enabled"]:
-        return jsonify({"ok": False, "error": "camera disabled"})
+        return jsonify({"ok": False, "message": "Camera test failed: camera disabled."})
     if not cam["url"]:
-        return jsonify({"ok": False, "error": "camera URL not configured"})
+        return jsonify({"ok": False, "message": "Camera test failed: camera URL not configured."})
     cap = cv2.VideoCapture(cam["url"])
     try:
         if not cap.isOpened():
-            return jsonify({"ok": False, "error": "camera open failed"})
+            return jsonify({"ok": False, "message": "Camera test failed: camera open failed."})
         ok, frame = cap.read()
         if not ok or frame is None:
-            return jsonify({"ok": False, "error": "camera read failed"})
-        return jsonify({"ok": True})
+            return jsonify({"ok": False, "message": "Camera test failed: camera read failed."})
+        return jsonify({"ok": True, "message": "Camera test passed."})
     finally:
         cap.release()
 
@@ -976,6 +1116,9 @@ def api_preset_move() -> Any:
 
 @app.post("/api/laser/off")
 def api_laser_off() -> Any:
+    guard = _require_ray5_configured()
+    if guard:
+        return guard
     console.add("warn", "Laser off requested")
     result = ray5.laser_off()
     console.add("warn", f"Laser off result: {'ok' if result.get('ok') else 'fail'}")
@@ -1366,14 +1509,21 @@ if __name__ == "__main__":
     c = cfg_mgr.ensure_config()
     try:
         removed = 0
-        if bool(cfg.get("camera", {}).get("auto_cleanup_on_start", True)):
-            removed = camera.cleanup_snapshots(mode="startup", keep_latest=False)
+        with app_state_lock:
+            active_cfg = cfg
+            active_camera = camera
+        if bool(active_cfg.get("camera", {}).get("auto_cleanup_on_start", True)):
+            removed = active_camera.cleanup_snapshots(mode="startup", keep_latest=False)
             console.add("info", f"[CAMERA] Cleanup removed {removed} old image(s)")
-        if bool(cfg.get("camera", {}).get("auto_capture_on_start", False)):
-            p = camera.capture("startup")
+        if bool(active_cfg.get("camera", {}).get("auto_capture_on_start", False)):
+            p = active_camera.capture("startup")
             console.add("info", f"[CAMERA] Startup snapshot saved: {p.name}")
     except Exception as exc:
         console.add("warn", f"Startup camera capture skipped: {exc}")
-    _ensure_watch_thread()
-    _warn_if_non_local_bind()
-    app.run(host=str(c.get("web_ui", {}).get("host", "127.0.0.1")), port=int(c.get("web_ui", {}).get("port", 5050)), debug=bool(c.get("web_ui", {}).get("debug", False)))
+    start_runtime()
+    app.run(
+        host=str(c.get("web_ui", {}).get("host", "127.0.0.1")),
+        port=int(c.get("web_ui", {}).get("port", 5050)),
+        debug=bool(c.get("web_ui", {}).get("debug", False)),
+        use_reloader=False,
+    )

@@ -1,7 +1,7 @@
 <img width="1600" height="2301" alt="ray5_dashboard_github_demo" src="https://github.com/user-attachments/assets/12c1ba5d-8ceb-4b87-aa7b-f083c6fd7aa0" />
 <img width="1600" height="5340" alt="ray5_settings_github_demo" src="https://github.com/user-attachments/assets/f0df8dcb-9d3f-4788-a0ab-e66fc432d360" />
 
-# Ray5 Pilot v1.0.1
+# Ray5 Pilot v1.0.2
 
 A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-style HTTP/WebSocket interface.
 
@@ -22,6 +22,11 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Camera deskew/postprocess/rotation/source-offset alignment settings
 - Camera Overlay Alignment card with source X/Y offset explanations
 - Live Console with smart auto-scroll
+- Send commands through the web/manual console area
+- Enable/Disable Video button near the camera controls
+- Setting support so video can default to enabled or disabled
+- Disabled-video placeholder when camera preview is turned off
+- Dashboard/settings UI cleanup and layout refinements
 - Settings page with expanded descriptions and examples
 - 3D-printer G-code rejection safety scanner
 - Optional sanitized Ray5 diagnostic endpoints
@@ -87,6 +92,21 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - config.json is local/private and is not committed.
 - config.example.json is only a template.
 - Old LightBurn TCP bridge behavior is intentionally not included.
+
+## v1.0.2
+- Added send-command support through the web/manual console area.
+- Added Enable Video / Disable Video button near camera controls.
+- Added setting support so dashboard video can default to enabled or disabled.
+- Added disabled-video placeholder behavior for cleaner dashboard presentation.
+- Added dashboard/settings UI cleanup and layout refinements.
+- Added missing Ray5-host configured guard to `/api/laser/off`.
+- Improved G-code bounds parsing so `M5`, `M9`, and `S0` no longer permanently suppress later valid motion.
+- Added `G2/G3` arc awareness and arc-bounds warnings where bounds are approximated.
+- Improved camera capture temp-file safety with collision-safe temp filenames and cleanup in `finally`.
+- Improved watched-folder duplicate detection with stronger signatures, including SHA256, so changed same-name/same-size files are not skipped.
+- Reduced background-thread/global-state race risk with shared app-state locking and safer runtime start/reload/stop behavior.
+- Avoided starting watcher/status threads on module import.
+- Improved watcher/status monitor lifecycle safety to reduce duplicate background threads during reloads.
 
 ## v1.0.1
 - Added expanded Settings page descriptions and examples.

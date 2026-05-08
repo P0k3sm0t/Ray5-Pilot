@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "C:\Users\jmden\OneDrive\Documents\GitHub\Ray5 Pilot Using"
+cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" (
   echo Creating virtual environment...

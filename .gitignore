@@ -12,8 +12,10 @@ camera_captures/
 snapshots/
 imported_jobs/*
 watched_gcode/*
+rejected_jobs/*
 !imported_jobs/.gitkeep
 !watched_gcode/.gitkeep
+!rejected_jobs/.gitkeep
 !logs/.gitkeep
 *.tmp
 .DS_Store
