@@ -89,51 +89,30 @@
 
     function px(v){ return Number(v).toFixed(1); }
 
-    function draw(){
-      const r = img.getBoundingClientRect();
-      ov.setAttribute('width', r.width);
-      ov.setAttribute('height', r.height);
-      ov.innerHTML = '';
-      points.forEach((p, i) => {
-        const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        c.setAttribute('cx', p.x);
-        c.setAttribute('cy', p.y);
-        c.setAttribute('r', 6);
-        c.setAttribute('fill', '#ef4444');
-        c.setAttribute('stroke', '#fff');
-        c.setAttribute('stroke-width', '1.5');
-        ov.appendChild(c);
-        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        t.setAttribute('x', p.x + 9);
-        t.setAttribute('y', p.y - 9);
-        t.setAttribute('fill', '#fff');
-        t.setAttribute('font-size', '13');
-        t.textContent = String(i+1);
-        ov.appendChild(t);
-      });
-    }
-
     function renderPoints(){
       for(let i=0;i<4;i++){
         if(points[i]) pointEls[i].textContent = `${px(points[i].x)}, ${px(points[i].y)}`;
         else pointEls[i].textContent = 'not set';
       }
-      draw();
+      redrawScaled();
     }
 
     function toNaturalPoint(clientX, clientY){
       const r = img.getBoundingClientRect();
       if(!r.width || !r.height || !img.naturalWidth || !img.naturalHeight) return null;
+      const displayX = Math.min(Math.max(clientX - r.left, 0), r.width);
+      const displayY = Math.min(Math.max(clientY - r.top, 0), r.height);
       const sx = img.naturalWidth / r.width;
       const sy = img.naturalHeight / r.height;
       return {
-        x: (clientX - r.left) * sx,
-        y: (clientY - r.top) * sy,
+        x: displayX * sx,
+        y: displayY * sy,
       };
     }
 
     function fromNaturalPoint(p){
       const r = img.getBoundingClientRect();
+      if(!r.width || !r.height || !img.naturalWidth || !img.naturalHeight) return { x: 0, y: 0 };
       const sx = r.width / img.naturalWidth;
       const sy = r.height / img.naturalHeight;
       return { x: p.x * sx, y: p.y * sy };
