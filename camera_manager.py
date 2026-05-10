@@ -261,12 +261,19 @@ class CameraManager:
 
     def _create_corrected_from_raw(self) -> dict[str, Any]:
         deskew = self.camera.get("deskew", {}) if isinstance(self.camera.get("deskew"), dict) else {}
+        post = self.camera.get("postprocess", {}) if isinstance(self.camera.get("postprocess"), dict) else {}
         image = cv2.imread(str(self.latest_raw_path))
         if image is None:
             self.latest_path.write_bytes(self.latest_raw_path.read_bytes())
             return {"deskew_applied": False, "postprocess_applied": False}
         deskew_applied = False
         postprocess_applied = False
+        source_area_scale_applied = False
+        requested_scale = float(post.get("scale", 1.0) or 1.0)
+        scale = requested_scale
+        if scale <= 0:
+            self.log.warning("[CAMERA] Invalid postprocess scale=%s, clamping to 1.0", requested_scale)
+            scale = 1.0
         if bool(deskew.get("enabled", False)):
             source_points = deskew.get("source_points", [])
             self.log.info("[CAMERA] Deskew enabled")
@@ -281,6 +288,32 @@ class CameraManager:
                     src_points[:, 0] = src_points[:, 0] + src_off_x
                     src_points[:, 1] = src_points[:, 1] + src_off_y
                     self.log.info("[CAMERA] Adjusted deskew points: count=%s", len(src_points))
+                if scale != 1.0:
+                    source_expand = 1.0 / scale
+                    src_center = np.mean(src_points, axis=0)
+                    src_points = src_center + (src_points - src_center) * source_expand
+                    source_area_scale_applied = True
+                    self.log.info(
+                        "[CAMERA] Source-area scale applied: postprocess.scale=%s source_expand=%s",
+                        scale,
+                        source_expand,
+                    )
+                    raw_h, raw_w = image.shape[:2]
+                    min_x = float(np.min(src_points[:, 0]))
+                    max_x = float(np.max(src_points[:, 0]))
+                    min_y = float(np.min(src_points[:, 1]))
+                    max_y = float(np.max(src_points[:, 1]))
+                    if min_x < 0 or min_y < 0 or max_x > raw_w or max_y > raw_h:
+                        self.log.warning(
+                            "[CAMERA] Source-area scale points exceed raw bounds: "
+                            "bounds=(%.2f,%.2f)-(%.2f,%.2f) raw=%sx%s",
+                            min_x,
+                            min_y,
+                            max_x,
+                            max_y,
+                            raw_w,
+                            raw_h,
+                        )
                 out_w, out_h = self._parse_deskew_output_size(deskew.get("output_size", [1200, 1200]))
                 self.log.info("[CAMERA] Deskew output size: %sx%s", out_w, out_h)
                 dst_points = np.array(
@@ -298,14 +331,13 @@ class CameraManager:
         else:
             self.log.info("[CAMERA] Deskew skipped: enabled=false")
         try:
-            image, postprocess_applied = self._apply_postprocess(image)
+            image, postprocess_applied = self._apply_postprocess(image, skip_scale=source_area_scale_applied)
         except Exception as exc:
             self.log.warning("[CAMERA] Postprocess failed, using deskewed image as latest.jpg: %s", exc)
         try:
             image = self._apply_overlay_alignment(image)
         except Exception as exc:
             self.log.warning("[CAMERA] Overlay alignment failed, keeping unaligned image: %s", exc)
-        post = self.camera.get("postprocess", {}) if isinstance(self.camera.get("postprocess"), dict) else {}
         if bool(post.get("overlay_guides", {}).get("enabled", False)):
             image = self._draw_overlay_guides(image)
             self.log.info("[CAMERA] Overlay guides drawn")
@@ -347,12 +379,16 @@ class CameraManager:
         )
         return aligned
 
-    def _apply_postprocess(self, image: Any) -> tuple[Any, bool]:
+    def _apply_postprocess(self, image: Any, skip_scale: bool = False) -> tuple[Any, bool]:
         post = self.camera.get("postprocess", {}) if isinstance(self.camera.get("postprocess"), dict) else {}
         if not bool(post.get("enabled", False)):
             return image, False
         final_w, final_h = self._parse_deskew_output_size(post.get("final_size", [1200, 1200]), default=(1200, 1200))
-        scale = float(post.get("scale", 1.0))
+        requested_scale = float(post.get("scale", 1.0))
+        scale = requested_scale
+        if scale <= 0:
+            self.log.warning("[CAMERA] Invalid postprocess scale=%s, clamping to 1.0", requested_scale)
+            scale = 1.0
         crop_margin = int(post.get("center_crop_margin", 0))
         rotate_degrees_raw = int(post.get("rotate_degrees", 0))
         rotate_degrees = rotate_degrees_raw
@@ -363,14 +399,46 @@ class CameraManager:
             rotate_degrees = 0
         rot_label = {0: "0 (none)", 90: "90 degrees CCW", 180: "180 degrees", 270: "270 degrees CCW / 90 degrees CW"}[rotate_degrees]
         self.log.info("[CAMERA] Processed overlay rotation: %s", rot_label)
-        if scale != 1.0:
-            h, w = image.shape[:2]
-            scaled_w = int(w * scale)
-            scaled_h = int(h * scale)
-            image = cv2.resize(image, (scaled_w, scaled_h), interpolation=cv2.INTER_LINEAR)
-            start_x = max((scaled_w - final_w) // 2, 0)
-            start_y = max((scaled_h - final_h) // 2, 0)
-            image = image[start_y:start_y + final_h, start_x:start_x + final_w]
+        if image.shape[1] != final_w or image.shape[0] != final_h:
+            image = cv2.resize(image, (final_w, final_h), interpolation=cv2.INTER_LINEAR)
+        if skip_scale:
+            self.log.info(
+                "[CAMERA] Postprocess scale skipped: source-area scaling already applied (requested=%s)",
+                requested_scale,
+            )
+        elif scale != 1.0:
+            scaled_w = max(1, int(round(final_w * scale)))
+            scaled_h = max(1, int(round(final_h * scale)))
+            scaled = cv2.resize(image, (scaled_w, scaled_h), interpolation=cv2.INTER_LINEAR)
+            if scaled_w >= final_w and scaled_h >= final_h:
+                start_x = max((scaled_w - final_w) // 2, 0)
+                start_y = max((scaled_h - final_h) // 2, 0)
+                image = scaled[start_y:start_y + final_h, start_x:start_x + final_w]
+                scale_behavior = "center-crop"
+            else:
+                canvas = np.zeros((final_h, final_w, 3), dtype=scaled.dtype)
+                paste_x = max((final_w - scaled_w) // 2, 0)
+                paste_y = max((final_h - scaled_h) // 2, 0)
+                end_x = min(paste_x + scaled_w, final_w)
+                end_y = min(paste_y + scaled_h, final_h)
+                src_w = max(0, end_x - paste_x)
+                src_h = max(0, end_y - paste_y)
+                if src_w > 0 and src_h > 0:
+                    canvas[paste_y:end_y, paste_x:end_x] = scaled[:src_h, :src_w]
+                image = canvas
+                scale_behavior = "center-pad"
+            self.log.info(
+                "[CAMERA] Postprocess scale applied: requested=%s effective=%s scaled=%sx%s behavior=%s final=%sx%s",
+                requested_scale,
+                scale,
+                scaled_w,
+                scaled_h,
+                scale_behavior,
+                final_w,
+                final_h,
+            )
+        else:
+            self.log.info("[CAMERA] Postprocess scale applied: requested=%s effective=1.0 behavior=none", requested_scale)
         if crop_margin > 0:
             h, w = image.shape[:2]
             if crop_margin * 2 < h and crop_margin * 2 < w:
