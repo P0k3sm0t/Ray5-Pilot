@@ -1,5 +1,10 @@
+#Web Ui
 <img width="1600" height="2301" alt="ray5_dashboard_github_demo" src="https://github.com/user-attachments/assets/12c1ba5d-8ceb-4b87-aa7b-f083c6fd7aa0" />
 <img width="1600" height="5340" alt="ray5_settings_github_demo" src="https://github.com/user-attachments/assets/f0df8dcb-9d3f-4788-a0ab-e66fc432d360" />
+#Overlay Preview
+<img width="1279" height="761" alt="overlay preview" src="https://github.com/user-attachments/assets/77777e23-7bee-4c1e-8914-bbff1fb05a02" />
+#Make sure output is NOT selected so it wont include the image.
+<img width="1279" height="761" alt="overlay preview 1" src="https://github.com/user-attachments/assets/7c6d36e4-194b-4501-b53d-559bb5820f51" />
 
 # Ray5 Pilot
 
