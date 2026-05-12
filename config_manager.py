@@ -117,7 +117,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "test_fire_command": "M4",
         "test_fire_s_max": 1000,
         "test_fire_power": 5,
-        "test_fire_s_value": 200,
+        "test_fire_s_value": 50,
         "test_fire_max_s_value": 500,
         "test_fire_motion_mm": 1.0,
         "test_fire_motion_axis": "X",
@@ -171,6 +171,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "synthetic_fallback_enabled": True,
         "show_status_source": True,
         "show_position_source": True,
+    },
+    "timelapse": {
+        "enabled": False,
+        "interval_seconds": 30,
+        "output_dir": "timelapse",
+        "frame_source": "processed",
+        "playback_fps": 10,
     },
     "console": {
         "raw_command_enabled": True,
@@ -247,6 +254,18 @@ class ConfigManager:
                 snap = str(camera.get("snapshot_url", "")).strip()
                 if not stream and not snap:
                     return False, "camera requires stream_url or snapshot_url when enabled"
+            timelapse = data.get("timelapse", {})
+            tl_interval = int(timelapse.get("interval_seconds", 30))
+            if tl_interval < 1:
+                return False, "timelapse.interval_seconds must be >= 1"
+            if not str(timelapse.get("output_dir", "timelapse")).strip():
+                return False, "timelapse.output_dir cannot be empty"
+            tl_source = str(timelapse.get("frame_source", "processed")).strip().lower()
+            if tl_source not in {"processed", "raw"}:
+                return False, "timelapse.frame_source must be 'processed' or 'raw'"
+            tl_fps = float(timelapse.get("playback_fps", 10) or 10)
+            if tl_fps < 1 or tl_fps > 60:
+                return False, "timelapse.playback_fps must be between 1 and 60"
             return True, "ok"
         except Exception as exc:
             return False, str(exc)

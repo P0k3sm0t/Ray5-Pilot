@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -22,7 +24,6 @@ from ray5_client import Ray5Client
 from ray5_status_monitor import Ray5StatusMonitor
 
 BASE_DIR = Path(__file__).resolve().parent
-APP_VERSION = "1.0.3"
 app = Flask(__name__, template_folder=str(BASE_DIR / "web" / "templates"), static_folder=str(BASE_DIR / "web" / "static"))
 
 cfg_mgr = ConfigManager(BASE_DIR)
@@ -41,6 +42,29 @@ _placeholder_host_warned = False
 _placeholder_api_warned = False
 app_state_lock = RLock()
 runtime_started = False
+timelapse_lock = RLock()
+timelapse_stop_event = threading.Event()
+timelapse_thread: threading.Thread | None = None
+timelapse_state: dict[str, Any] = {
+    "enabled": False,
+    "armed": False,
+    "active": False,
+    "paused": False,
+    "stopping": False,
+    "error": "",
+    "job_name": "",
+    "job_source": "",
+    "control_mode": "",
+    "started_at": None,
+    "last_snapshot_at": None,
+    "interval_seconds": 30,
+    "playback_fps": 10.0,
+    "output_dir": "timelapse",
+    "snapshot_count": 0,
+    "session_dir": "",
+    "session_id": "",
+    "status": "Disabled",
+}
 console.add("info", f"CONFIG PATH: {cfg_mgr.config_path}")
 console.add("info", f"CONFIG EXISTS: {cfg_mgr.config_path.exists()}")
 console.add("info", f"RAY5 HOST: {cfg.get('ray5', {}).get('host', '')}")
@@ -370,6 +394,10 @@ def stop_runtime() -> None:
             active_monitor.stop()
         except Exception as exc:
             console.add("warn", f"Status monitor stop warning: {exc}")
+    try:
+        _timelapse_stop_internal(reason="runtime_stop")
+    except Exception as exc:
+        console.add("warn", f"Timelapse stop warning: {exc}")
 
 
 def _camera_cfg(config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -389,6 +417,364 @@ def _camera_cfg(config: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
+def _timelapse_cfg(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    if config is None:
+        with app_state_lock:
+            config = cfg
+    tl = config.get("timelapse", {}) if isinstance(config.get("timelapse"), dict) else {}
+    source = str(tl.get("frame_source", "processed") or "processed").strip().lower()
+    if source not in {"processed", "raw"}:
+        source = "processed"
+    playback_fps = float(tl.get("playback_fps", 10) or 10)
+    if playback_fps < 1:
+        playback_fps = 1.0
+    if playback_fps > 60:
+        playback_fps = 60.0
+    return {
+        "enabled": bool(tl.get("enabled", False)),
+        "interval_seconds": max(1, int(tl.get("interval_seconds", 30) or 30)),
+        "output_dir": str(tl.get("output_dir", "timelapse") or "timelapse").strip() or "timelapse",
+        "frame_source": source,
+        "playback_fps": playback_fps,
+    }
+
+
+def _timelapse_output_dir(config: dict[str, Any] | None = None) -> Path:
+    tl = _timelapse_cfg(config)
+    out = (BASE_DIR / tl["output_dir"]).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def _timelapse_status_label(state: dict[str, Any]) -> str:
+    if not bool(state.get("enabled", False)):
+        return "Disabled"
+    if bool(state.get("stopping", False)):
+        return "Stopping"
+    if bool(state.get("active", False)) and bool(state.get("paused", False)):
+        return "Paused"
+    if bool(state.get("active", False)):
+        return "Running"
+    if bool(state.get("armed", False)):
+        return "Armed"
+    if str(state.get("error", "")).strip():
+        return "Error"
+    return "Stopped"
+
+
+def _timelapse_refresh_enabled() -> None:
+    tl = _timelapse_cfg()
+    with timelapse_lock:
+        timelapse_state["enabled"] = bool(tl["enabled"])
+        timelapse_state["interval_seconds"] = int(tl["interval_seconds"])
+        timelapse_state["playback_fps"] = float(tl["playback_fps"])
+        timelapse_state["output_dir"] = str(tl["output_dir"])
+        timelapse_state["frame_source"] = str(tl["frame_source"])
+        timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+
+
+def _timelapse_snapshot_state() -> dict[str, Any]:
+    _timelapse_refresh_enabled()
+    with timelapse_lock:
+        state = dict(timelapse_state)
+        state["status"] = _timelapse_status_label(state)
+        return state
+
+
+def _timelapse_normalize_state(machine_state: str) -> str:
+    raw = str(machine_state or "").strip()
+    if not raw:
+        return ""
+    base = raw.split(":", 1)[0].strip().lower()
+    if base == "run":
+        return "Run"
+    if base == "hold":
+        return "Hold"
+    if base == "idle":
+        return "Idle"
+    if base == "alarm":
+        return "Alarm"
+    if base == "door":
+        return "Door"
+    if base == "sleep":
+        return "Sleep"
+    return raw
+
+
+def _timelapse_is_terminal_state(machine_state: str, online: bool) -> bool:
+    if not online:
+        return True
+    s = _timelapse_normalize_state(machine_state).lower()
+    if not s:
+        return False
+    return s in {"idle", "alarm", "door", "sleep", "unknown", "not_configured"}
+
+
+def _build_timelapse_video(session_dir: Path, output_file: Path, fps: float) -> tuple[bool, str]:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return False, "ffmpeg not found; frames kept without video build"
+    pattern = str(session_dir / "frame_%06d.jpg")
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-framerate",
+        f"{fps:.3f}",
+        "-i",
+        pattern,
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        str(output_file),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _timelapse_session_id_from_video_name(filename: str) -> str:
+    name = str(filename or "").strip()
+    m = re.search(r"_(\d{8}_\d{6})\.[A-Za-z0-9]+$", name)
+    return m.group(1) if m else ""
+
+
+def _timelapse_worker() -> None:
+    while not timelapse_stop_event.is_set():
+        with timelapse_lock:
+            active = bool(timelapse_state.get("active", False))
+            paused = bool(timelapse_state.get("paused", False))
+            interval = max(1, int(timelapse_state.get("interval_seconds", 30) or 30))
+            session_dir_str = str(timelapse_state.get("session_dir", ""))
+            snap_count = int(timelapse_state.get("snapshot_count", 0))
+            frame_source = str(timelapse_state.get("frame_source", "processed") or "processed").strip().lower()
+        if not active:
+            break
+        if paused:
+            if timelapse_stop_event.wait(0.25):
+                break
+            continue
+        try:
+            if frame_source not in {"processed", "raw"}:
+                frame_source = "processed"
+            console.add("info", f"Timelapse frame source: {frame_source}")
+            frame_bytes = camera.capture_timelapse_frame(frame_source)
+            session_dir = Path(session_dir_str) if session_dir_str else _timelapse_output_dir() / "session_unspecified"
+            session_dir.mkdir(parents=True, exist_ok=True)
+            snap_count += 1
+            frame_target = session_dir / f"frame_{snap_count:06d}.jpg"
+            frame_target.write_bytes(frame_bytes)
+            with timelapse_lock:
+                timelapse_state["snapshot_count"] = snap_count
+                timelapse_state["last_snapshot_at"] = time.time()
+            console.add("info", f"Timelapse frame captured: {frame_target.name}")
+        except Exception as exc:
+            with timelapse_lock:
+                timelapse_state["error"] = str(exc)
+            console.add("warn", f"Timelapse capture warning: {exc}")
+        if timelapse_stop_event.wait(interval):
+            break
+
+
+def _timelapse_start_internal(reason: str, job_name: str = "", job_source: str = "") -> dict[str, Any]:
+    _timelapse_refresh_enabled()
+    tl = _timelapse_cfg()
+    if not tl["enabled"]:
+        with timelapse_lock:
+            timelapse_state["enabled"] = False
+            timelapse_state["armed"] = False
+            timelapse_state["active"] = False
+            timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+        return {"ok": False, "message": "Timelapse is disabled in Settings."}
+    with timelapse_lock:
+        if reason == "manual" and bool(timelapse_state.get("armed", False)) and not bool(timelapse_state.get("active", False)):
+            return {
+                "ok": False,
+                "message": "Timelapse is armed for a job. Press Stop Timelapse to cancel or wait for Run.",
+            }
+        if timelapse_state.get("active"):
+            return {"ok": True, "message": "Timelapse already running."}
+        timelapse_state["enabled"] = True
+        timelapse_state["armed"] = False
+        timelapse_state["active"] = True
+        timelapse_state["paused"] = False
+        timelapse_state["stopping"] = False
+        timelapse_state["error"] = ""
+        timelapse_state["job_name"] = job_name or str(timelapse_state.get("job_name", ""))
+        timelapse_state["job_source"] = job_source or str(timelapse_state.get("job_source", ""))
+        if reason == "manual":
+            timelapse_state["control_mode"] = "manual"
+        else:
+            current_mode = str(timelapse_state.get("control_mode", "")).strip().lower()
+            timelapse_state["control_mode"] = "job" if current_mode != "manual" else "manual"
+        timelapse_state["interval_seconds"] = int(tl["interval_seconds"])
+        timelapse_state["playback_fps"] = float(tl["playback_fps"])
+        timelapse_state["output_dir"] = str(tl["output_dir"])
+        timelapse_state["started_at"] = time.time()
+        timelapse_state["last_snapshot_at"] = None
+        timelapse_state["snapshot_count"] = 0
+        out_dir = _timelapse_output_dir()
+        session_id = time.strftime("%Y%m%d_%H%M%S")
+        session_name = f"session_{session_id}"
+        session_dir = out_dir / session_name
+        session_dir.mkdir(parents=True, exist_ok=True)
+        timelapse_state["session_dir"] = str(session_dir)
+        timelapse_state["session_id"] = session_id
+        timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+    timelapse_stop_event.clear()
+    global timelapse_thread
+    timelapse_thread = threading.Thread(target=_timelapse_worker, name="timelapse-worker", daemon=True)
+    timelapse_thread.start()
+    console.add("info", f"Timelapse capture interval: {tl['interval_seconds']}s")
+    console.add("info", f"Timelapse playback FPS: {tl['playback_fps']}")
+    console.add("info", f"Timelapse started ({reason}) interval={tl['interval_seconds']}s")
+    return {"ok": True, "message": "Timelapse started."}
+
+
+def _timelapse_stop_internal(reason: str) -> dict[str, Any]:
+    with timelapse_lock:
+        was_active = bool(timelapse_state.get("active", False))
+        was_armed = bool(timelapse_state.get("armed", False))
+        timelapse_state["stopping"] = was_active
+    if not was_active and not was_armed:
+        with timelapse_lock:
+            timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+        return {"ok": True, "message": "Timelapse already stopped."}
+    timelapse_stop_event.set()
+    global timelapse_thread
+    th = timelapse_thread
+    join_timeout = max(10.0, float(getattr(camera, "timeout_seconds", 15.0)) + 10.0)
+    if th and th.is_alive():
+        th.join(timeout=join_timeout)
+    if th and th.is_alive():
+        with timelapse_lock:
+            timelapse_state["stopping"] = False
+            timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+        console.add("warn", "Timelapse stop timeout: capture is still in progress; keeping current session active.")
+        return {
+            "ok": False,
+            "message": "Timelapse stop is waiting for an in-progress capture to finish. Try Stop again in a few seconds.",
+        }
+    timelapse_thread = None
+    with timelapse_lock:
+        session_dir_str = str(timelapse_state.get("session_dir", ""))
+        session_id = str(timelapse_state.get("session_id", "")).strip()
+        snap_count = int(timelapse_state.get("snapshot_count", 0))
+        interval = max(1, int(timelapse_state.get("interval_seconds", 30) or 30))
+        playback_fps = max(1.0, min(60.0, float(timelapse_state.get("playback_fps", 10) or 10)))
+        job_name = str(timelapse_state.get("job_name", ""))
+    built_video = ""
+    build_message = ""
+    cleaned_session = ""
+    if session_dir_str and snap_count > 0:
+        session_dir = Path(session_dir_str)
+        out_dir = _timelapse_output_dir()
+        stamp = session_id or time.strftime("%Y%m%d_%H%M%S")
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", job_name).strip("_") if job_name else ""
+        video_name = f"timelapse_{safe_name}_{stamp}.mp4" if safe_name else f"timelapse_{stamp}.mp4"
+        output_file = out_dir / video_name
+        fps = playback_fps
+        ok, err = _build_timelapse_video(session_dir, output_file, fps)
+        if ok and output_file.exists():
+            built_video = output_file.name
+            try:
+                session_dir_res = session_dir.resolve()
+                out_dir_res = out_dir.resolve()
+                if (
+                    session_dir_res.exists()
+                    and session_dir_res.is_dir()
+                    and out_dir_res in session_dir_res.parents
+                    and session_dir_res.name.startswith("session_")
+                ):
+                    shutil.rmtree(session_dir_res)
+                    cleaned_session = session_dir_res.name
+                    console.add("info", f"Timelapse session folder cleaned: {cleaned_session}")
+            except Exception as exc:
+                console.add("warn", f"Timelapse session cleanup warning: {exc}")
+        elif err:
+            build_message = err
+            console.add("warn", f"Timelapse video build warning: {err}")
+    with timelapse_lock:
+        timelapse_state["active"] = False
+        timelapse_state["paused"] = False
+        timelapse_state["armed"] = False
+        timelapse_state["stopping"] = False
+        timelapse_state["job_name"] = ""
+        timelapse_state["job_source"] = ""
+        timelapse_state["control_mode"] = ""
+        timelapse_state["session_dir"] = ""
+        timelapse_state["session_id"] = ""
+        timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+    msg = "Timelapse stopped."
+    if built_video:
+        msg = f"Timelapse stopped. Video saved: {built_video}"
+    elif snap_count <= 0:
+        msg = "Timelapse stopped. No frames were captured."
+    elif build_message:
+        msg = f"Timelapse stopped. Frames captured, but video was not built: {build_message}"
+    console.add("info", f"Timelapse stopped ({reason})")
+    return {"ok": True, "message": msg, "video": built_video, "cleaned_session": cleaned_session}
+
+
+def _timelapse_arm(job_name: str, job_source: str) -> dict[str, Any]:
+    _timelapse_refresh_enabled()
+    tl = _timelapse_cfg()
+    if not tl["enabled"]:
+        return {"ok": False, "message": "Timelapse disabled; not armed."}
+    with timelapse_lock:
+        if timelapse_state.get("active"):
+            return {"ok": True, "message": "Timelapse already running."}
+        timelapse_state["enabled"] = True
+        timelapse_state["armed"] = True
+        timelapse_state["paused"] = False
+        timelapse_state["stopping"] = False
+        timelapse_state["error"] = ""
+        timelapse_state["job_name"] = str(job_name or "")
+        timelapse_state["job_source"] = str(job_source or "")
+        timelapse_state["control_mode"] = "job"
+        timelapse_state["interval_seconds"] = int(tl["interval_seconds"])
+        timelapse_state["playback_fps"] = float(tl["playback_fps"])
+        timelapse_state["output_dir"] = str(tl["output_dir"])
+        timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+    console.add("info", f"Timelapse armed source={job_source} job={job_name}")
+    return {"ok": True, "message": "Timelapse armed."}
+
+
+def _timelapse_observe_machine_state(machine_state: str, online: bool) -> None:
+    state_now = _timelapse_snapshot_state()
+    if not state_now.get("enabled", False):
+        return
+    control_mode = str(state_now.get("control_mode", "")).strip().lower()
+    if not control_mode:
+        if state_now.get("armed", False):
+            control_mode = "job"
+        elif state_now.get("active", False):
+            control_mode = "manual"
+    if state_now.get("active", False) and control_mode == "manual":
+        return
+    normalized_state = _timelapse_normalize_state(machine_state)
+    if control_mode == "job" and state_now.get("armed", False) and normalized_state == "Run":
+        _timelapse_start_internal(reason="auto", job_name=str(state_now.get("job_name", "")), job_source=str(state_now.get("job_source", "")))
+        return
+    if control_mode == "job" and state_now.get("active", False):
+        if normalized_state == "Hold":
+            with timelapse_lock:
+                if not timelapse_state.get("paused", False):
+                    timelapse_state["paused"] = True
+                    timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+            return
+        if normalized_state == "Run":
+            with timelapse_lock:
+                if timelapse_state.get("paused", False):
+                    timelapse_state["paused"] = False
+                    timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+            return
+    if control_mode == "job" and state_now.get("active", False) and _timelapse_is_terminal_state(normalized_state, online):
+        _timelapse_stop_internal(reason=f"state={machine_state or 'unknown'}")
+
+
 @app.get("/")
 def dashboard() -> str:
     return render_template("index.html")
@@ -397,11 +783,6 @@ def dashboard() -> str:
 @app.get("/setup")
 def setup_page() -> str:
     return render_template("setup.html")
-
-
-@app.get("/api/version")
-def api_version() -> Any:
-    return jsonify({"ok": True, "name": "Ray5 Pilot", "version": APP_VERSION})
 
 
 @app.get("/api/status")
@@ -484,6 +865,8 @@ def api_status() -> Any:
     cam_url = cam["url"]
     cam_scheme = (urlsplit(cam_url).scheme or "").lower() if cam_url else ""
     cam_masked = mask_camera_url(cam_url) if cam["mask_credentials"] else cam_url
+    _timelapse_observe_machine_state(str(state), bool(online))
+    tl_state = _timelapse_snapshot_state()
     return jsonify(
         {
             "ok": True,
@@ -516,6 +899,7 @@ def api_status() -> Any:
             "camera_proxy_path": cam["proxy_path"],
             "camera_url_masked": cam_masked,
             "camera_scheme": cam_scheme,
+            "timelapse_state": tl_state,
         }
     )
 
@@ -784,6 +1168,122 @@ def api_snapshots_download(filename: str) -> Any:
         return jsonify({"ok": False, "error": str(exc)}), 404
 
 
+@app.get("/api/timelapses")
+def api_timelapses() -> Any:
+    out_dir = _timelapse_output_dir()
+    allowed = {".mp4", ".webm", ".mov", ".avi"}
+    items: list[dict[str, Any]] = []
+    for p in sorted(out_dir.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True):
+        if not p.is_file() or p.suffix.lower() not in allowed:
+            continue
+        s = p.stat()
+        items.append(
+            {
+                "name": p.name,
+                "filename": p.name,
+                "size_bytes": int(s.st_size),
+                "modified": float(s.st_mtime),
+                "url": f"/api/timelapses/open/{p.name}",
+            }
+        )
+    return jsonify({"ok": True, "items": items})
+
+
+@app.get("/api/timelapse/state")
+def api_timelapse_state() -> Any:
+    return jsonify({"ok": True, "state": _timelapse_snapshot_state()})
+
+
+@app.post("/api/timelapse/start")
+def api_timelapse_start() -> Any:
+    body = request.get_json(silent=True) or {}
+    job_name = str(body.get("job_name", "")).strip()
+    job_source = str(body.get("job_source", "manual")).strip() or "manual"
+    result = _timelapse_start_internal(reason="manual", job_name=job_name, job_source=job_source)
+    status_code = 200 if result.get("ok") else 400
+    return jsonify(result | {"state": _timelapse_snapshot_state()}), status_code
+
+
+@app.post("/api/timelapse/stop")
+def api_timelapse_stop() -> Any:
+    result = _timelapse_stop_internal(reason="manual")
+    return jsonify(result | {"state": _timelapse_snapshot_state()})
+
+
+@app.get("/api/timelapses/open/<path:filename>")
+def api_timelapses_open(filename: str) -> Any:
+    out_dir = _timelapse_output_dir()
+    p = (out_dir / str(filename or "")).resolve()
+    if out_dir not in p.parents:
+        return jsonify({"ok": False, "error": "invalid timelapse path"}), 400
+    if not p.exists() or not p.is_file():
+        return jsonify({"ok": False, "error": "timelapse not found"}), 404
+    if p.suffix.lower() not in {".mp4", ".webm", ".mov", ".avi"}:
+        return jsonify({"ok": False, "error": "unsupported timelapse file type"}), 400
+    return send_file(str(p), as_attachment=False, download_name=p.name)
+
+
+@app.post("/api/timelapses/delete")
+def api_timelapses_delete() -> Any:
+    body = request.get_json(silent=True) or {}
+    filenames = body.get("filenames")
+    if not isinstance(filenames, list) or not filenames:
+        return jsonify({"ok": False, "message": "filenames must be a non-empty list"}), 400
+    out_dir = _timelapse_output_dir()
+    allowed = {".mp4", ".webm", ".mov", ".avi"}
+    deleted: list[str] = []
+    deleted_sessions: list[str] = []
+    failed: list[dict[str, str]] = []
+    for raw in filenames:
+        name = str(raw or "").strip()
+        if not name:
+            failed.append({"filename": "", "error": "Empty filename."})
+            continue
+        lower = name.lower()
+        if ".." in name or name.startswith("/") or "\\" in name or lower.startswith("http://") or lower.startswith("https://") or Path(name).is_absolute():
+            failed.append({"filename": name, "error": "Invalid filename."})
+            continue
+        p = (out_dir / name).resolve()
+        if out_dir not in p.parents:
+            failed.append({"filename": name, "error": "Path traversal is not allowed."})
+            continue
+        if p.suffix.lower() not in allowed:
+            failed.append({"filename": name, "error": "Unsupported timelapse file type."})
+            continue
+        if not p.exists():
+            failed.append({"filename": name, "error": "File not found."})
+            continue
+        if not p.is_file():
+            failed.append({"filename": name, "error": "Only files can be deleted."})
+            continue
+        try:
+            p.unlink()
+            deleted.append(p.name)
+            console.add("info", f"Deleted timelapse: {p.name}")
+            session_id = _timelapse_session_id_from_video_name(p.name)
+            if session_id:
+                session_dir = (out_dir / f"session_{session_id}").resolve()
+                try:
+                    if (
+                        session_dir.exists()
+                        and session_dir.is_dir()
+                        and out_dir.resolve() in session_dir.parents
+                        and session_dir.name.startswith("session_")
+                    ):
+                        shutil.rmtree(session_dir)
+                        deleted_sessions.append(session_dir.name)
+                        console.add("info", f"Deleted timelapse session folder: {session_dir.name}")
+                except OSError as exc:
+                    failed.append({"filename": name, "error": f"Video deleted, session folder delete failed: {exc}"})
+        except OSError as exc:
+            failed.append({"filename": name, "error": str(exc)})
+    if failed:
+        msg = f"Deleted {len(deleted)} timelapse file(s), {len(failed)} failed."
+        return jsonify({"ok": False, "deleted": deleted, "deleted_sessions": deleted_sessions, "failed": failed, "message": msg}), 207
+    msg = f"Deleted {len(deleted)} timelapse file(s)."
+    return jsonify({"ok": True, "deleted": deleted, "deleted_sessions": deleted_sessions, "failed": [], "message": msg})
+
+
 @app.get("/api/jobs")
 def api_jobs() -> Any:
     return jsonify({"ok": True, "jobs": jobs.list_jobs()})
@@ -1039,7 +1539,10 @@ def api_jobs_start() -> Any:
     machine_filename = str(upload_detail.get("upload_filename") or filename)
     ok, resp = ray5.start_file(machine_filename)
     console.add("info", f"Start result {filename}: {'ok' if ok else 'fail'} {str(resp)[:120]}")
-    return jsonify({"ok": ok, "response": resp, "upload_ok": upload_ok, "upload": upload_detail, "run_filename": machine_filename})
+    timelapse_arm = None
+    if ok:
+        timelapse_arm = _timelapse_arm(job_name=filename, job_source="imported")
+    return jsonify({"ok": ok, "response": resp, "upload_ok": upload_ok, "upload": upload_detail, "run_filename": machine_filename, "timelapse_arm": timelapse_arm})
 
 
 @app.delete("/api/jobs/<path:filename>")
@@ -1050,6 +1553,58 @@ def api_jobs_delete(filename: str) -> Any:
         return jsonify({"ok": True})
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/imported-files/delete")
+def api_imported_files_delete() -> Any:
+    body = request.get_json(silent=True) or {}
+    filenames = body.get("filenames")
+    if not isinstance(filenames, list) or not filenames:
+        return jsonify({"ok": False, "message": "filenames must be a non-empty list"}), 400
+
+    deleted: list[str] = []
+    failed: list[dict[str, str]] = []
+
+    for raw_name in filenames:
+        filename = str(raw_name or "").strip()
+        if not filename:
+            failed.append({"filename": "", "error": "Empty filename."})
+            continue
+        if Path(filename).is_absolute():
+            failed.append({"filename": filename, "error": "Absolute paths are not allowed."})
+            continue
+        try:
+            p = jobs.safe_imported_path(filename)
+        except ValueError:
+            failed.append({"filename": filename, "error": "Invalid imported job path."})
+            continue
+
+        try:
+            rel = p.resolve().relative_to(jobs.imported_dir.resolve())
+        except ValueError:
+            failed.append({"filename": filename, "error": "Path escapes imported jobs folder."})
+            continue
+        if rel.parts and rel.parts[0] == "..":
+            failed.append({"filename": filename, "error": "Path traversal is not allowed."})
+            continue
+        if not p.exists():
+            failed.append({"filename": filename, "error": "File not found."})
+            continue
+        if not p.is_file():
+            failed.append({"filename": filename, "error": "Only files can be deleted."})
+            continue
+        try:
+            p.unlink()
+            deleted.append(p.name)
+            console.add("info", f"Deleted imported job: {p.name}")
+        except OSError as exc:
+            failed.append({"filename": filename, "error": str(exc)})
+
+    if failed:
+        msg = f"Deleted {len(deleted)} imported file(s), {len(failed)} failed."
+        return jsonify({"ok": False, "deleted": deleted, "failed": failed, "message": msg}), 207
+    msg = f"Deleted {len(deleted)} imported file(s)."
+    return jsonify({"ok": True, "deleted": deleted, "failed": [], "message": msg})
 
 
 @app.post("/api/home")
@@ -1169,7 +1724,7 @@ def api_test_fire() -> Any:
         body = request.get_json(silent=True) or {}
         req_power = int(body.get("power", safety.get("test_fire_power", 1)))
         req_duration_ms = int(body.get("duration_ms", safety.get("test_fire_duration_ms", 100)))
-        req_s_value = int(body.get("s_value", safety.get("test_fire_s_value", 200)))
+        req_s_value = int(body.get("s_value", safety.get("test_fire_s_value", 50)))
         max_power = int(safety.get("test_fire_max_power", 12))
         max_duration_ms = int(safety.get("test_fire_max_duration_ms", 5000))
         max_s_value = int(safety.get("test_fire_max_s_value", 500))
@@ -1398,7 +1953,10 @@ def api_files_start() -> Any:
     console.add("info", f"SD start requested file={filename}")
     result = ray5.start_sd_file(str(selected.get("path") or filename))
     console.add("info", f"SD start {'ok' if result.get('ok') else 'fail'} file={filename}")
-    return jsonify(result)
+    timelapse_arm = None
+    if result.get("ok"):
+        timelapse_arm = _timelapse_arm(job_name=filename, job_source="sd")
+    return jsonify(result | {"timelapse_arm": timelapse_arm})
 
 
 @app.post("/api/files/upload")
@@ -1480,6 +2038,114 @@ def api_files_delete() -> Any:
 @app.post("/api/files/delete")
 def api_files_delete_post() -> Any:
     return api_files_delete()
+
+
+@app.post("/api/sd-files/delete")
+def api_sd_files_delete() -> Any:
+    guard = _require_ray5_configured()
+    if guard:
+        return guard
+    body = request.get_json(silent=True) or {}
+    req_path = str(body.get("path", cfg.get("ray5", {}).get("sd_path", "/")) or "/")
+    files_in = body.get("files")
+    filenames = body.get("filenames")
+
+    requested: list[dict[str, str]] = []
+    if isinstance(files_in, list):
+        for item in files_in:
+            if isinstance(item, dict):
+                requested.append(
+                    {
+                        "name": str(item.get("name", "")).strip(),
+                        "path": str(item.get("path", "")).strip(),
+                    }
+                )
+    elif isinstance(filenames, list):
+        for name in filenames:
+            requested.append({"name": str(name or "").strip(), "path": ""})
+    else:
+        return jsonify({"ok": False, "message": "files or filenames must be a non-empty list"}), 400
+
+    if not requested:
+        return jsonify({"ok": False, "message": "files or filenames must be a non-empty list"}), 400
+
+    listing = ray5.list_files(path=req_path)
+    if not listing.get("ok"):
+        return jsonify({"ok": False, "message": "Unable to validate files from SD listing", "raw": listing.get("error", "")}), 400
+
+    listed_files = listing.get("files", []) if isinstance(listing.get("files"), list) else []
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    by_path: dict[str, dict[str, Any]] = {}
+    for f in listed_files:
+        nm = str(f.get("name", "")).strip()
+        pth = str(f.get("path", "")).strip()
+        if nm:
+            by_name.setdefault(nm, []).append(f)
+        if pth:
+            by_path[pth] = f
+
+    deleted: list[str] = []
+    failed: list[dict[str, str]] = []
+
+    def _invalid_target(val: str) -> bool:
+        low = val.lower()
+        return (
+            not val
+            or ".." in val
+            or low.startswith("http://")
+            or low.startswith("https://")
+            or "\\" in val
+            or re.match(r"^[a-zA-Z]:", val) is not None
+        )
+
+    for item in requested:
+        name = str(item.get("name", "")).strip()
+        req_item_path = str(item.get("path", "")).strip()
+        if _invalid_target(name):
+            failed.append({"filename": name or "", "path": req_item_path, "error": "Invalid filename."})
+            continue
+        if req_item_path and _invalid_target(req_item_path):
+            failed.append({"filename": name, "path": req_item_path, "error": "Invalid file path."})
+            continue
+
+        selected = None
+        if req_item_path:
+            selected = by_path.get(req_item_path)
+        if selected is None:
+            candidates = by_name.get(name, [])
+            selected = candidates[0] if len(candidates) == 1 else None
+        if selected is None:
+            failed.append({"filename": name, "path": req_item_path, "error": "File not found on SD list."})
+            continue
+        if not bool(selected.get("can_delete", False)) or bool(selected.get("is_directory", False)):
+            failed.append({"filename": name, "path": str(selected.get("path", req_item_path or "")), "error": "Selected entry cannot be deleted."})
+            continue
+
+        sd_target = str(selected.get("path") or selected.get("name") or "").strip()
+        if _invalid_target(sd_target):
+            failed.append({"filename": name, "path": sd_target, "error": "Unsafe SD target path."})
+            continue
+
+        console.add("warn", f"SD batch delete requested file={name} path={sd_target}")
+        result = ray5.delete_sd_file(sd_target)
+        if result.get("ok"):
+            deleted.append(str(selected.get("name") or name))
+            console.add("warn", f"SD batch delete ok file={name}")
+        else:
+            failed.append(
+                {
+                    "filename": name,
+                    "path": sd_target,
+                    "error": str(result.get("message") or "File not found or delete failed."),
+                }
+            )
+            console.add("warn", f"SD batch delete fail file={name}")
+
+    if failed:
+        msg = f"Deleted {len(deleted)} SD file(s), {len(failed)} failed."
+        return jsonify({"ok": False, "deleted": deleted, "failed": failed, "message": msg}), 207
+    msg = f"Deleted {len(deleted)} SD file(s)."
+    return jsonify({"ok": True, "deleted": deleted, "failed": [], "message": msg})
 
 
 @app.post("/api/files/refresh")
@@ -1622,9 +2288,32 @@ def api_config_post() -> Any:
     ok, msg = cfg_mgr.validate(body)
     if not ok:
         return jsonify({"ok": False, "error": msg}), 400
+    timelapse_cfg = body.get("timelapse", {}) if isinstance(body.get("timelapse"), dict) else {}
+    disable_timelapse = bool(timelapse_cfg) and (timelapse_cfg.get("enabled") is False)
+    pre_save_notice = ""
+    if disable_timelapse:
+        state = _timelapse_snapshot_state()
+        if bool(state.get("active", False)):
+            stop_result = _timelapse_stop_internal(reason="config_disable")
+            pre_save_notice = str(stop_result.get("message", "")).strip()
+            if not stop_result.get("ok"):
+                return jsonify({"ok": False, "error": pre_save_notice or "Unable to disable timelapse while capture is active."}), 409
+        elif bool(state.get("armed", False)):
+            with timelapse_lock:
+                timelapse_state["armed"] = False
+                timelapse_state["paused"] = False
+                timelapse_state["stopping"] = False
+                timelapse_state["job_name"] = ""
+                timelapse_state["job_source"] = ""
+                timelapse_state["control_mode"] = ""
+                timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+            pre_save_notice = "Timelapse armed state canceled because timelapse was disabled in Settings."
+
     cfg_mgr.save(body)
     reload_components()
     console.add("info", "Config saved")
+    if pre_save_notice:
+        return jsonify({"ok": True, "message": pre_save_notice})
     return jsonify({"ok": True})
 
 

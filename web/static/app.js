@@ -22,11 +22,26 @@ function shortDate(ts){
   return new Date(n*1000).toLocaleString([], {year:'2-digit', month:'numeric', day:'numeric', hour:'numeric', minute:'2-digit'});
 }
 
+function normalizeName(name){
+  return String(name || '').trim();
+}
+
 let consoleAutoScroll = true;
 const consoleBottomThreshold = 40;
 let cameraActivePath = '';
 const cameraPlaceholderPath = '/static/camera_placeholder.svg';
 let cameraVideoEnabled = true;
+let cameraDisplayMode = 'placeholder'; // live | placeholder | timelapse
+const selectedImportedJobs = new Set();
+let lastImportedJobs = [];
+const selectedTimelapseFiles = new Set();
+let currentTimelapseItems = [];
+let timelapseRuntimeState = null;
+
+function setTimelapseMessage(message){
+  const msg = document.getElementById('timelapseMsg');
+  if(msg) msg.textContent = String(message || '');
+}
 
 function isConsoleNearBottom(el){
   if(!el) return true;
@@ -76,15 +91,25 @@ async function refreshStatus(){
   `;
 
   const cam=document.getElementById('cam');
+  const timelapsePlayer = document.getElementById('timelapsePlayer');
   const msg=document.getElementById('camMsg');
   const off=document.getElementById('cameraOffline');
   const statusLine=document.getElementById('cameraStatusLine');
   const cameraStatus=document.getElementById('cameraStatus');
   const videoToggleBtn = document.getElementById('camVideoToggle');
   cameraVideoEnabled = (d.camera_video_enabled !== false);
+  if(d.timelapse_state){
+    timelapseRuntimeState = d.timelapse_state;
+    updateTimelapseRuntimeUi();
+  }
   if(videoToggleBtn) videoToggleBtn.textContent = cameraVideoEnabled ? 'Disable Video' : 'Enable Video';
 
   const showPlaceholder = (text) => {
+    if(timelapsePlayer){
+      timelapsePlayer.pause();
+      timelapsePlayer.removeAttribute('src');
+      timelapsePlayer.style.display='none';
+    }
     cam.removeAttribute('src');
     cameraActivePath = '';
     cam.src = cameraPlaceholderPath;
@@ -94,26 +119,55 @@ async function refreshStatus(){
     if(msg) msg.textContent = text;
     if(statusLine) statusLine.textContent = text;
     if(cameraStatus) cameraStatus.textContent = text;
+    cameraDisplayMode = 'placeholder';
   };
+
+  const showLive = (path) => {
+    if(timelapsePlayer){
+      timelapsePlayer.pause();
+      timelapsePlayer.removeAttribute('src');
+      timelapsePlayer.style.display='none';
+    }
+    cam.style.display='block';
+    cam.style.opacity='1';
+    if(cameraActivePath !== path || !cam.getAttribute('src')){
+      cameraActivePath = path;
+      cam.src = cameraActivePath + '?_=' + Date.now();
+    }
+    if(off) off.style.display='none';
+    cameraDisplayMode = 'live';
+  };
+
+  if(cameraDisplayMode === 'timelapse'){
+    if(cam) cam.style.display='none';
+    if(timelapsePlayer) timelapsePlayer.style.display='block';
+    return;
+  }
 
   if(!cameraVideoEnabled){
     showPlaceholder('Camera video disabled.');
   } else if(!d.camera_configured){
     showPlaceholder('Camera not configured.');
   } else if(d.camera_preview_supported){
-    cam.style.opacity='1';
     const nextPath = (d.camera_proxy_path||'/camera/stream');
-    if(cameraActivePath !== nextPath || !cam.getAttribute('src')){
-      cameraActivePath = nextPath;
-      cam.src = cameraActivePath + '?_=' + Date.now();
-    }
+    showLive(nextPath);
     msg.textContent='Camera: '+(d.camera_url_masked||'configured');
     if(cameraStatus) cameraStatus.textContent = msg.textContent;
     if(statusLine) statusLine.textContent='Camera source: '+(d.camera_url_masked||'configured');
-    off.style.display='none';
-    cam.style.display='block';
   } else {
     showPlaceholder('Camera stream unavailable.');
+  }
+}
+
+function updateTimelapseRuntimeUi(){
+  const startBtn = document.getElementById('timelapseStart');
+  const stopBtn = document.getElementById('timelapseStop');
+  const s = timelapseRuntimeState || {};
+  if(startBtn){
+    startBtn.disabled = (!s.enabled) || !!s.active || !!s.armed;
+  }
+  if(stopBtn){
+    stopBtn.disabled = !s.active && !s.armed;
   }
 }
 
@@ -129,7 +183,8 @@ async function refreshConsole(){
   updateConsoleJumpButton();
 }
 
-async function refreshJobs(){
+async function refreshJobs(opts={}){
+  const preserveMessage = !!(opts && opts.preserveMessage);
   const d=await api('/api/jobs');
   const el=document.getElementById('jobsBody');
   const msg=document.getElementById('jobsMsg');
@@ -137,11 +192,17 @@ async function refreshJobs(){
   el.innerHTML='';
   watch.textContent = 'Watching: watched_gcode | Extensions: .gcode, .gc, .nc';
   const jobs = d.jobs||[];
+  const currentNames = new Set(jobs.map(j => String(j.name||j.filename||'')));
+  for(const name of Array.from(selectedImportedJobs)){
+    if(!currentNames.has(name)) selectedImportedJobs.delete(name);
+  }
+  lastImportedJobs = jobs;
   if(!jobs.length){
     const tr=document.createElement('tr');
-    tr.innerHTML='<td colspan="5" class="muted small">No imported jobs yet. Import a .gcode, .gc, or .nc file, or drop one into the watched folder.</td>';
+    tr.innerHTML='<td colspan="6" class="muted small">No imported jobs yet. Import a .gcode, .gc, or .nc file, or drop one into the watched folder.</td>';
     el.append(tr);
-    msg.textContent='Loaded 0 imported job(s)';
+    if(!preserveMessage) msg.textContent='Loaded 0 imported job(s)';
+    updateImportedSelectionUi();
     return;
   }
   jobs.forEach(j=>{
@@ -150,6 +211,23 @@ async function refreshJobs(){
     const size = humanSize(j.size_bytes ?? j.size);
     const name = j.name||j.filename||'unknown';
     const bounds = j.bounds;
+    const isSelected = selectedImportedJobs.has(name);
+    if(isSelected) row.classList.add('job-row-selected');
+    const selectTd = document.createElement('td');
+    selectTd.className = 'job-select-cell';
+    const selectBox = document.createElement('input');
+    selectBox.type = 'checkbox';
+    selectBox.className = 'job-select-checkbox';
+    selectBox.checked = isSelected;
+    selectBox.setAttribute('aria-label', `Select ${name}`);
+    selectBox.onclick = (ev)=>{
+      ev.stopPropagation();
+      if(selectBox.checked) selectedImportedJobs.add(name);
+      else selectedImportedJobs.delete(name);
+      row.classList.toggle('job-row-selected', selectBox.checked);
+      updateImportedSelectionUi();
+    };
+    selectTd.append(selectBox);
     const boundsHtml = (bounds && bounds.min_x!==null && bounds.min_x!==undefined)
       ? `<div class="job-bounds">X: ${bounds.min_x.toFixed(0)}-${bounds.max_x.toFixed(0)}<br>Y: ${bounds.min_y.toFixed(0)}-${bounds.max_y.toFixed(0)}</div>`
       : `<span class="muted small">Bounds unknown</span>`;
@@ -170,7 +248,7 @@ async function refreshJobs(){
       if(manualCfg.confirm_dangerous_actions && !confirm('Upload and run '+(j.name||j.filename)+' ?')) return;
       api('/api/jobs/start','POST',{filename:name}).then((r)=>{msg.textContent=r.ok?'Start command sent':'Start failed'; refreshConsole(); refreshStatus(); loadSdFiles();});
     });
-    const delBtn=btn('Delete',()=>{if(!confirm('Delete local imported job '+name+' ?')) return; fetch('/api/jobs/'+encodeURIComponent(name),{method:'DELETE'}).then(()=>{refreshJobs();refreshConsole();});});
+    const delBtn=btn('Delete',async()=>{if(!confirm('Delete local imported job '+name+' ?')) return; const res = await fetch('/api/jobs/'+encodeURIComponent(name),{method:'DELETE'}); let data={ok:false}; try{data=await res.json();}catch(_e){} msg.textContent = data.ok ? (`Deleted imported file: ${name}`) : (`Delete failed: ${data.error||'unknown'}`); await refreshJobs({preserveMessage:true}); await refreshConsole();});
     frameBtn.classList.add('btn-sm');
     uploadBtn.classList.add('btn-sm');
     runBtn.classList.add('btn-sm');
@@ -182,10 +260,267 @@ async function refreshJobs(){
       <td>${esc(mod)}</td>
       <td>${boundsHtml}</td>
     `;
+    row.prepend(selectTd);
     row.append(actions);
     el.append(row);
   });
-  msg.textContent = `Loaded ${jobs.length} imported job(s)`;
+  if(!preserveMessage) msg.textContent = `Loaded ${jobs.length} imported job(s)`;
+  updateImportedSelectionUi();
+}
+
+function updateTimelapseSelectionUi(){
+  const selectedCountEl = document.getElementById('timelapseSelectedCount');
+  const deleteBtn = document.getElementById('timelapseDeleteSelected');
+  const clearBtn = document.getElementById('timelapseClearSelection');
+  const selectAll = document.getElementById('timelapseSelectAll');
+  const selected = selectedTimelapseFiles.size;
+  const total = currentTimelapseItems.length;
+  if(selectedCountEl) selectedCountEl.textContent = `${selected} selected`;
+  if(deleteBtn) deleteBtn.disabled = selected === 0;
+  if(clearBtn) clearBtn.disabled = selected === 0;
+  if(selectAll){
+    selectAll.checked = total > 0 && selected === total;
+    selectAll.indeterminate = selected > 0 && selected < total;
+  }
+}
+
+async function setCameraVideoEnabled(enabled){
+  const r = await api('/api/camera/video-enabled','POST',{enabled: !!enabled});
+  if(r && r.ok){
+    cameraVideoEnabled = !!r.enabled;
+    const toggle = document.getElementById('camVideoToggle');
+    if(toggle) toggle.textContent = cameraVideoEnabled ? 'Disable Video' : 'Enable Video';
+  }
+  return r;
+}
+
+function stopTimelapsePlayback(showPlaceholder=true){
+  const player = document.getElementById('timelapsePlayer');
+  const cam = document.getElementById('cam');
+  if(player){
+    player.pause();
+    player.removeAttribute('src');
+    player.style.display='none';
+  }
+  if(cam) cam.style.display='block';
+  if(showPlaceholder){
+    cameraDisplayMode = 'placeholder';
+    if(cam){
+      cam.removeAttribute('src');
+      cam.src = cameraPlaceholderPath;
+    }
+    const msg = document.getElementById('camMsg');
+    if(msg) msg.textContent = 'Camera video disabled.';
+  }
+}
+
+async function playTimelapse(item){
+  const player = document.getElementById('timelapsePlayer');
+  const cam = document.getElementById('cam');
+  const msg = document.getElementById('camMsg');
+  if(!player || !cam) return;
+  await setCameraVideoEnabled(false);
+  cameraDisplayMode = 'timelapse';
+  cam.style.display='none';
+  cam.removeAttribute('src');
+  player.style.display='block';
+  player.src = item.url;
+  player.onended = ()=>{
+    stopTimelapsePlayback(true);
+  };
+  player.onerror = ()=>{
+    stopTimelapsePlayback(true);
+    if(msg) msg.textContent = 'Timelapse playback failed.';
+  };
+  try{
+    await player.play();
+  }catch(_err){
+    if(msg) msg.textContent = 'Timelapse ready. Press play.';
+  }
+  if(msg) setTimelapseMessage(`Playing timelapse: ${item.name}`);
+}
+
+async function deleteSelectedTimelapses(){
+  const names = Array.from(selectedTimelapseFiles);
+  if(!names.length) return;
+  const confirmText = names.length === 1
+    ? `Delete timelapse '${names[0]}'?`
+    : `Delete ${names.length} selected timelapse files?`;
+  if(!confirm(confirmText)) return;
+  const delBtn = document.getElementById('timelapseDeleteSelected');
+  if(delBtn) delBtn.disabled = true;
+  setTimelapseMessage('Deleting selected timelapse file(s)...');
+  try{
+    const r = await api('/api/timelapses/delete','POST',{filenames:names});
+    const failed = Array.isArray(r.failed) ? r.failed : [];
+    if(failed.length){
+      const failedNames = new Set(failed.map(f => normalizeName(f.filename)));
+      for(const n of names){
+        if(!failedNames.has(n)) selectedTimelapseFiles.delete(n);
+      }
+    }else{
+      selectedTimelapseFiles.clear();
+    }
+    setTimelapseMessage(r.message || (r.ok ? 'Deleted timelapse files.' : 'Some timelapse files failed to delete.'));
+    await loadTimelapses({preserveMessage:true});
+  }catch(err){
+    setTimelapseMessage(`Timelapse delete failed: ${String(err)}`);
+  }finally{
+    updateTimelapseSelectionUi();
+  }
+}
+
+async function loadTimelapseState(){
+  const d = await api('/api/timelapse/state');
+  if(d && d.ok){
+    timelapseRuntimeState = d.state || null;
+    updateTimelapseRuntimeUi();
+  }
+}
+
+async function startTimelapseManual(){
+  const r = await api('/api/timelapse/start','POST',{job_source:'manual'});
+  timelapseRuntimeState = r.state || timelapseRuntimeState;
+  updateTimelapseRuntimeUi();
+  setTimelapseMessage(r.message || (r.ok ? 'Timelapse started.' : 'Timelapse start failed.'));
+}
+
+async function stopTimelapseManual(){
+  const stopBtn = document.getElementById('timelapseStop');
+  setTimelapseMessage('Stopping timelapse...');
+  if(stopBtn) stopBtn.disabled = true;
+  try{
+    const r = await api('/api/timelapse/stop','POST',{});
+    timelapseRuntimeState = r.state || timelapseRuntimeState;
+    updateTimelapseRuntimeUi();
+    await loadTimelapseState();
+    await loadTimelapses({preserveMessage:true});
+    setTimelapseMessage(r.message || (r.ok ? 'Timelapse stopped.' : 'Timelapse stop failed.'));
+  }catch(err){
+    setTimelapseMessage(`Failed to stop timelapse: ${String(err)}`);
+  }finally{
+    if(stopBtn) stopBtn.disabled = !((timelapseRuntimeState && (timelapseRuntimeState.active || timelapseRuntimeState.armed)));
+  }
+}
+
+async function loadTimelapses(opts={}){
+  const preserveMessage = !!(opts && opts.preserveMessage);
+  const body = document.getElementById('timelapseBody');
+  if(!body) return;
+  if(!preserveMessage) setTimelapseMessage('Loading timelapses...');
+  body.innerHTML = '';
+  const d = await api('/api/timelapses');
+  if(!d.ok){
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="5" class="muted small">Unable to load timelapse files.</td>';
+    body.append(tr);
+    if(!preserveMessage) setTimelapseMessage(`Timelapse refresh failed: ${d.message || d.error || 'unknown'}`);
+    currentTimelapseItems = [];
+    selectedTimelapseFiles.clear();
+    updateTimelapseSelectionUi();
+    return;
+  }
+  const items = Array.isArray(d.items) ? d.items : [];
+  const liveNames = new Set(items.map(x => normalizeName(x.name || x.filename)));
+  for(const name of Array.from(selectedTimelapseFiles)){
+    if(!liveNames.has(name)) selectedTimelapseFiles.delete(name);
+  }
+  currentTimelapseItems = items.map(it => ({
+    name: normalizeName(it.name || it.filename),
+    size_bytes: Number(it.size_bytes || 0),
+    modified: Number(it.modified || 0),
+    url: String(it.url || ''),
+  })).filter(it => it.name);
+  if(!currentTimelapseItems.length){
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="5" class="muted small">No timelapse videos found.</td>';
+    body.append(tr);
+    if(!preserveMessage) setTimelapseMessage('Loaded 0 timelapse file(s).');
+    updateTimelapseSelectionUi();
+    return;
+  }
+  currentTimelapseItems.forEach(item => {
+    const row = document.createElement('tr');
+    if(selectedTimelapseFiles.has(item.name)) row.classList.add('timelapse-row-selected');
+    const selectTd = document.createElement('td');
+    selectTd.className = 'timelapse-select-cell';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = selectedTimelapseFiles.has(item.name);
+    cb.setAttribute('aria-label', `Select ${item.name}`);
+    cb.onclick = (ev)=>{
+      ev.stopPropagation();
+      if(cb.checked) selectedTimelapseFiles.add(item.name);
+      else selectedTimelapseFiles.delete(item.name);
+      row.classList.toggle('timelapse-row-selected', cb.checked);
+      updateTimelapseSelectionUi();
+    };
+    selectTd.append(cb);
+    const actions = document.createElement('td');
+    const playBtn = btn('Play', ()=>playTimelapse(item));
+    playBtn.classList.add('btn-sm');
+    actions.append(playBtn);
+    row.innerHTML = `
+      <td><div class="job-file-name" title="${esc(item.name)}">${esc(item.name)}</div></td>
+      <td>${esc(humanSize(item.size_bytes))}</td>
+      <td>${esc(shortDate(item.modified))}</td>
+    `;
+    row.prepend(selectTd);
+    row.append(actions);
+    body.append(row);
+  });
+  if(!preserveMessage) setTimelapseMessage(`Loaded ${currentTimelapseItems.length} timelapse file(s).`);
+  updateTimelapseSelectionUi();
+}
+
+function updateImportedSelectionUi(){
+  const selectedCountEl = document.getElementById('jobsSelectedCount');
+  const deleteBtn = document.getElementById('jobsDeleteSelected');
+  const clearBtn = document.getElementById('jobsClearSelection');
+  const selectAll = document.getElementById('jobsSelectAll');
+  const selected = selectedImportedJobs.size;
+  const total = lastImportedJobs.length;
+  if(selectedCountEl) selectedCountEl.textContent = `${selected} selected`;
+  if(deleteBtn) deleteBtn.disabled = selected === 0;
+  if(clearBtn) clearBtn.disabled = selected === 0;
+  if(selectAll){
+    selectAll.checked = total > 0 && selected === total;
+    selectAll.indeterminate = selected > 0 && selected < total;
+  }
+}
+
+async function deleteSelectedImportedJobs(){
+  const names = Array.from(selectedImportedJobs);
+  if(!names.length) return;
+  const confirmText = names.length === 1
+    ? `Delete imported file '${names[0]}'?`
+    : `Delete ${names.length} selected imported files?`;
+  if(!confirm(confirmText)) return;
+  const msg=document.getElementById('jobsMsg');
+  const deleteBtn=document.getElementById('jobsDeleteSelected');
+  if(deleteBtn) deleteBtn.disabled = true;
+  msg.textContent = 'Deleting selected imported files...';
+  try{
+    const result = await api('/api/imported-files/delete','POST',{filenames:names});
+    const failed = Array.isArray(result.failed) ? result.failed : [];
+    const deleted = Array.isArray(result.deleted) ? result.deleted : [];
+    if(failed.length){
+      const failedNames = new Set(failed.map(x => String((x && x.filename) || '')));
+      for(const name of names){
+        if(!failedNames.has(name)) selectedImportedJobs.delete(name);
+      }
+      msg.textContent = result.message || `Deleted ${deleted.length} imported file(s), ${failed.length} failed.`;
+    }else{
+      selectedImportedJobs.clear();
+      msg.textContent = result.message || `Deleted ${deleted.length} imported file(s).`;
+    }
+    await refreshJobs({preserveMessage:true});
+    await refreshConsole();
+  }catch(err){
+    msg.textContent = `Delete selected failed: ${String(err)}`;
+  }finally{
+    updateImportedSelectionUi();
+  }
 }
 
 async function loadSnapshots(){
@@ -224,6 +559,31 @@ let currentSdPath = '/';
 let sdPreviewSupported = false;
 let sdEnableStart = true;
 let sdEnableDelete = true;
+const selectedSdFiles = new Map();
+let currentSdFiles = [];
+
+function sdFileKey(file){
+  const name = String((file && file.name) || '').trim();
+  const path = String((file && file.path) || '').trim();
+  return `${path}|${name}`;
+}
+
+function updateSdSelectionUi(){
+  const selectedCountEl = document.getElementById('sdSelectedCount');
+  const deleteBtn = document.getElementById('sdDeleteSelected');
+  const clearBtn = document.getElementById('sdClearSelection');
+  const selectAll = document.getElementById('sdSelectAll');
+  const selected = selectedSdFiles.size;
+  const selectable = currentSdFiles.filter(f => !!f.can_delete);
+  const totalSelectable = selectable.length;
+  if(selectedCountEl) selectedCountEl.textContent = `${selected} selected`;
+  if(deleteBtn) deleteBtn.disabled = selected === 0;
+  if(clearBtn) clearBtn.disabled = selected === 0;
+  if(selectAll){
+    selectAll.checked = totalSelectable > 0 && selected === totalSelectable;
+    selectAll.indeterminate = selected > 0 && selected < totalSelectable;
+  }
+}
 
 function selectSdFile(file){
   const d = document.getElementById('sdDetails');
@@ -251,8 +611,43 @@ async function deleteSdFile(filename, path='/'){
   if(!confirm('Delete SD file '+filename+' ?')) return;
   const r = await api('/api/files/delete','POST',{filename, path});
   document.getElementById('sdMsg').textContent = r.ok ? ('Deleted: '+filename) : ('Delete failed: '+(r.message||r.error||'unknown'));
-  await loadSdFiles();
+  await loadSdFiles({preserveMessage:true});
   await refreshConsole();
+}
+
+async function deleteSelectedSdFiles(){
+  const selected = Array.from(selectedSdFiles.values());
+  if(!selected.length) return;
+  const confirmText = selected.length === 1
+    ? `Delete SD card file '${selected[0].name}'?`
+    : `Delete ${selected.length} selected SD card files?`;
+  if(!confirm(confirmText)) return;
+  const msgEl = document.getElementById('sdMsg');
+  const delBtn = document.getElementById('sdDeleteSelected');
+  if(delBtn) delBtn.disabled = true;
+  msgEl.textContent = 'Deleting selected SD file(s)...';
+  try{
+    const r = await api('/api/sd-files/delete','POST',{
+      files: selected.map(f => ({name: f.name, path: f.path})),
+      path: currentSdPath || '/',
+    });
+    const failed = Array.isArray(r.failed) ? r.failed : [];
+    if(failed.length){
+      const failedKeys = new Set(failed.map(item => `${String(item.path || '')}|${String(item.filename || item.name || '')}`));
+      for(const [k] of selectedSdFiles){
+        if(!failedKeys.has(k)) selectedSdFiles.delete(k);
+      }
+    }else{
+      selectedSdFiles.clear();
+    }
+    msgEl.textContent = r.message || (r.ok ? 'Deleted selected SD files.' : 'Some SD files could not be deleted.');
+    await loadSdFiles({preserveMessage:true});
+    await refreshConsole();
+  }catch(err){
+    msgEl.textContent = `Delete selected failed: ${String(err)}`;
+  }finally{
+    updateSdSelectionUi();
+  }
 }
 
 async function stopJob(){
@@ -280,18 +675,42 @@ function renderSdFiles(d){
     <div class="sd-storage-item"><div class="k">Status</div><div class="v">${esc(st.status||'---')}</div></div>
   `;
   const files = d.files||[];
+  currentSdFiles = files;
+  const liveKeys = new Set(files.filter(f => !!f.can_delete).map(sdFileKey));
+  for(const key of Array.from(selectedSdFiles.keys())){
+    if(!liveKeys.has(key)) selectedSdFiles.delete(key);
+  }
   if(!files.length){
     const tr=document.createElement('tr');
-    tr.innerHTML='<td colspan="5" class="sd-muted">No SD files found.</td>';
+    tr.innerHTML='<td colspan="6" class="sd-muted">No SD files found.</td>';
     filesEl.append(tr);
+    updateSdSelectionUi();
     return;
   }
   files.forEach(f=>{
     const row=document.createElement('tr');
     const name=f.name||'---';
+    const key = sdFileKey(f);
+    const selected = selectedSdFiles.has(key);
+    if(selected) row.classList.add('sd-row-selected');
     const typeLabel = f.is_directory ? 'Folder / Protected' : ((f.type||'unknown')==='gcode' ? 'G-code' : (f.type||'unknown'));
     const sizeVal = (!f.size || f.size==='-1') ? '---' : f.size;
     const modVal = (!f.modified || f.modified==='') ? '---' : f.modified;
+    const selectTd = document.createElement('td');
+    selectTd.className = 'sd-select-cell';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = selected;
+    cb.disabled = !f.can_delete;
+    cb.setAttribute('aria-label', `Select ${name}`);
+    cb.onclick = (ev)=>{
+      ev.stopPropagation();
+      if(cb.checked && f.can_delete) selectedSdFiles.set(key, {name, path: String(f.path || name)});
+      else selectedSdFiles.delete(key);
+      row.classList.toggle('sd-row-selected', cb.checked);
+      updateSdSelectionUi();
+    };
+    selectTd.append(cb);
     const actionTd = document.createElement('td');
     actionTd.className='sd-actions';
     if(sdEnableStart && f.can_start){
@@ -316,23 +735,30 @@ function renderSdFiles(d){
       <td>${esc(modVal)}</td>
       <td>${esc(typeLabel)}</td>
     `;
+    row.prepend(selectTd);
     row.append(actionTd);
-    row.onclick=(ev)=>{ if(ev.target.tagName!=='BUTTON') selectSdFile(f); };
+    row.onclick=(ev)=>{
+      const t = ev.target;
+      if(t && (t.closest('button') || t.closest('input') || t.closest('label'))) return;
+      selectSdFile(f);
+    };
     filesEl.append(row);
   });
+  updateSdSelectionUi();
 }
 
-async function loadSdFiles(){
+async function loadSdFiles(opts={}){
+  const preserveMessage = !!(opts && opts.preserveMessage);
   const msgEl = document.getElementById('sdMsg');
-  msgEl.textContent = 'Loading SD files...';
+  if(!preserveMessage) msgEl.textContent = 'Loading SD files...';
   const d = await api('/api/files?path='+encodeURIComponent(currentSdPath||'/'));
   if(!d.ok){
-    msgEl.textContent = 'SD refresh failed: '+(d.error||'unknown');
-    document.getElementById('sdFilesBody').innerHTML = '<tr><td colspan="5" class="sd-muted">Unable to load SD files.</td></tr>';
+    if(!preserveMessage) msgEl.textContent = 'SD refresh failed: '+(d.error||'unknown');
+    document.getElementById('sdFilesBody').innerHTML = '<tr><td colspan="6" class="sd-muted">Unable to load SD files.</td></tr>';
     return;
   }
   renderSdFiles(d);
-  msgEl.textContent = `Loaded ${ (d.files||[]).length } item(s).`;
+  if(!preserveMessage) msgEl.textContent = `Loaded ${ (d.files||[]).length } item(s).`;
 }
 
 let manualBusy = false;
@@ -342,7 +768,7 @@ let manualCfg = {
   test_fire_enabled: false,
   preset_enabled: true,
   preset_label: 'Go To Preset',
-  test_fire_s_value: 200,
+  test_fire_s_value: 50,
   test_fire_duration_ms: 100,
   raw_command_enabled: true,
   confirm_dangerous_raw_commands: true
@@ -446,7 +872,7 @@ async function loadManualConfig(){
       test_fire_enabled: !!(safety.test_fire_enabled ?? safety.enable_test_fire ?? false),
       preset_enabled: (mc.preset_enabled !== false),
       preset_label: String(mc.preset_label || 'Go To Preset'),
-      test_fire_s_value: Number(safety.test_fire_s_value ?? 200),
+      test_fire_s_value: Number(safety.test_fire_s_value ?? 50),
       test_fire_duration_ms: Number(safety.test_fire_duration_ms ?? 1000),
       raw_command_enabled: (consoleCfg.raw_command_enabled !== false),
       confirm_dangerous_raw_commands: (consoleCfg.confirm_dangerous_raw_commands !== false)
@@ -585,19 +1011,20 @@ function bind(){
   });
   document.getElementById('camVideoToggle').onclick=async()=>{
     const nextEnabled = !cameraVideoEnabled;
-    const r = await api('/api/camera/video-enabled','POST',{enabled: nextEnabled});
+    const r = await setCameraVideoEnabled(nextEnabled);
     if(!r.ok){
       setCameraTestStatus(`Camera video toggle failed: ${r.message || 'unknown error'}`, 'error', 10000);
       return;
     }
-    cameraVideoEnabled = !!r.enabled;
-    document.getElementById('camVideoToggle').textContent = cameraVideoEnabled ? 'Disable Video' : 'Enable Video';
     if(cameraVideoEnabled){
+      stopTimelapsePlayback(false);
+      cameraDisplayMode = 'live';
       const path = cameraActivePath || '/camera/stream';
       cam.removeAttribute('src');
       cam.src = path + '?_=' + Date.now();
       setCameraTestStatus('Camera video enabled.', 'ok', 8000);
     }else{
+      stopTimelapsePlayback(true);
       cam.removeAttribute('src');
       cameraActivePath = '';
       cam.src = cameraPlaceholderPath;
@@ -636,6 +1063,58 @@ function bind(){
     }
   };
   document.getElementById('jobsRefresh').onclick=refreshJobs;
+  const timelapseRefresh = document.getElementById('timelapseRefresh');
+  if(timelapseRefresh) timelapseRefresh.onclick = loadTimelapses;
+  const timelapseStart = document.getElementById('timelapseStart');
+  if(timelapseStart) timelapseStart.onclick = startTimelapseManual;
+  const timelapseStop = document.getElementById('timelapseStop');
+  if(timelapseStop) timelapseStop.onclick = stopTimelapseManual;
+  const timelapseSelectAll = document.getElementById('timelapseSelectAll');
+  if(timelapseSelectAll){
+    timelapseSelectAll.onchange = ()=>{
+      if(timelapseSelectAll.checked){
+        selectedTimelapseFiles.clear();
+        currentTimelapseItems.forEach(item=>selectedTimelapseFiles.add(item.name));
+      }else{
+        selectedTimelapseFiles.clear();
+      }
+      loadTimelapses();
+    };
+  }
+  const timelapseClearSelection = document.getElementById('timelapseClearSelection');
+  if(timelapseClearSelection){
+    timelapseClearSelection.onclick = ()=>{
+      selectedTimelapseFiles.clear();
+      loadTimelapses();
+    };
+  }
+  const timelapseDeleteSelected = document.getElementById('timelapseDeleteSelected');
+  if(timelapseDeleteSelected){
+    timelapseDeleteSelected.onclick = deleteSelectedTimelapses;
+  }
+  const selectAllJobs = document.getElementById('jobsSelectAll');
+  if(selectAllJobs){
+    selectAllJobs.onchange = ()=>{
+      if(selectAllJobs.checked){
+        selectedImportedJobs.clear();
+        lastImportedJobs.forEach(j => selectedImportedJobs.add(String(j.name||j.filename||'')));
+      }else{
+        selectedImportedJobs.clear();
+      }
+      refreshJobs();
+    };
+  }
+  const clearSelectionBtn = document.getElementById('jobsClearSelection');
+  if(clearSelectionBtn){
+    clearSelectionBtn.onclick = ()=>{
+      selectedImportedJobs.clear();
+      refreshJobs();
+    };
+  }
+  const deleteSelectedBtn = document.getElementById('jobsDeleteSelected');
+  if(deleteSelectedBtn){
+    deleteSelectedBtn.onclick = deleteSelectedImportedJobs;
+  }
 
   document.getElementById('homeAll').onclick=()=>manualCall('/api/home',{axis:'all'});
   document.getElementById('presetMoveBtn').onclick=()=>manualCall('/api/preset-move',{},manualCfg.confirm_dangerous_actions?'Move to preset position?':'');
@@ -651,7 +1130,7 @@ function bind(){
     const confirmText = manualCfg.confirm_dangerous_actions ? 'Run low-power test fire?' : '';
     return manualCall(
       '/api/laser/test-fire',
-      {s_value: manualCfg.test_fire_s_value || 200, duration_ms: manualCfg.test_fire_duration_ms || 1000},
+      {s_value: manualCfg.test_fire_s_value || 50, duration_ms: manualCfg.test_fire_duration_ms || 1000},
       confirmText
     );
   };
@@ -699,6 +1178,33 @@ function bind(){
     });
   }
   document.getElementById('filesRefresh').onclick=loadSdFiles;
+  const sdSelectAll = document.getElementById('sdSelectAll');
+  if(sdSelectAll){
+    sdSelectAll.onchange = ()=>{
+      if(sdSelectAll.checked){
+        selectedSdFiles.clear();
+        currentSdFiles.forEach(f=>{
+          if(f.can_delete){
+            selectedSdFiles.set(sdFileKey(f), {name: String(f.name||''), path: String(f.path || f.name || '')});
+          }
+        });
+      }else{
+        selectedSdFiles.clear();
+      }
+      loadSdFiles();
+    };
+  }
+  const sdClearSelection = document.getElementById('sdClearSelection');
+  if(sdClearSelection){
+    sdClearSelection.onclick = ()=>{
+      selectedSdFiles.clear();
+      loadSdFiles();
+    };
+  }
+  const sdDeleteSelected = document.getElementById('sdDeleteSelected');
+  if(sdDeleteSelected){
+    sdDeleteSelected.onclick = deleteSelectedSdFiles;
+  }
   document.getElementById('sdUploadBtn').onclick=async()=>{
     const input = document.getElementById('sdUploadFile');
     const btnEl = document.getElementById('sdUploadBtn');
@@ -740,6 +1246,6 @@ function bind(){
 
 bind();
 loadManualConfig();
-refreshStatus();refreshJobs();loadSdFiles();refreshConsole();loadSnapshots();
+refreshStatus();refreshJobs();loadSdFiles();loadTimelapses();loadTimelapseState();refreshConsole();loadSnapshots();
 setInterval(refreshStatus,3000);
 setInterval(refreshConsole,5000);

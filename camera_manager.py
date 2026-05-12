@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import webbrowser
 from pathlib import Path
@@ -71,6 +72,7 @@ class CameraManager:
         self.latest_path = self.output_dir / self.latest_processed_name
         self.latest_instructions_path = self.output_dir / "latest_lightburn_instructions.txt"
         self.last_capture_debug: dict[str, Any] = {}
+        self._capture_lock = threading.RLock()
 
     def enabled(self) -> bool:
         return bool(self.camera.get("enabled", False))
@@ -94,57 +96,101 @@ class CameraManager:
         return str(self.camera.get("capture_method", "ffmpeg")).strip().lower()
 
     def capture(self, reason: str = "manual") -> Path:
-        self._reload_camera_config()
-        if not self.enabled():
-            raise CameraCaptureError("camera is disabled")
-        if self.cleanup_on_capture and not self.save_history:
-            self.cleanup_snapshots(mode="capture", keep_latest=False)
-        content = self._capture_bytes()
-        raw_image = Image.open(io.BytesIO(content)).convert("RGB")
-        raw_w, raw_h = raw_image.size
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        self.latest_raw_path = self.output_dir / self.latest_raw_name
-        self.latest_path = self.output_dir / self.latest_processed_name
-        raw_image.save(self.latest_raw_path, format="JPEG", quality=90)
-        self.log.info("[CAMERA] Raw snapshot saved: %s", self._camera_display_path(self.latest_raw_path))
-        self.log.info("[CAMERA] Raw image size: %sx%s", raw_w, raw_h)
-        corrected = self._create_corrected_from_raw()
-        out_path = self.latest_path
-        if self.save_history:
-            ts_processed = self.output_dir / f"{self.filename_prefix}_{ts}.jpg"
-            ts_raw = self.output_dir / f"{self.filename_prefix}_{ts}_raw.jpg"
-            raw_image.save(ts_raw, format="JPEG", quality=90)
-            if self.latest_path.exists():
-                ts_processed.write_bytes(self.latest_path.read_bytes())
-        self._write_overlay_instructions()
-        self._prune_old()
-        removed = 0
-        if not self.save_history:
-            removed = self.cleanup_snapshots(mode="capture", keep_latest=True)
-            self.log.info("[CAMERA] Cleanup removed %s old image(s)", removed)
-        processed_size = [0, 0]
-        try:
-            with Image.open(self.latest_path) as final_img:
-                processed_size = [int(final_img.size[0]), int(final_img.size[1])]
-        except Exception:
-            pass
-        self.last_capture_debug.update(
-            {
-                "reason": reason,
-                "raw_size": [int(raw_w), int(raw_h)],
-                "processed_size": processed_size,
-                "latest_raw_path": str(self.latest_raw_path),
-                "latest_path": str(self.latest_path),
-                "deskew_enabled": bool(self.camera.get("deskew", {}).get("enabled", False)),
-                "source_points_count": len(self.camera.get("deskew", {}).get("source_points", []) or []),
-                "deskew_output_size": self.camera.get("deskew", {}).get("output_size", [1200, 1200]),
-                "deskew_skip_reason": corrected.get("warning", "" if corrected.get("deskew_applied") else "enabled=false"),
-                "deskew_applied": bool(corrected.get("deskew_applied", False)),
-                "postprocess_applied": bool(corrected.get("postprocess_applied", False)),
-                "instructions_exists": self.latest_instructions_path.exists(),
-            }
-        )
-        return out_path
+        with self._capture_lock:
+            self._reload_camera_config()
+            if not self.enabled():
+                raise CameraCaptureError("camera is disabled")
+            if self.cleanup_on_capture and not self.save_history:
+                self.cleanup_snapshots(mode="capture", keep_latest=False)
+            content = self._capture_bytes()
+            raw_image = Image.open(io.BytesIO(content)).convert("RGB")
+            raw_w, raw_h = raw_image.size
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            self.latest_raw_path = self.output_dir / self.latest_raw_name
+            self.latest_path = self.output_dir / self.latest_processed_name
+            raw_image.save(self.latest_raw_path, format="JPEG", quality=90)
+            self.log.info("[CAMERA] Raw snapshot saved: %s", self._camera_display_path(self.latest_raw_path))
+            self.log.info("[CAMERA] Raw image size: %sx%s", raw_w, raw_h)
+            corrected = self._create_corrected_from_raw()
+            out_path = self.latest_path
+            if self.save_history:
+                ts_processed = self.output_dir / f"{self.filename_prefix}_{ts}.jpg"
+                ts_raw = self.output_dir / f"{self.filename_prefix}_{ts}_raw.jpg"
+                raw_image.save(ts_raw, format="JPEG", quality=90)
+                if self.latest_path.exists():
+                    ts_processed.write_bytes(self.latest_path.read_bytes())
+            self._write_overlay_instructions()
+            self._prune_old()
+            removed = 0
+            if not self.save_history:
+                removed = self.cleanup_snapshots(mode="capture", keep_latest=True)
+                self.log.info("[CAMERA] Cleanup removed %s old image(s)", removed)
+            processed_size = [0, 0]
+            try:
+                with Image.open(self.latest_path) as final_img:
+                    processed_size = [int(final_img.size[0]), int(final_img.size[1])]
+            except Exception:
+                pass
+            self.last_capture_debug.update(
+                {
+                    "reason": reason,
+                    "raw_size": [int(raw_w), int(raw_h)],
+                    "processed_size": processed_size,
+                    "latest_raw_path": str(self.latest_raw_path),
+                    "latest_path": str(self.latest_path),
+                    "deskew_enabled": bool(self.camera.get("deskew", {}).get("enabled", False)),
+                    "source_points_count": len(self.camera.get("deskew", {}).get("source_points", []) or []),
+                    "deskew_output_size": self.camera.get("deskew", {}).get("output_size", [1200, 1200]),
+                    "deskew_skip_reason": corrected.get("warning", "" if corrected.get("deskew_applied") else "enabled=false"),
+                    "deskew_applied": bool(corrected.get("deskew_applied", False)),
+                    "postprocess_applied": bool(corrected.get("postprocess_applied", False)),
+                    "instructions_exists": self.latest_instructions_path.exists(),
+                }
+            )
+            return out_path
+
+    def capture_timelapse_frame(self, source: str = "processed") -> bytes:
+        """Capture one timelapse frame and return JPEG bytes.
+
+        source=processed -> corrected overlay pipeline
+        source=raw       -> full raw camera frame only (skip deskew/postprocess)
+        """
+        selected = str(source or "processed").strip().lower()
+        if selected not in {"processed", "raw"}:
+            selected = "processed"
+
+        with self._capture_lock:
+            if selected == "processed":
+                processed_path = self.capture("timelapse")
+                return processed_path.read_bytes()
+
+            self._reload_camera_config()
+            if not self.enabled():
+                raise CameraCaptureError("camera is disabled")
+            if self.cleanup_on_capture and not self.save_history:
+                self.cleanup_snapshots(mode="capture", keep_latest=False)
+
+            content = self._capture_bytes()
+            raw_image = Image.open(io.BytesIO(content)).convert("RGB")
+            self.latest_raw_path = self.output_dir / self.latest_raw_name
+            self.latest_path = self.output_dir / self.latest_processed_name
+            raw_image.save(self.latest_raw_path, format="JPEG", quality=90)
+            self.log.info("[CAMERA] Raw snapshot saved: %s", self._camera_display_path(self.latest_raw_path))
+            self.log.info("[CAMERA] Timelapse raw mode: skipping deskew/postprocess pipeline")
+
+            if self.save_history:
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                ts_raw = self.output_dir / f"{self.filename_prefix}_{ts}_raw.jpg"
+                raw_image.save(ts_raw, format="JPEG", quality=90)
+
+            self._prune_old()
+            if not self.save_history:
+                removed = self.cleanup_snapshots(mode="capture", keep_latest=True)
+                self.log.info("[CAMERA] Cleanup removed %s old image(s)", removed)
+
+            out = io.BytesIO()
+            raw_image.save(out, format="JPEG", quality=90)
+            return out.getvalue()
 
     def _reload_camera_config(self) -> None:
         cfg_path = self.base_dir / "config.json"

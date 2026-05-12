@@ -93,6 +93,60 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - config.json is local/private and is not committed.
 - config.example.json is only a template.
 
+## v1.0.4
+
+### Added
+
+- Added multi-select file management for Imported Jobs, including Select All, Clear Selection, selected count, and Delete Selected.
+- Added multi-select file management for SD Card Files, including Select All, Clear Selection, selected count, and Delete Selected.
+- Added a full-width Timelapse dashboard card above the Video/Camera card.
+- Added Timelapse file listing, multi-select delete, selected count, and per-file Play controls.
+- Added Timelapse playback inside the existing top Video/Camera card.
+- Added Timelapse Start and Stop buttons for manual timelapse control.
+- Added Timelapse runtime state handling for manual and job-based sessions.
+- Added automatic timelapse arming for Imported Upload + Run.
+- Added automatic timelapse arming for SD Card Start.
+- Added Timelapse settings card with enable/disable, snapshot interval, playback FPS, and image source controls.
+- Added Timelapse image source option for overlay-corrected snapshots or full raw camera frames.
+- Added separate Timelapse playback FPS so capture interval and final MP4 speed are controlled independently.
+
+### Changed
+
+- Timelapse manual Start/Stop is now button-controlled and independent of printer Idle/Hold/Run state.
+- Timelapse job mode now follows Ray5 state: Run starts capture, Hold pauses capture, Run resumes capture, and Idle stops/saves.
+- Timelapse MP4 generation now uses playback FPS instead of snapshot interval as frame timing.
+- Timelapse session folders now use stable session IDs and matching video filenames.
+- Successful Timelapse MP4 builds now safely clean up the matching session frame folder.
+- Deleting Timelapse videos now also attempts to safely delete the matching session folder when a matching session ID exists.
+- Timelapse messages now use one bottom message line in the Timelapse card instead of multiple status locations.
+- Camera postprocess scaling now works as source-area scaling before deskew when deskew is enabled, preventing black borders when scaling the overlay view.
+- Camera calibration click mapping now uses displayed image bounds so embedded calibration clicks align correctly.
+- Test Fire defaults and help text now use S50 as the safe default value instead of S200.
+- Settings now preserve hidden/internal Timelapse values such as output directory instead of overwriting them during save.
+- Config example coverage was aligned with current default configuration keys.
+
+### Fixed
+
+- Fixed embedded Camera Calibration marker offset when the calibration image is resized inside the dashboard.
+- Fixed camera postprocess scale appearing to do nothing when using values below 1.0.
+- Fixed Timelapse manual sessions stopping early when the printer was Idle.
+- Fixed Timelapse Stop messages being overwritten by automatic refresh messages.
+- Fixed Timelapse delete messages being overwritten by refresh messages.
+- Fixed Imported Jobs and SD Card Files delete messages being overwritten by refresh messages.
+- Fixed Timelapse Stop handling so in-progress captures are handled more safely before building output.
+- Fixed camera capture race risk between manual snapshots and Timelapse captures by adding capture locking.
+- Fixed Timelapse disabled behavior so disabled Timelapse does not start or arm.
+- Fixed missing/default configuration inconsistencies between config manager defaults and config.example.json.
+- Fixed remaining S200 wording/fallback inconsistencies in Settings.
+
+### Notes
+
+- Timelapse must be enabled in Settings before manual or automatic Timelapse capture will run.
+- Imported Upload Only does not arm Timelapse.
+- Imported Upload + Run and SD Card Start arm Timelapse automatically when enabled.
+- Manual Start Timelapse starts capture directly and Manual Stop Timelapse stops/saves directly.
+- If ffmpeg is not available, Timelapse frames are preserved and a warning is shown instead of silently failing to build an MP4.
+
 ## v1.0.3
 - Fixed Test Fire for Ray5 screen-style stationary M4 behavior.
 - Test Fire now uses direct S-value mode and sends the command with PAGEID.

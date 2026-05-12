@@ -95,7 +95,10 @@
                     "feedrate":  3000,
                     "force_laser_off":  true,
                     "validate_bounds":  true,
-                    "clamp_to_machine_area":  true
+                    "clamp_to_machine_area":  true,
+                    "frame_feedrate":  3000,
+                    "frame_margin_mm":  2,
+                    "laser_off_during_frame":  true
                 },
     "machine":  {
                     "bed_width_mm":  390,
@@ -139,7 +142,7 @@
                    "test_fire_command":  "M4",
                    "test_fire_s_max":  1000,
                    "test_fire_power":  5,
-                   "test_fire_s_value":  200,
+                   "test_fire_s_value":  50,
                    "test_fire_max_s_value":  500,
                    "test_fire_motion_mm":  1.0,
                    "test_fire_motion_axis":  "X",
@@ -165,6 +168,13 @@
                      "enable_start":  true,
                      "enable_preview":  false
                  },
+    "timelapse":  {
+                      "enabled":  false,
+                      "interval_seconds":  30,
+                      "output_dir":  "timelapse",
+                      "frame_source":  "processed",
+                      "playback_fps":  10
+                  },
     "upload":  {
                    "preserve_original":  true,
                    "sanitize_filename":  false,
@@ -198,5 +208,9 @@
                    "synthetic_fallback_enabled":  true,
                    "show_status_source":  true,
                    "show_position_source":  true
-               }
+               },
+    "console":  {
+                    "raw_command_enabled":  true,
+                    "confirm_dangerous_raw_commands":  true
+                }
 }

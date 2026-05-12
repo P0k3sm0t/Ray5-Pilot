@@ -16,6 +16,40 @@
   <nav><a href="/">Dashboard</a><a href="/setup">Settings</a></nav>
 </header>
 <main>
+  <section id="timelapseCard" class="card timelapse-card full-width-card">
+    <div class="card-header">
+      <h2>Timelapse</h2>
+      <div class="card-actions">
+        <button id="timelapseStart">Start Timelapse</button>
+        <button id="timelapseStop" class="danger">Stop Timelapse</button>
+        <button id="timelapseRefresh">Refresh</button>
+      </div>
+    </div>
+    <div class="timelapse-selection-toolbar">
+      <label class="timelapse-select-all">
+        <input type="checkbox" id="timelapseSelectAll">
+        <span>Select All</span>
+      </label>
+      <button id="timelapseClearSelection">Clear Selection</button>
+      <button id="timelapseDeleteSelected" class="danger" disabled>Delete Selected</button>
+      <span id="timelapseSelectedCount" class="muted small">0 selected</span>
+    </div>
+    <div class="table-wrap timelapse-table-wrap">
+      <table class="timelapse-table">
+        <thead>
+          <tr>
+            <th class="timelapse-col-select">Select</th>
+            <th>File</th>
+            <th>Size</th>
+            <th>Modified</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="timelapseBody"></tbody>
+      </table>
+    </div>
+    <div id="timelapseMsg" class="muted small"></div>
+  </section>
   <section class="card video-card">
     <div class="video-card-title">
       <h2>Video / Camera</h2>
@@ -29,6 +63,7 @@
     <div id="camera-test-status" class="camera-test-status muted small"></div>
     <div class="video-frame-wrap">
       <img id="cam" class="camera-feed" src="" alt="camera stream">
+      <video id="timelapsePlayer" class="camera-feed timelapse-player" controls playsinline style="display:none;"></video>
       <div id="cameraOffline" class="camera-offline" style="display:none;">Camera unavailable</div>
     </div>
     <div id="camMsg" class="muted small"></div>
@@ -54,11 +89,21 @@
       <button id="importBtn">Import</button>
       <button id="jobsRefresh">Refresh</button>
     </div>
+    <div class="job-selection-toolbar imported-selection-toolbar">
+      <label class="jobs-select-all">
+        <input type="checkbox" id="jobsSelectAll">
+        <span>Select All</span>
+      </label>
+      <button id="jobsClearSelection">Clear Selection</button>
+      <button id="jobsDeleteSelected" class="danger" disabled>Delete Selected</button>
+      <span id="jobsSelectedCount" class="muted small">0 selected</span>
+    </div>
     <div id="jobWatchInfo" class="muted small"></div>
     <div class="table-wrap imported-jobs-table-wrap">
       <table class="jobs-table">
         <thead>
           <tr>
+            <th class="jobs-col-select">Select</th>
             <th>File</th>
             <th>Size</th>
             <th>Modified</th>
@@ -140,6 +185,15 @@
         <button id="sdUploadBtn">Upload to SD</button>
         <button id="filesRefresh">Refresh SD Files</button>
       </div>
+      <div class="sd-selection-toolbar">
+        <label class="sd-select-all">
+          <input type="checkbox" id="sdSelectAll">
+          <span>Select All</span>
+        </label>
+        <button id="sdClearSelection">Clear Selection</button>
+        <button id="sdDeleteSelected" class="danger" disabled>Delete Selected</button>
+        <span id="sdSelectedCount" class="sd-muted">0 selected</span>
+      </div>
       <div class="sd-upload-help sd-muted">Allowed: .gc, .nc, .gcode</div>
       <div id="sdStorage" class="sd-storage-grid"></div>
       <div class="sd-path">Path: <code id="sdPath">/</code></div>
@@ -147,6 +201,7 @@
         <table class="sd-table">
           <thead>
             <tr>
+              <th class="sd-col-select">Select</th>
               <th>Name</th>
               <th>Size</th>
               <th>Modified</th>

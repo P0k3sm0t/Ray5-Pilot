@@ -10,9 +10,11 @@ function unwrapConfigResponse(d){
 }
 let settingsLoaded = false;
 let loadedSafetyConfig = {};
+let loadedConfig = {};
 
 function load(cfg){
   cfg = cfg || {};
+  loadedConfig = cfg;
   const ray = cfg.ray5 || {};
   const web = cfg.web_ui || {};
   const cam=cfg.camera||{};
@@ -23,6 +25,7 @@ function load(cfg){
   const safety = cfg.safety || {};
   loadedSafetyConfig = {...safety};
   const sd = cfg.sd_files || {};
+  const timelapse = cfg.timelapse || {};
   const up = cfg.upload || {};
   const jc = cfg.job_control || {};
   const st = cfg.status || {};
@@ -103,7 +106,7 @@ function load(cfg){
   setVal('preset_feedrate', (mc.preset_feedrate ?? 1500), 1500);
 
   setChecked('safe_test_enable', (safety.test_fire_enabled ?? safety.enable_test_fire ?? false), false);
-  setVal('safe_s_value', (safety.test_fire_s_value ?? 200), 200);
+  setVal('safe_s_value', (safety.test_fire_s_value ?? 50), 50);
   const durMs = (safety.test_fire_duration_ms ?? Math.round((safety.test_fire_duration_seconds ?? 0.1)*1000));
   setVal('safe_dur', durMs, 1000);
   const hiddenSMax = Number(safety.test_fire_max_s_value ?? 500) || 500;
@@ -125,6 +128,10 @@ function load(cfg){
   setChecked('sd_enable_start', sd.enable_start!==false, true);
   setChecked('sd_enable_delete', sd.enable_delete!==false, true);
   setChecked('sd_enable_preview', !!sd.enable_preview, false);
+  setChecked('timelapse_enabled', !!timelapse.enabled, false);
+  setVal('timelapse_interval', Number(timelapse.interval_seconds ?? 30), 30);
+  setVal('timelapse_playback_fps', Number(timelapse.playback_fps ?? 10), 10);
+  setVal('timelapse_frame_source', String(timelapse.frame_source || 'processed'), 'processed');
 
   setChecked('upload_preserve_original', (up.preserve_original!==false), true);
   setChecked('upload_sanitize_filename', !!up.sanitize_filename, false);
@@ -253,7 +260,7 @@ function collect(){
       test_fire_power_is_percent:Boolean(loadedSafetyConfig.test_fire_power_is_percent ?? false),
       test_fire_use_direct_s_value:Boolean(loadedSafetyConfig.test_fire_use_direct_s_value ?? true),
       test_fire_command:String(loadedSafetyConfig.test_fire_command || 'M4'),
-      test_fire_s_value:Number(v('safe_s_value').value)||200,
+      test_fire_s_value:Number(v('safe_s_value').value)||50,
       test_fire_max_s_value:Number(loadedSafetyConfig.test_fire_max_s_value ?? 500)||500,
       test_fire_s_max:Number(loadedSafetyConfig.test_fire_s_max ?? 1000)||1000,
       test_fire_power:Number(loadedSafetyConfig.test_fire_power ?? 0)||0,
@@ -274,6 +281,13 @@ function collect(){
       enable_start:v('sd_enable_start').checked,
       enable_delete:v('sd_enable_delete').checked,
       enable_preview:v('sd_enable_preview').checked
+    },
+    timelapse:{
+      enabled:v('timelapse_enabled').checked,
+      interval_seconds:Math.max(1, Number(v('timelapse_interval').value)||30),
+      output_dir:String((loadedConfig.timelapse && loadedConfig.timelapse.output_dir) || 'timelapse'),
+      frame_source: ((String(v('timelapse_frame_source').value || 'processed').toLowerCase() === 'raw') ? 'raw' : 'processed'),
+      playback_fps: Math.max(1, Math.min(60, Number(v('timelapse_playback_fps').value)||10))
     },
     upload:{
       preserve_original:v('upload_preserve_original').checked,
@@ -354,8 +368,10 @@ async function init(){
     const camStream = v('cam_stream').value.trim();
     const camSnapshot = v('cam_snapshot').value.trim();
     const testDur = Number(v('safe_dur').value);
+    const timelapseInterval = Number(v('timelapse_interval').value);
+    const timelapsePlaybackFps = Number(v('timelapse_playback_fps').value);
     const hiddenDurMax = Number(loadedSafetyConfig.test_fire_max_duration_ms ?? 5000) || 5000;
-    const testS = Number(v('safe_s_value').value)||200;
+    const testS = Number(v('safe_s_value').value)||50;
     const hiddenSMax = Number(loadedSafetyConfig.test_fire_max_s_value ?? 500) || 500;
 
     if(!rayHost){ v('saveOut').textContent='Save failed: ray5 host cannot be empty'; return; }
@@ -374,6 +390,8 @@ async function init(){
     if(camEnabled && !camStream && !camSnapshot){ v('saveOut').textContent='Save failed: camera enabled requires stream or snapshot URL'; return; }
     if(testDur > hiddenDurMax){ v('saveOut').textContent='Save failed: test fire duration exceeds max duration'; return; }
     if(testS > hiddenSMax){ v('saveOut').textContent='Save failed: test fire S value exceeds max S value'; return; }
+    if(!(timelapseInterval >= 1)){ v('saveOut').textContent='Save failed: timelapse interval must be >= 1 second'; return; }
+    if(!(timelapsePlaybackFps >= 1 && timelapsePlaybackFps <= 60)){ v('saveOut').textContent='Save failed: timelapse playback FPS must be 1 to 60'; return; }
 
     const payload = collect();
     payload.safety.test_fire_duration_ms = Math.min(payload.safety.test_fire_duration_ms, payload.safety.test_fire_max_duration_ms);
