@@ -22,6 +22,7 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Imported Jobs workflow: import, frame, upload, upload + run, delete
 - Direct SD card upload
 - SD card file list, start, delete, refresh
+- Timelapse with manual start and auto start from using upload+run in imported files, or start from sd files.
 - Camera stream proxy
 - Calibrated camera snapshot overlay for LightBurn/material alignment
 - Camera deskew/postprocess/rotation/source-offset alignment settings
