@@ -1,6 +1,6 @@
 #Web Ui
-<img width="1600" height="2301" alt="ray5_dashboard_github_demo" src="https://github.com/user-attachments/assets/12c1ba5d-8ceb-4b87-aa7b-f083c6fd7aa0" />
-<img width="1600" height="5340" alt="ray5_settings_github_demo" src="https://github.com/user-attachments/assets/f0df8dcb-9d3f-4788-a0ab-e66fc432d360" />
+<img width="2200" height="2681" alt="ray5_dashboard_demo_nocut" src="https://github.com/user-attachments/assets/952c8af7-6515-4712-a038-abe9f87b6d5b" />
+<img width="2200" height="5744" alt="ray5_settings_demo_nocut" src="https://github.com/user-attachments/assets/3830e510-fd5c-4978-bf61-80d4d955680f" />
 #Overlay Preview
 <img width="1279" height="761" alt="overlay preview" src="https://github.com/user-attachments/assets/77777e23-7bee-4c1e-8914-bbff1fb05a02" />
 #Make sure output is NOT selected so it wont include the image.
