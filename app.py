@@ -560,12 +560,15 @@ def _timelapse_worker() -> None:
             if frame_source not in {"processed", "raw"}:
                 frame_source = "processed"
             console.add("info", f"Timelapse frame source: {frame_source}")
-            frame_bytes = camera.capture_timelapse_frame(frame_source)
             session_dir = Path(session_dir_str) if session_dir_str else _timelapse_output_dir() / "session_unspecified"
             session_dir.mkdir(parents=True, exist_ok=True)
+            session_dir_resolved = session_dir.resolve()
+            out_dir_resolved = _timelapse_output_dir().resolve()
+            if out_dir_resolved not in session_dir_resolved.parents and session_dir_resolved != out_dir_resolved:
+                raise RuntimeError("timelapse session directory is outside configured timelapse output directory")
             snap_count += 1
             frame_target = session_dir / f"frame_{snap_count:06d}.jpg"
-            frame_target.write_bytes(frame_bytes)
+            camera.capture_timelapse_frame_to(frame_target, source=frame_source)
             with timelapse_lock:
                 timelapse_state["snapshot_count"] = snap_count
                 timelapse_state["last_snapshot_at"] = time.time()

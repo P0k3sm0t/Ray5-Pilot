@@ -94,6 +94,15 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - config.json is local/private and is not committed.
 - config.example.json is only a template.
 
+## Ray5 screen filename note
+
+Ray5 Pilot can upload files with long filenames, but the Longer Ray5 touchscreen may not display long filenames clearly. If you want to select and run a file directly from the Ray5 screen, keep the full filename **24 characters or less, including the extension**.
+
+Example:
+
+`test_grid_390x360.gcode`  
+`large_alignment_grid_390x360_final.gcode` May upload, but may not display clearly on the Ray5 screen.
+
 ## v1.0.4
 
 ### Added

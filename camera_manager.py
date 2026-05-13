@@ -149,48 +149,30 @@ class CameraManager:
             )
             return out_path
 
-    def capture_timelapse_frame(self, source: str = "processed") -> bytes:
-        """Capture one timelapse frame and return JPEG bytes.
-
-        source=processed -> corrected overlay pipeline
-        source=raw       -> full raw camera frame only (skip deskew/postprocess)
-        """
+    def capture_timelapse_frame_to(self, dest_path: Path, source: str = "processed") -> Path:
         selected = str(source or "processed").strip().lower()
         if selected not in {"processed", "raw"}:
             selected = "processed"
 
+        dest_path = Path(dest_path)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
         with self._capture_lock:
-            if selected == "processed":
-                processed_path = self.capture("timelapse")
-                return processed_path.read_bytes()
-
             self._reload_camera_config()
             if not self.enabled():
                 raise CameraCaptureError("camera is disabled")
-            if self.cleanup_on_capture and not self.save_history:
-                self.cleanup_snapshots(mode="capture", keep_latest=False)
-
             content = self._capture_bytes()
-            raw_image = Image.open(io.BytesIO(content)).convert("RGB")
-            self.latest_raw_path = self.output_dir / self.latest_raw_name
-            self.latest_path = self.output_dir / self.latest_processed_name
-            raw_image.save(self.latest_raw_path, format="JPEG", quality=90)
-            self.log.info("[CAMERA] Raw snapshot saved: %s", self._camera_display_path(self.latest_raw_path))
-            self.log.info("[CAMERA] Timelapse raw mode: skipping deskew/postprocess pipeline")
-
-            if self.save_history:
-                ts = time.strftime("%Y%m%d_%H%M%S")
-                ts_raw = self.output_dir / f"{self.filename_prefix}_{ts}_raw.jpg"
-                raw_image.save(ts_raw, format="JPEG", quality=90)
-
-            self._prune_old()
-            if not self.save_history:
-                removed = self.cleanup_snapshots(mode="capture", keep_latest=True)
-                self.log.info("[CAMERA] Cleanup removed %s old image(s)", removed)
-
-            out = io.BytesIO()
-            raw_image.save(out, format="JPEG", quality=90)
-            return out.getvalue()
+            raw_image_pil = Image.open(io.BytesIO(content)).convert("RGB")
+            raw_np = cv2.cvtColor(np.array(raw_image_pil), cv2.COLOR_RGB2BGR)
+            if selected == "raw":
+                if not cv2.imwrite(str(dest_path), raw_np):
+                    raise CameraCaptureError(f"failed to write timelapse raw frame {dest_path}")
+            else:
+                processed_np, _, _ = self._create_corrected_from_image(raw_np)
+                if not cv2.imwrite(str(dest_path), processed_np):
+                    raise CameraCaptureError(f"failed to write timelapse processed frame {dest_path}")
+            self.log.info("[CAMERA] Timelapse frame source: %s", selected)
+            self.log.info("[CAMERA] Timelapse frame saved: %s", dest_path)
+            return dest_path
 
     def _reload_camera_config(self) -> None:
         cfg_path = self.base_dir / "config.json"
@@ -305,13 +287,11 @@ class CameraManager:
         pp = self.camera.get("postprocess", {}) if isinstance(self.camera.get("postprocess"), dict) else {}
         return float(pp.get("dpi", 101.6))
 
-    def _create_corrected_from_raw(self) -> dict[str, Any]:
+    def _create_corrected_from_image(self, image: Any) -> tuple[Any, bool, bool]:
         deskew = self.camera.get("deskew", {}) if isinstance(self.camera.get("deskew"), dict) else {}
         post = self.camera.get("postprocess", {}) if isinstance(self.camera.get("postprocess"), dict) else {}
-        image = cv2.imread(str(self.latest_raw_path))
         if image is None:
-            self.latest_path.write_bytes(self.latest_raw_path.read_bytes())
-            return {"deskew_applied": False, "postprocess_applied": False}
+            raise CameraCaptureError("raw image is empty")
         deskew_applied = False
         postprocess_applied = False
         source_area_scale_applied = False
@@ -372,14 +352,13 @@ class CameraManager:
                 self.log.info("[CAMERA] Deskew applied with source offset")
             except Exception as exc:
                 self.log.warning("[CAMERA] Deskew failed, using raw image as latest.jpg: %s", exc)
-                self.latest_path.write_bytes(self.latest_raw_path.read_bytes())
-                return {"deskew_applied": False, "postprocess_applied": False, "warning": str(exc)}
+                return image, False, False
         else:
             self.log.info("[CAMERA] Deskew skipped: enabled=false")
         try:
             image, postprocess_applied = self._apply_postprocess(image, skip_scale=source_area_scale_applied)
         except Exception as exc:
-            self.log.warning("[CAMERA] Postprocess failed, using deskewed image as latest.jpg: %s", exc)
+            self.log.warning("[CAMERA] Postprocess failed, keeping deskewed image: %s", exc)
         try:
             image = self._apply_overlay_alignment(image)
         except Exception as exc:
@@ -387,6 +366,14 @@ class CameraManager:
         if bool(post.get("overlay_guides", {}).get("enabled", False)):
             image = self._draw_overlay_guides(image)
             self.log.info("[CAMERA] Overlay guides drawn")
+        return image, deskew_applied, postprocess_applied
+
+    def _create_corrected_from_raw(self) -> dict[str, Any]:
+        image = cv2.imread(str(self.latest_raw_path))
+        if image is None:
+            self.latest_path.write_bytes(self.latest_raw_path.read_bytes())
+            return {"deskew_applied": False, "postprocess_applied": False}
+        image, deskew_applied, postprocess_applied = self._create_corrected_from_image(image)
         if not cv2.imwrite(str(self.latest_path), image):
             raise CameraCaptureError(f"failed to write final image {self.latest_path}")
         self._write_dpi_metadata(self.latest_path)
