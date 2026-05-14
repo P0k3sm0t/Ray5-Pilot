@@ -6,6 +6,25 @@ async function api(url, method='GET', body=null){
 }
 
 function fmtPos(v){return (v===null||v===undefined||v==='')?'---':v}
+function fmtNum(v, digits=3){
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(digits) : '—';
+}
+function statusAgeText(seconds){
+  const n = Number(seconds);
+  if(!Number.isFinite(n) || n < 0) return '—';
+  return `${Math.round(n)}s ago`;
+}
+function axisStatusLine(axis, wVal, mVal){
+  const w = Number(wVal);
+  const m = Number(mVal);
+  const hasW = Number.isFinite(w);
+  const hasM = Number.isFinite(m);
+  if(hasW && hasM) return `${axis}: W ${w.toFixed(3)} / M ${m.toFixed(3)}`;
+  if(hasW) return `${axis}: W ${w.toFixed(3)}`;
+  if(hasM) return `${axis}: M ${m.toFixed(3)}`;
+  return `${axis}: —`;
+}
 function esc(v){return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'","&#39;")}
 function btn(t,fn){const b=document.createElement('button');b.textContent=t;b.onclick=fn;return b}
 function fmtBounds(b){if(!b||b.min_x===undefined||b.min_x===null)return 'Bounds unknown';return `X[${b.min_x.toFixed(3)}..${b.max_x.toFixed(3)}] Y[${b.min_y.toFixed(3)}..${b.max_y.toFixed(3)}]`;}
@@ -77,17 +96,44 @@ function updateConsoleJumpButton(){
 async function refreshStatus(){
   const d=await api('/api/status');
   const mpos = d.machine_position || d.position || {};
+  const wpos = d.work_position || {};
+  const srcRaw = String(d.status_source || '').trim().toLowerCase();
+  const isOfflineFallback = srcRaw === 'offline' || srcRaw === 'fallback_offline' || srcRaw === 'synthetic' || !d.online;
+  const stateText = d.display_state || d.state_base || d.machine_state_label || d.state || 'Unknown';
+  const pageId = (d.websocket_page_id===null || d.websocket_page_id===undefined || d.websocket_page_id==='') ? '—' : String(d.websocket_page_id);
+  const feedText = isOfflineFallback ? '0' : ((d.feed===null || d.feed===undefined) ? '—' : fmtNum(d.feed, 0));
+  const laserText = isOfflineFallback ? '0' : ((d.spindle===null || d.spindle===undefined) ? '—' : fmtNum(d.spindle, 0));
+  const alarmText = d.alarm_status || ((String(d.state_base||d.state||'').toLowerCase()==='alarm') ? 'Active' : (d.online ? 'Clear' : 'Unknown'));
+  const jobText = d.job_status || 'Unknown';
+  const sourceText = isOfflineFallback ? 'fallback_offline' : (d.status_source || 'unknown');
+  const coordSourceText = isOfflineFallback ? '—' : (d.coordinate_source_label || '—');
+  const connectionText = isOfflineFallback ? 'Offline' : (d.connection_status || ((d.online && sourceText === 'live_websocket') ? 'Online' : 'Offline'));
+  const lastUpdateText = isOfflineFallback ? '—' : statusAgeText(d.last_update_age_seconds);
+  const xLine = isOfflineFallback ? 'X: 0.000' : axisStatusLine('X', wpos.x, mpos.x);
+  const yLine = isOfflineFallback ? 'Y: 0.000' : axisStatusLine('Y', wpos.y, mpos.y);
+  const stateDisplay = isOfflineFallback ? 'Offline' : stateText;
+  const pageDisplay = isOfflineFallback ? '—' : pageId;
   document.getElementById('status').innerHTML = `
-    <div>Online: <b>${d.online?'Yes':'No'}</b></div>
-    <div>WebSocket: <b>${d.websocket_connected?'Connected':'Disconnected'}</b></div>
-    <div>PAGEID: <b>${fmtPos(d.websocket_page_id)}</b></div>
-    <div>State: <b>${d.machine_state_label||d.state||d.machine_state||'UNKNOWN'}</b></div>
-    <div>MPos X: ${fmtPos(mpos.x)} Y: ${fmtPos(mpos.y)}</div>
-    <div>Feed: ${fmtPos(d.feed)} Spindle: ${fmtPos(d.spindle)}</div>
-    <div>Status Source: ${d.status_source||'unknown'}</div>
-    <div>Position Source: ${d.position_source||'unknown'}</div>
-    <div>Alarm: ${fmtPos(d.alarm_message)}</div>
-    <div>Last Error: ${fmtPos(d.last_error)}</div>
+    <div class="status-top">
+      <div>State: <b>${esc(stateDisplay)}</b></div>
+      <div>PageID: <b>${esc(pageDisplay)}</b></div>
+    </div>
+    <div class="status-grid">
+      <div>${esc(xLine)}</div>
+      <div>${esc(yLine)}</div>
+      <div>Feed: <b>${esc(feedText)}</b></div>
+      <div>Laser: <b>${esc(laserText)}</b></div>
+    </div>
+    <div class="status-safety">
+      <div>Alarm: <b>${esc(alarmText)}</b></div>
+      <div>Job: <b>${esc(jobText)}</b></div>
+      <div>Connection: <b>${esc(connectionText)}</b></div>
+    </div>
+    <div class="status-foot muted small">
+      <div>Source: ${esc(sourceText)}</div>
+      <div>Coordinate source: ${esc(coordSourceText)}</div>
+      <div>Last update: ${esc(lastUpdateText)}</div>
+    </div>
   `;
 
   const cam=document.getElementById('cam');
@@ -1056,7 +1102,10 @@ function bind(){
       const r = await fetch('/api/jobs/import',{method:'POST',body:fd});
       const data = await r.json();
       document.getElementById('jobsMsg').textContent=data.ok?'Import complete':'Import failed: '+(data.error||'unknown');
-      refreshJobs();refreshConsole();
+      if(data.ok){
+        await refreshJobs({preserveMessage:true});
+      }
+      await refreshConsole();
     } finally {
       jobImportBusy = false;
       document.getElementById('importBtn').disabled = false;
@@ -1249,3 +1298,4 @@ loadManualConfig();
 refreshStatus();refreshJobs();loadSdFiles();loadTimelapses();loadTimelapseState();refreshConsole();loadSnapshots();
 setInterval(refreshStatus,3000);
 setInterval(refreshConsole,5000);
+setInterval(()=>refreshJobs({preserveMessage:true}),5000);

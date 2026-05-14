@@ -800,13 +800,13 @@ def api_status() -> Any:
     monitor_status = active_monitor.get_latest_status() if (active_monitor and prefer_live) else None
     live_fresh = bool(monitor_status and not monitor_status.get("stale", True))
     if not _is_ray5_host_configured():
-        state = "NOT_CONFIGURED"
-        source = "synthetic"
+        state = "Offline"
+        source = "offline"
         online = False
-        mpos = {"x": None, "y": None, "z": None}
+        mpos = {"x": 0.0, "y": 0.0, "z": None}
         wpos = {"x": None, "y": None, "z": None}
-        feed = None
-        spindle = None
+        feed = 0.0
+        spindle = 0.0
         raw_status = ""
         ws_connected = False
         ws_page_id = None
@@ -826,33 +826,83 @@ def api_status() -> Any:
         last_error = None
         alarm_message = monitor_status.get("alarm_message")
     elif monitor_status:
-        source = "cache"
-        state = monitor_status.get("state", "UNKNOWN")
-        mpos = monitor_status.get("machine_position", {}) or {}
-        wpos = monitor_status.get("work_position", {}) or {}
-        feed = monitor_status.get("feed")
-        spindle = monitor_status.get("spindle")
+        source = "fallback_offline"
+        state = "Offline"
+        mpos = {"x": 0.0, "y": 0.0, "z": None}
+        wpos = {"x": None, "y": None, "z": None}
+        feed = 0.0
+        spindle = 0.0
         raw_status = monitor_status.get("raw_status", "")
         ws_connected = bool(monitor_status.get("websocket_connected", False))
         ws_page_id = monitor_status.get("websocket_page_id")
         last_error = monitor_status.get("last_error")
         alarm_message = monitor_status.get("alarm_message")
-        online = bool(ws_connected or raw_status)
-        if synthetic_fallback and not online:
-            source = "synthetic"
+        online = False
     else:
-        source = "synthetic"
-        state = "UNKNOWN"
-        mpos = {"x": None, "y": None, "z": None}
+        source = "fallback_offline"
+        state = "Offline"
+        mpos = {"x": 0.0, "y": 0.0, "z": None}
         wpos = {"x": None, "y": None, "z": None}
-        feed = None
-        spindle = None
+        feed = 0.0
+        spindle = 0.0
         raw_status = ""
         ws_connected = bool(active_monitor.is_connected()) if active_monitor else False
-        ws_page_id = active_monitor.get_page_id() if active_monitor else None
+        ws_page_id = None
         last_error = None
         alarm_message = None
-        online = ws_connected if synthetic_fallback else False
+        online = False
+
+    raw_state = str(state or "").strip()
+    state_base = raw_state.split(":", 1)[0] if raw_state else "UNKNOWN"
+    if source in {"offline", "fallback_offline"} or not online:
+        display_state = "Offline" if _is_ray5_host_configured() else "Not Configured"
+    else:
+        display_state = state_base or "Unknown"
+
+    if source in {"offline", "fallback_offline"}:
+        alarm_status = "Unknown"
+    elif state_base.lower() == "alarm":
+        alarm_status = "Active"
+    elif online:
+        alarm_status = "Clear"
+    else:
+        alarm_status = "Unknown"
+
+    state_key = state_base.lower()
+    if source in {"offline", "fallback_offline"}:
+        job_status = "Unknown"
+    elif state_key == "run":
+        job_status = "Running"
+    elif state_key == "hold":
+        job_status = "Paused"
+    elif state_key == "idle":
+        job_status = "Stopped"
+    elif state_key == "alarm":
+        job_status = "Alarm"
+    else:
+        job_status = "Unknown"
+
+    has_w = (wpos.get("x") is not None) or (wpos.get("y") is not None)
+    has_m = (mpos.get("x") is not None) or (mpos.get("y") is not None)
+    if has_w and has_m:
+        coordinate_source = "WPos + MPos"
+    elif has_w:
+        coordinate_source = "WPos"
+    elif has_m:
+        coordinate_source = "MPos"
+    else:
+        coordinate_source = "—"
+
+    last_update_ts = None
+    last_update_age_seconds = None
+    if isinstance(monitor_status, dict):
+        last_update_ts = monitor_status.get("timestamp")
+        last_update_age_seconds = monitor_status.get("age_seconds")
+    if last_update_age_seconds is None and last_update_ts:
+        try:
+            last_update_age_seconds = max(0.0, float(time.time() - float(last_update_ts)))
+        except Exception:
+            last_update_age_seconds = None
 
     if source != _last_logged_status_source:
         console.add("info", f"Status source changed: {source}")
@@ -886,6 +936,14 @@ def api_status() -> Any:
             "raw_status": raw_status,
             "status_source": source,
             "position_source": "live_websocket" if source == "live_websocket" else ("cache" if source == "cache" else ("synthetic" if source == "synthetic" else "unknown")),
+            "state_base": state_base,
+            "display_state": display_state,
+            "alarm_status": alarm_status,
+            "job_status": job_status,
+            "connection_status": "Online" if (online and source == "live_websocket") else "Offline",
+            "coordinate_source_label": coordinate_source,
+            "last_update_ts": last_update_ts,
+            "last_update_age_seconds": last_update_age_seconds,
             "ray5_host": active_cfg.get("ray5", {}).get("host"),
             "ray5_port": active_cfg.get("ray5", {}).get("port"),
             "mainboard_online": online,

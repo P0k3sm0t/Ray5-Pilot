@@ -1,12 +1,10 @@
 #Web Ui
 <img width="2200" height="2681" alt="ray5_dashboard_demo_nocut" src="https://github.com/user-attachments/assets/952c8af7-6515-4712-a038-abe9f87b6d5b" />
 <img width="2200" height="5744" alt="ray5_settings_demo_nocut" src="https://github.com/user-attachments/assets/3830e510-fd5c-4978-bf61-80d4d955680f" />
-
-#Overlay accuracy preview
-<img width="1279" height="763" alt="Screenshot 2026-05-12 210316" src="https://github.com/user-attachments/assets/4c52c883-2cd9-46f4-a2d0-afbe1791144b" />
-
+#Overlay Preview
+<img width="1279" height="761" alt="overlay preview" src="https://github.com/user-attachments/assets/77777e23-7bee-4c1e-8914-bbff1fb05a02" />
 #Make sure output is NOT selected so it wont include the image.
-<img width="1279" height="762" alt="Screenshot 2026-05-12 171846" src="https://github.com/user-attachments/assets/3fcbd9cc-3f9c-4c43-ba9d-1cce19087bde" />
+<img width="1279" height="761" alt="overlay preview 1" src="https://github.com/user-attachments/assets/7c6d36e4-194b-4501-b53d-559bb5820f51" />
 
 # Ray5 Pilot
 
@@ -46,6 +44,51 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 5. Optional: configure RTSP camera URL.
 6. Restart Ray5 Pilot.
 7. Open http://127.0.0.1:5050.
+
+## Manual setup and run without the `.bat` file
+
+Ray5 Pilot can be started manually from Command Prompt without using the included batch file.
+
+- 1.Open Command Prompt in the Ray5 Pilot folder
+Open the folder where Ray5 Pilot is saved, right click open command promp:
+
+Or open Command Prompt and run:
+cd "C:\path\to\Ray5-Pilot"
+
+Example:
+cd "C:\Users\YourName\Documents\GitHub\Ray5-Pilot"
+
+- 2. Make sure Python and pip are available
+Check Python:
+python --version
+
+Check pip:
+python -m pip --version
+
+If pip is missing, install/enable it with:
+python -m ensurepip --upgrade
+
+Then upgrade pip:
+python -m pip install --upgrade pip
+
+- 3. Install Ray5 Pilot requirements
+From inside the Ray5 Pilot folder, run:
+python -m pip install -r requirements.txt
+
+- 4. Start Ray5 Pilot
+Run:
+python app.py
+
+Leave this Command Prompt window open while using Ray5 Pilot.
+
+- 5. Open Ray5 Pilot in a web browser
+Open your browser and go to:
+http://127.0.0.1:5050
+If the app prints a different address or port in the Command Prompt window, use the address shown there instead.
+
+- 6. Stop Ray5 Pilot
+To stop Ray5 Pilot, click inside the Command Prompt window and press:
+CTRL + C
 
 ## Network details
 - Ray5 HTTP port: 8848
@@ -105,10 +148,41 @@ Example:
 `test_grid_390x360.gcode`  
 `large_alignment_grid_390x360_final.gcode` May upload, but may not display clearly on the Ray5 screen.
 
-## v1.0.4
-
+## v1.0.5
 ### Added
+- Added automatic Imported Jobs refresh after a successful manual import.
+- Added lightweight Imported Jobs auto-refresh while the dashboard is open so watched-folder/background imports appear without pressing Refresh.
+- Added clearer Status card layout with State, PageID, X/Y, Feed, Laser, Alarm, Job, Connection, Source, Coordinate source, and Last update.
+- Added README note explaining that Ray5 Pilot can upload long filenames, but files intended to be selected from the Ray5 touchscreen should be 24 characters or less including the extension.
+- Added manual setup instructions for running Ray5 Pilot without the `.bat` file.
 
+### Changed
+- Moved PageID directly under State in the dashboard Status card.
+- Updated Status behavior so non-live status is shown as Offline/fallback_offline instead of synthetic.
+- Offline fallback now shows zeroed position/feed/laser values instead of stale or synthetic live-looking data.
+- Timelapse frame capture is now separated from normal Camera Overlay snapshot files.
+- Timelapse raw mode writes directly to the active timelapse session folder without updating `camera_captures/latest_raw.jpg`.
+- Timelapse processed mode creates corrected/deskewed frames in memory and writes directly to the timelapse session folder without updating `camera_captures/latest.jpg`.
+- Normal Camera Snapshot behavior remains unchanged and still updates `latest.jpg` and `latest_raw.jpg`.
+- Removed visible Synthetic fallback setting from the Settings page while preserving the internal config key for compatibility.
+- Updated Status settings help text to describe live WebSocket status and offline fallback behavior.
+
+### Fixed
+- Fixed Timelapse affecting/overwriting Camera Overlay snapshot files during capture.
+- Fixed Imported Jobs card not refreshing automatically after new files were imported.
+- Fixed offline/fallback status being able to appear like synthetic live machine status.
+- Fixed stale Timelapse CSS targeting removed `#timelapseState`.
+- Fixed confusing Synthetic fallback wording in Settings.
+- Fixed Status card layout so PageID no longer sits on the far-right side of the card.
+
+### Notes
+- Timelapse still supports both image sources: full raw camera frame and overlay-corrected snapshot style.
+- Timelapse output is now isolated to timelapse session folders and should not disturb overlay/snapshot files.
+- Imported Jobs now refreshes automatically every 5 seconds while the dashboard is open.
+- Offline fallback cannot auto-start Timelapse because it no longer reports fake Run/Idle/Hold states.
+
+## v1.0.4
+### Added
 - Added multi-select file management for Imported Jobs, including Select All, Clear Selection, selected count, and Delete Selected.
 - Added multi-select file management for SD Card Files, including Select All, Clear Selection, selected count, and Delete Selected.
 - Added a full-width Timelapse dashboard card above the Video/Camera card.
@@ -123,7 +197,6 @@ Example:
 - Added separate Timelapse playback FPS so capture interval and final MP4 speed are controlled independently.
 
 ### Changed
-
 - Timelapse manual Start/Stop is now button-controlled and independent of printer Idle/Hold/Run state.
 - Timelapse job mode now follows Ray5 state: Run starts capture, Hold pauses capture, Run resumes capture, and Idle stops/saves.
 - Timelapse MP4 generation now uses playback FPS instead of snapshot interval as frame timing.
@@ -138,7 +211,6 @@ Example:
 - Config example coverage was aligned with current default configuration keys.
 
 ### Fixed
-
 - Fixed embedded Camera Calibration marker offset when the calibration image is resized inside the dashboard.
 - Fixed camera postprocess scale appearing to do nothing when using values below 1.0.
 - Fixed Timelapse manual sessions stopping early when the printer was Idle.
@@ -152,7 +224,6 @@ Example:
 - Fixed remaining S200 wording/fallback inconsistencies in Settings.
 
 ### Notes
-
 - Timelapse must be enabled in Settings before manual or automatic Timelapse capture will run.
 - Imported Upload Only does not arm Timelapse.
 - Imported Upload + Run and SD Card Start arm Timelapse automatically when enabled.

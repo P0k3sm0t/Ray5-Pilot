@@ -154,7 +154,6 @@ function load(cfg){
   setVal('status_poll_seconds', st.poll_seconds??1.0, 1.0);
   setVal('status_reconnect_seconds', st.reconnect_seconds??3.0, 3.0);
   setVal('status_stale_after', st.stale_after_seconds??5.0, 5.0);
-  setChecked('status_synth_fallback', (st.synthetic_fallback_enabled!==false), true);
   setChecked('status_show_source', (st.show_status_source!==false), true);
   setChecked('status_show_pos_source', (st.show_position_source!==false), true);
   setChecked('console_raw_enabled', (csl.raw_command_enabled !== false), true);
@@ -315,7 +314,9 @@ function collect(){
       poll_seconds:Number(v('status_poll_seconds').value)||1.0,
       reconnect_seconds:Number(v('status_reconnect_seconds').value)||3.0,
       stale_after_seconds:Number(v('status_stale_after').value)||5.0,
-      synthetic_fallback_enabled:v('status_synth_fallback').checked,
+      synthetic_fallback_enabled: (loadedConfig.status && typeof loadedConfig.status.synthetic_fallback_enabled === 'boolean')
+        ? loadedConfig.status.synthetic_fallback_enabled
+        : true,
       show_status_source:v('status_show_source').checked,
       show_position_source:v('status_show_pos_source').checked
     },

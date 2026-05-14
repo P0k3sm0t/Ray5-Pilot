@@ -15,6 +15,10 @@ main{max-width:100%;overflow-x:hidden;padding:8px;position:relative;z-index:1}
 .camera-test-status.ok{color:#86efac}
 .camera-test-status.error{color:#fca5a5}
 .camera-test-status.warn{color:#fde68a}
+.status-top{display:grid;grid-template-columns:1fr;gap:4px;margin-bottom:8px}
+.status-grid{display:grid;grid-template-columns:1fr;gap:4px;margin-bottom:8px}
+.status-safety{display:grid;grid-template-columns:1fr;gap:4px;margin-bottom:8px}
+.status-foot{display:grid;grid-template-columns:1fr;gap:2px}
 .camera-link-btn{display:inline-flex;align-items:center;justify-content:center;background:#2563eb;color:#fff;border:none;border-radius:8px;padding:8px 10px;cursor:pointer;min-height:38px;text-decoration:none}
 .video-frame-wrap{margin-top:14px;width:100%;max-width:100%;max-height:420px;min-height:260px;background:#05070c;border:1px solid rgba(255,255,255,.12);border-radius:14px;overflow:hidden;display:flex;justify-content:center;align-items:center;position:relative}
 .camera-feed{display:block;max-width:100%;max-height:420px;width:auto;height:auto;object-fit:contain;position:static}
@@ -69,7 +73,6 @@ input[type='checkbox']{width:auto}
 .sd-select-all input[type="checkbox"]{margin:0}
 .sd-upload-help{margin-top:6px}
 .timelapse-selection-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:10px}
-.timelapse-card #timelapseState{margin-top:8px}
 .timelapse-select-all{display:inline-flex;align-items:center;gap:6px;margin:0}
 .timelapse-select-all input[type="checkbox"]{margin:0}
 .timelapse-table-wrap{max-height:280px;overflow:auto;border:1px solid #2b3345;border-radius:12px;margin-top:10px}
