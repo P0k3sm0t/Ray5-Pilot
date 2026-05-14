@@ -1,15 +1,18 @@
-#Web Ui
+# Web Ui
+
+## Dashboard
 <img width="2200" height="2681" alt="ray5_dashboard_demo_nocut" src="https://github.com/user-attachments/assets/952c8af7-6515-4712-a038-abe9f87b6d5b" />
+
+## Settings
 <img width="2200" height="5744" alt="ray5_settings_demo_nocut" src="https://github.com/user-attachments/assets/3830e510-fd5c-4978-bf61-80d4d955680f" />
 
-#Overlay accuracy preview
+## Overlay accuracy preview
 <img width="1279" height="763" alt="Screenshot 2026-05-12 210316" src="https://github.com/user-attachments/assets/4c52c883-2cd9-46f4-a2d0-afbe1791144b" />
 
-#Make sure output is NOT selected so it wont include the image.
+## Make sure output is NOT selected so it wont include the image.
 <img width="1279" height="762" alt="Screenshot 2026-05-12 171846" src="https://github.com/user-attachments/assets/3fcbd9cc-3f9c-4c43-ba9d-1cce19087bde" />
 
 # Ray5 Pilot
-
 A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-style HTTP/WebSocket interface.
 
 ## Features
@@ -21,6 +24,7 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Stop Job defaults to M5 + Ctrl-X soft reset
 - Unlock / Clear Alarm using M5 + $X
 - Preset move button
+- Watched folder, Just save to the watched folder and it will auto import.
 - Imported Jobs workflow: import, frame, upload, upload + run, delete
 - Direct SD card upload
 - SD card file list, start, delete, refresh
@@ -41,11 +45,10 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 ## Setup
 1. Download/clone Ray5-Pilot.
 2. Run Start_Ray5_Pilot.bat.
-3. Edit config.json or open Settings.
+3. Open Settings.
 4. Set Ray5 IP.
-5. Optional: configure RTSP camera URL.
+5. Optional: configure RTSP camera URL, and other settings.
 6. Restart Ray5 Pilot.
-7. Open http://127.0.0.1:5050.
 
 ## Network details
 - Ray5 HTTP port: 8848
@@ -106,9 +109,7 @@ Example:
 `large_alignment_grid_390x360_final.gcode` May upload, but may not display clearly on the Ray5 screen.
 
 ## v1.0.4
-
 ### Added
-
 - Added multi-select file management for Imported Jobs, including Select All, Clear Selection, selected count, and Delete Selected.
 - Added multi-select file management for SD Card Files, including Select All, Clear Selection, selected count, and Delete Selected.
 - Added a full-width Timelapse dashboard card above the Video/Camera card.
@@ -123,7 +124,6 @@ Example:
 - Added separate Timelapse playback FPS so capture interval and final MP4 speed are controlled independently.
 
 ### Changed
-
 - Timelapse manual Start/Stop is now button-controlled and independent of printer Idle/Hold/Run state.
 - Timelapse job mode now follows Ray5 state: Run starts capture, Hold pauses capture, Run resumes capture, and Idle stops/saves.
 - Timelapse MP4 generation now uses playback FPS instead of snapshot interval as frame timing.
@@ -138,7 +138,6 @@ Example:
 - Config example coverage was aligned with current default configuration keys.
 
 ### Fixed
-
 - Fixed embedded Camera Calibration marker offset when the calibration image is resized inside the dashboard.
 - Fixed camera postprocess scale appearing to do nothing when using values below 1.0.
 - Fixed Timelapse manual sessions stopping early when the printer was Idle.
@@ -152,7 +151,6 @@ Example:
 - Fixed remaining S200 wording/fallback inconsistencies in Settings.
 
 ### Notes
-
 - Timelapse must be enabled in Settings before manual or automatic Timelapse capture will run.
 - Imported Upload Only does not arm Timelapse.
 - Imported Upload + Run and SD Card Start arm Timelapse automatically when enabled.
