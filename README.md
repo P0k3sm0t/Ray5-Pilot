@@ -1,13 +1,13 @@
 #Web Ui
-<img width="2200" height="2681" alt="ray5_dashboard_demo_nocut" src="https://github.com/user-attachments/assets/952c8af7-6515-4712-a038-abe9f87b6d5b" />
-<img width="2200" height="5744" alt="ray5_settings_demo_nocut" src="https://github.com/user-attachments/assets/3830e510-fd5c-4978-bf61-80d4d955680f" />
-#Overlay Preview
-<img width="1279" height="761" alt="overlay preview" src="https://github.com/user-attachments/assets/77777e23-7bee-4c1e-8914-bbff1fb05a02" />
+<img width="1920" height="2673" alt="ray5_dashboard_demo_full_105" src="https://github.com/user-attachments/assets/8a222b8f-cc38-4b24-aae2-b999f02eeb86" />
+<img width="1920" height="5714" alt="ray5_settings_demo_full_105" src="https://github.com/user-attachments/assets/a05f31d8-15c6-475c-8164-bf112146a3cb" />
+
+#Overlay accuracy Preview
+<img width="1279" height="763" alt="Screenshot 2026-05-12 210316" src="https://github.com/user-attachments/assets/c6f0f90b-7a65-46d2-88ff-bce0b0c6a276" />
 #Make sure output is NOT selected so it wont include the image.
-<img width="1279" height="761" alt="overlay preview 1" src="https://github.com/user-attachments/assets/7c6d36e4-194b-4501-b53d-559bb5820f51" />
+<img width="1279" height="762" alt="Screenshot 2026-05-12 171846" src="https://github.com/user-attachments/assets/a683917f-615b-4a31-be19-4062e4554d1e" />
 
 # Ray5 Pilot
-
 A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-style HTTP/WebSocket interface.
 
 ## Features
