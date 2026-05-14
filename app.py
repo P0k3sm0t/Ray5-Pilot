@@ -796,15 +796,32 @@ def api_status() -> Any:
         active_monitor = status_monitor
     st_cfg = active_cfg.get("status", {}) if isinstance(active_cfg.get("status"), dict) else {}
     prefer_live = bool(st_cfg.get("prefer_live_status", True))
-    synthetic_fallback = bool(st_cfg.get("synthetic_fallback_enabled", True))
+    live_status_stale_seconds = float(st_cfg.get("live_status_stale_seconds", 15.0) or 15.0)
+    if live_status_stale_seconds < 10.0:
+        live_status_stale_seconds = 10.0
+    if live_status_stale_seconds > 20.0:
+        live_status_stale_seconds = 20.0
     monitor_status = active_monitor.get_latest_status() if (active_monitor and prefer_live) else None
-    live_fresh = bool(monitor_status and not monitor_status.get("stale", True))
+    monitor_age = None
+    monitor_ws_connected = False
+    if isinstance(monitor_status, dict):
+        monitor_age = monitor_status.get("age_seconds")
+        monitor_ws_connected = bool(monitor_status.get("websocket_connected", False))
+    live_fresh = bool(
+        monitor_status
+        and monitor_ws_connected
+        and (monitor_age is not None)
+        and (float(monitor_age) <= live_status_stale_seconds)
+    )
     if not _is_ray5_host_configured():
         state = "Offline"
         source = "offline"
         online = False
         mpos = {"x": 0.0, "y": 0.0, "z": None}
         wpos = {"x": None, "y": None, "z": None}
+        wco = {"x": None, "y": None, "z": None}
+        wco_available = False
+        wpos_calculated = False
         feed = 0.0
         spindle = 0.0
         raw_status = ""
@@ -816,6 +833,9 @@ def api_status() -> Any:
         state = monitor_status.get("state", "UNKNOWN")
         mpos = monitor_status.get("machine_position", {}) or {}
         wpos = monitor_status.get("work_position", {}) or {}
+        wco = monitor_status.get("work_offset", {}) or {}
+        wco_available = bool(monitor_status.get("wco_available", False))
+        wpos_calculated = bool(monitor_status.get("wpos_calculated", False))
         source = "live_websocket"
         online = True
         feed = monitor_status.get("feed")
@@ -830,6 +850,9 @@ def api_status() -> Any:
         state = "Offline"
         mpos = {"x": 0.0, "y": 0.0, "z": None}
         wpos = {"x": None, "y": None, "z": None}
+        wco = {"x": None, "y": None, "z": None}
+        wco_available = False
+        wpos_calculated = False
         feed = 0.0
         spindle = 0.0
         raw_status = monitor_status.get("raw_status", "")
@@ -843,6 +866,9 @@ def api_status() -> Any:
         state = "Offline"
         mpos = {"x": 0.0, "y": 0.0, "z": None}
         wpos = {"x": None, "y": None, "z": None}
+        wco = {"x": None, "y": None, "z": None}
+        wco_available = False
+        wpos_calculated = False
         feed = 0.0
         spindle = 0.0
         raw_status = ""
@@ -884,14 +910,28 @@ def api_status() -> Any:
 
     has_w = (wpos.get("x") is not None) or (wpos.get("y") is not None)
     has_m = (mpos.get("x") is not None) or (mpos.get("y") is not None)
-    if has_w and has_m:
+    if source in {"offline", "fallback_offline"}:
+        coordinate_source = "—"
+    elif wpos_calculated and has_m and wco_available:
+        coordinate_source = "MPos + WCO"
+    elif has_w and has_m and wco_available:
+        coordinate_source = "WPos + MPos + WCO"
+    elif has_w and has_m:
         coordinate_source = "WPos + MPos"
+    elif has_m and wco_available:
+        coordinate_source = "MPos + WCO"
     elif has_w:
         coordinate_source = "WPos"
     elif has_m:
         coordinate_source = "MPos"
     else:
         coordinate_source = "—"
+
+    monitor_coordinate_source = ""
+    if isinstance(monitor_status, dict):
+        monitor_coordinate_source = str(monitor_status.get("coordinate_source_label") or "").strip()
+    if monitor_coordinate_source and source == "live_websocket":
+        coordinate_source = monitor_coordinate_source
 
     last_update_ts = None
     last_update_age_seconds = None
@@ -909,9 +949,18 @@ def api_status() -> Any:
         _last_logged_status_source = source
     if not online:
         err = str(last_error or "Ray5 live status unavailable")
-        if not _status_error_logged:
-            console.add("error", f"Status error: {err}")
-            _status_error_logged = True
+        if ws_connected and _is_ray5_host_configured():
+            if not _status_error_logged:
+                age_txt = f"{last_update_age_seconds:.1f}s" if isinstance(last_update_age_seconds, (int, float)) else "unknown"
+                console.add(
+                    "warn",
+                    f"Status stale: no fresh live packet for {age_txt}; falling back offline after {live_status_stale_seconds:.0f}s timeout.",
+                )
+                _status_error_logged = True
+        else:
+            if not _status_error_logged:
+                console.add("error", f"Status error: {err}")
+                _status_error_logged = True
     else:
         _status_error_logged = False
     cam = _camera_cfg(active_cfg)
@@ -930,6 +979,11 @@ def api_status() -> Any:
             "position": {"x": mpos.get("x"), "y": mpos.get("y"), "z": mpos.get("z")},
             "machine_position": {"x": mpos.get("x"), "y": mpos.get("y"), "z": mpos.get("z")},
             "work_position": {"x": wpos.get("x"), "y": wpos.get("y"), "z": wpos.get("z")},
+            "work_offset": {"x": wco.get("x"), "y": wco.get("y"), "z": wco.get("z")},
+            "wco_x": wco.get("x"),
+            "wco_y": wco.get("y"),
+            "wco_available": bool(wco_available and source == "live_websocket"),
+            "wpos_calculated": bool(wpos_calculated and source == "live_websocket"),
             "feed": feed,
             "spindle": spindle,
             "raw": raw_status,

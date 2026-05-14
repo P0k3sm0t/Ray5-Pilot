@@ -46,6 +46,7 @@ class Ray5StatusMonitor:
         self._poll_count = 0
         self._status_trigger_count = 0
         self._status_line_count = 0
+        self._last_wco: dict[str, float | None] = {"x": None, "y": None, "z": None}
 
     def start(self) -> None:
         if not self.ws_enabled or not self.host or self.host.upper() == "YOUR_RAY5_IP":
@@ -307,6 +308,8 @@ class Ray5StatusMonitor:
         mpos = {"x": None, "y": None, "z": None}
         wco = {"x": None, "y": None, "z": None}
         wpos = {"x": None, "y": None, "z": None}
+        wco_seen = False
+        wpos_seen = False
         feed = None
         spindle = None
         parts = line[1:-1].split("|")
@@ -327,6 +330,8 @@ class Ray5StatusMonitor:
                     wco["y"] = self._to_float(vals[1])
                     if len(vals) >= 3:
                         wco["z"] = self._to_float(vals[2])
+                    if (wco["x"] is not None) or (wco["y"] is not None) or (wco["z"] is not None):
+                        wco_seen = True
             elif part.startswith("WPos:"):
                 vals = part.split(":", 1)[1].split(",")
                 if len(vals) >= 2:
@@ -334,17 +339,64 @@ class Ray5StatusMonitor:
                     wpos["y"] = self._to_float(vals[1])
                     if len(vals) >= 3:
                         wpos["z"] = self._to_float(vals[2])
+                    if (wpos["x"] is not None) or (wpos["y"] is not None) or (wpos["z"] is not None):
+                        wpos_seen = True
             elif part.startswith("FS:"):
                 vals = part.split(":", 1)[1].split(",")
                 if len(vals) >= 1:
                     feed = self._to_float(vals[0])
                 if len(vals) >= 2:
                     spindle = self._to_float(vals[1])
+
+        # Cache latest WCO values because firmware may emit WCO only occasionally.
+        if wco_seen:
+            with self._lock:
+                self._last_wco = {
+                    "x": wco.get("x"),
+                    "y": wco.get("y"),
+                    "z": wco.get("z"),
+                }
+        else:
+            with self._lock:
+                cached_wco = dict(self._last_wco)
+            if (cached_wco.get("x") is not None) or (cached_wco.get("y") is not None) or (cached_wco.get("z") is not None):
+                wco = cached_wco
+
+        wco_available = (wco.get("x") is not None) and (wco.get("y") is not None)
+        wpos_calculated = False
+        if (not wpos_seen) and wco_available and (mpos.get("x") is not None) and (mpos.get("y") is not None):
+            wpos["x"] = float(mpos["x"]) - float(wco["x"])
+            wpos["y"] = float(mpos["y"]) - float(wco["y"])
+            if (mpos.get("z") is not None) and (wco.get("z") is not None):
+                wpos["z"] = float(mpos["z"]) - float(wco["z"])
+            wpos_calculated = True
+
+        has_w = (wpos.get("x") is not None) or (wpos.get("y") is not None)
+        has_m = (mpos.get("x") is not None) or (mpos.get("y") is not None)
+        has_wco = wco_available
+        if wpos_calculated and has_m and has_wco:
+            coordinate_source_label = "MPos + WCO"
+        elif has_w and has_m and has_wco:
+            coordinate_source_label = "WPos + MPos + WCO"
+        elif has_w and has_m:
+            coordinate_source_label = "WPos + MPos"
+        elif has_m and has_wco:
+            coordinate_source_label = "MPos + WCO"
+        elif has_w:
+            coordinate_source_label = "WPos"
+        elif has_m:
+            coordinate_source_label = "MPos"
+        else:
+            coordinate_source_label = "—"
+
         return {
             "state": state,
             "machine_position": mpos,
             "work_offset": wco,
             "work_position": wpos,
+            "wco_available": wco_available,
+            "wpos_calculated": wpos_calculated,
+            "coordinate_source_label": coordinate_source_label,
             "feed": feed,
             "spindle": spindle,
             "raw_status": line,

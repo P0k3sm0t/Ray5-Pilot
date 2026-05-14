@@ -97,6 +97,7 @@ async function refreshStatus(){
   const d=await api('/api/status');
   const mpos = d.machine_position || d.position || {};
   const wpos = d.work_position || {};
+  const wco = d.work_offset || {};
   const srcRaw = String(d.status_source || '').trim().toLowerCase();
   const isOfflineFallback = srcRaw === 'offline' || srcRaw === 'fallback_offline' || srcRaw === 'synthetic' || !d.online;
   const stateText = d.display_state || d.state_base || d.machine_state_label || d.state || 'Unknown';
@@ -111,6 +112,8 @@ async function refreshStatus(){
   const lastUpdateText = isOfflineFallback ? '—' : statusAgeText(d.last_update_age_seconds);
   const xLine = isOfflineFallback ? 'X: 0.000' : axisStatusLine('X', wpos.x, mpos.x);
   const yLine = isOfflineFallback ? 'Y: 0.000' : axisStatusLine('Y', wpos.y, mpos.y);
+  const hasWco = !isOfflineFallback && !!d.wco_available && Number.isFinite(Number(wco.x)) && Number.isFinite(Number(wco.y));
+  const wcoLine = hasWco ? `WCO: X ${Number(wco.x).toFixed(3)} / Y ${Number(wco.y).toFixed(3)}` : 'WCO: —';
   const stateDisplay = isOfflineFallback ? 'Offline' : stateText;
   const pageDisplay = isOfflineFallback ? '—' : pageId;
   document.getElementById('status').innerHTML = `
@@ -121,6 +124,7 @@ async function refreshStatus(){
     <div class="status-grid">
       <div>${esc(xLine)}</div>
       <div>${esc(yLine)}</div>
+      <div>${esc(wcoLine)}</div>
       <div>Feed: <b>${esc(feedText)}</b></div>
       <div>Laser: <b>${esc(laserText)}</b></div>
     </div>

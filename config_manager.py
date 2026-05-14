@@ -168,6 +168,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "poll_seconds": 1.0,
         "reconnect_seconds": 3.0,
         "stale_after_seconds": 5.0,
+        "live_status_stale_seconds": 15.0,
         "synthetic_fallback_enabled": True,
         "show_status_source": True,
         "show_position_source": True,

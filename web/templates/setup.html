@@ -12,7 +12,7 @@
 <p>Optional RTSP or snapshot camera used for live view and LightBurn overlay snapshots.</p>
 <label><input id="cam_enabled" type="checkbox"> Enabled</label><p class="field-help">Turns camera features on/off.</p>
 <label><input id="cam_video_enabled" type="checkbox"> Enable dashboard video feed</label><p class="field-help">Shows the live camera stream on the dashboard. When disabled, a placeholder overlay image is shown instead.</p>
-<label>Stream URL <input id="cam_stream"></label><p class="field-help">RTSP camera stream. Example: rtsp://USERNAME:PASSWORD@CAMERA_IP:554/stream2</p>
+<label>Stream URL <input id="cam_stream"></label><p class="field-help">RTSP camera stream. Example: rtsp://USERNAME:PASSWORD@CAMERA_IP:554/stream1<br>HTTP/MJPEG examples: http://CAMERA_IP/video or http://USERNAME:PASSWORD@CAMERA_IP:8080/video</p>
 <label>Snapshot URL <input id="cam_snapshot"></label><p class="field-help">Optional still-image URL if your camera supports HTTP snapshots.</p>
 <label><input id="cam_proxy_enabled" type="checkbox"> Proxy enabled</label><p class="field-help">Routes camera video through Ray5 Pilot as <code>/camera/stream</code> for the dashboard.</p>
 <label>Proxy path <input id="cam_proxy_path"></label>
@@ -108,7 +108,7 @@
 </div>
 <div class="card"><button id="saveCfg">Save Config</button><pre id="saveOut"></pre></div>
 </main>
-<script src="/static/setup.js?v=1.0.5"></script>
+<script src="/static/setup.js?v=1.0.4"></script>
 </body></html>
 
 
