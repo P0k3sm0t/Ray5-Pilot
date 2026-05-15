@@ -13,17 +13,18 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 ## Features
 - Dashboard web UI
 - Live Ray5 status via ESP3D WebSocket port 8849
-- X/Y live MPos display
+- X/Y live MPos/WPos display
 - Manual controls with jog pad
 - Pause, Resume, and true Stop/Abort controls
 - Stop Job defaults to M5 + Ctrl-X soft reset
 - Unlock / Clear Alarm using M5 + $X
 - Preset move button
+- Watched folder to save gcode files too, for auto import.
 - Imported Jobs workflow: import, frame, upload, upload + run, delete
 - Direct SD card upload
 - SD card file list, start, delete, refresh
-- Timelapse with manual start and auto start from using upload+run in imported files, or start from sd files.
-- Camera stream proxy
+- Timelapse with manual start and auto start from using upload+run in imported files, or start from sd files
+- Camera stream proxy, RTSP or HTTP feed
 - Calibrated camera snapshot overlay for LightBurn/material alignment
 - Camera deskew/postprocess/rotation/source-offset alignment settings
 - Camera Overlay Alignment card with source X/Y offset explanations
