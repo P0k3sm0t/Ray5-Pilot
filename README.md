@@ -1,9 +1,12 @@
-# Web Ui
+# Web Ui Demo Screenshots
 ## Dashboard
-<img width="1800" height="2565" alt="ray5_dashboard_demo_full_21" src="https://github.com/user-attachments/assets/d88df38e-7065-451a-8baf-b661d25e570f" />
+<img width="1920" height="2566" alt="ray5_dashboard_demo_full_22" src="https://github.com/user-attachments/assets/3bd7091a-3122-4d82-b69e-0150887bb315" />
 
 ## Settings
-<img width="1800" height="5765" alt="ray5_settings_demo_full_21" src="https://github.com/user-attachments/assets/3c6118bb-d855-422e-81f6-1b50d3967a7c" />
+<img width="1920" height="5788" alt="ray5_settings_demo_full_22" src="https://github.com/user-attachments/assets/5a30c030-d68b-4eeb-87d2-16994ba27d5b" />
+
+## Machine Settings
+<img width="1920" height="1080" alt="ray5_machine_settings_demo_full_22" src="https://github.com/user-attachments/assets/837578e5-4ff0-4ee7-ba3a-ad0fa1ffceda" />
 
 ## Overlay accuracy Preview
 <img width="1279" height="763" alt="Screenshot 2026-05-12 210316" src="https://github.com/user-attachments/assets/c6f0f90b-7a65-46d2-88ff-bce0b0c6a276" />
