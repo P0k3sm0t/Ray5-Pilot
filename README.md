@@ -1,10 +1,14 @@
-#Web Ui
-<img width="1920" height="2673" alt="ray5_dashboard_demo_full_105" src="https://github.com/user-attachments/assets/8a222b8f-cc38-4b24-aae2-b999f02eeb86" />
-<img width="1920" height="5714" alt="ray5_settings_demo_full_105" src="https://github.com/user-attachments/assets/a05f31d8-15c6-475c-8164-bf112146a3cb" />
+# Web Ui
+## Dashboard
+<img width="1800" height="2565" alt="ray5_dashboard_demo_full_21" src="https://github.com/user-attachments/assets/d88df38e-7065-451a-8baf-b661d25e570f" />
 
-#Overlay accuracy Preview
+## Settings
+<img width="1800" height="5765" alt="ray5_settings_demo_full_21" src="https://github.com/user-attachments/assets/3c6118bb-d855-422e-81f6-1b50d3967a7c" />
+
+## Overlay accuracy Preview
 <img width="1279" height="763" alt="Screenshot 2026-05-12 210316" src="https://github.com/user-attachments/assets/c6f0f90b-7a65-46d2-88ff-bce0b0c6a276" />
-#Make sure output is NOT selected so it wont include the image.
+
+## Make sure output is NOT selected so it wont include the image.
 <img width="1279" height="762" alt="Screenshot 2026-05-12 171846" src="https://github.com/user-attachments/assets/a683917f-615b-4a31-be19-4062e4554d1e" />
 
 # Ray5 Pilot
@@ -13,6 +17,7 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 ## Features
 - Dashboard web UI
 - Live Ray5 status via ESP3D WebSocket port 8849
+- System check/health
 - X/Y live MPos/WPos display
 - Manual controls with jog pad
 - Pause, Resume, and true Stop/Abort controls
@@ -22,6 +27,7 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Watched folder to save gcode files too, for auto import.
 - Imported Jobs workflow: import, frame, upload, upload + run, delete
 - Direct SD card upload
+- Auto shorten file length if enabled
 - SD card file list, start, delete, refresh
 - Timelapse with manual start and auto start from using upload+run in imported files, or start from sd files
 - Camera stream proxy, RTSP or HTTP feed
@@ -164,9 +170,6 @@ Example:
 - Fixed System Check inconsistency where `PAGEID captured` or `SD card list working` could remain stale `Yes` while Ray5 was offline.
 - Fixed SD Card Files auto-load trigger from System Check transitions when Ray5 comes online after app startup.
 - Fixed camera health ambiguity where frontend load events could mark camera test as passed without backend frame confirmation.
-
-### Notes
-- Historical release notes remain below for v1.0.5 and earlier.
 
 ## v1.0.5
 ### Added
