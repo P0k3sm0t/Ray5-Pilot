@@ -178,6 +178,7 @@
     "upload":  {
                    "preserve_original":  true,
                    "sanitize_filename":  false,
+                   "auto_shorten_long_filenames":  false,
                    "screen_compatible_rewrite":  false,
                    "convert_m4_to_m3":  false,
                    "force_extension":  "",

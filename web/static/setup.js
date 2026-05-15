@@ -135,6 +135,7 @@ function load(cfg){
 
   setChecked('upload_preserve_original', (up.preserve_original!==false), true);
   setChecked('upload_sanitize_filename', !!up.sanitize_filename, false);
+  setChecked('upload_auto_shorten', !!up.auto_shorten_long_filenames, false);
   setChecked('upload_rewrite', !!up.screen_compatible_rewrite, false);
   setChecked('upload_convert_m4', !!up.convert_m4_to_m3, false);
   setVal('upload_force_ext', up.force_extension||'', '');
@@ -291,6 +292,7 @@ function collect(){
     upload:{
       preserve_original:v('upload_preserve_original').checked,
       sanitize_filename:v('upload_sanitize_filename').checked,
+      auto_shorten_long_filenames:v('upload_auto_shorten').checked,
       screen_compatible_rewrite:v('upload_rewrite').checked,
       convert_m4_to_m3:v('upload_convert_m4').checked,
       force_extension:v('upload_force_ext').value.trim(),
@@ -314,6 +316,9 @@ function collect(){
       poll_seconds:Number(v('status_poll_seconds').value)||1.0,
       reconnect_seconds:Number(v('status_reconnect_seconds').value)||3.0,
       stale_after_seconds:Number(v('status_stale_after').value)||5.0,
+      live_status_stale_seconds: (loadedConfig.status && Number.isFinite(Number(loadedConfig.status.live_status_stale_seconds)))
+        ? Number(loadedConfig.status.live_status_stale_seconds)
+        : 15.0,
       synthetic_fallback_enabled: (loadedConfig.status && typeof loadedConfig.status.synthetic_fallback_enabled === 'boolean')
         ? loadedConfig.status.synthetic_fallback_enabled
         : true,

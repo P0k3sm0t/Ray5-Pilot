@@ -141,13 +141,32 @@ CTRL + C
 - config.example.json is only a template.
 
 ## Ray5 screen filename note
-
 Ray5 Pilot can upload files with long filenames, but the Longer Ray5 touchscreen may not display long filenames clearly. If you want to select and run a file directly from the Ray5 screen, keep the full filename **24 characters or less, including the extension**.
 
-Example:
+Ray5 Pilot also includes an Upload setting to automatically shorten long filenames. When enabled, uploaded filenames longer than 24 characters are shortened to **24 characters or less** while preserving the file extension when possible.
 
+Example:
 `test_grid_390x360.gcode`  
-`large_alignment_grid_390x360_final.gcode` May upload, but may not display clearly on the Ray5 screen.
+`large_alignment_grid_390x360_final.gcode` may upload successfully, but may not display clearly on the Ray5 screen.
+
+## v1.0.6
+### Added
+- Added Upload setting `auto_shorten_long_filenames` to automatically shorten SD-uploaded filenames longer than 24 characters (including extension) for Ray5 screen readability.
+- Added Settings > Upload checkbox: **Auto-shorten long Ray5 filenames**.
+
+### Changed
+- Dashboard camera health now updates from backend-confirmed camera operations only.
+- Live camera stream health now updates from backend frame-read success/failure in the stream pipeline instead of browser image-load events.
+- Settings save now preserves `status.live_status_stale_seconds` invisibly.
+- Updated Camera settings label text to **Snapshot history filename prefix** with clarifying help text.
+
+### Fixed
+- Fixed System Check inconsistency where `PAGEID captured` or `SD card list working` could remain stale `Yes` while Ray5 was offline.
+- Fixed SD Card Files auto-load trigger from System Check transitions when Ray5 comes online after app startup.
+- Fixed camera health ambiguity where frontend load events could mark camera test as passed without backend frame confirmation.
+
+### Notes
+- Historical release notes remain below for v1.0.5 and earlier.
 
 ## v1.0.5
 ### Added

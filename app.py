@@ -65,6 +65,17 @@ timelapse_state: dict[str, Any] = {
     "session_id": "",
     "status": "Disabled",
 }
+system_check_state: dict[str, Any] = {
+    "ray5_http_reachable": None,
+    "ray5_http_at": None,
+    "sd_card_list_working": None,
+    "sd_card_list_at": None,
+    "camera_test_passed": None,
+    "camera_test_at": None,
+    "last_auto_check_at": None,
+    "auto_check_in_progress": False,
+    "last_auto_check_log_at": None,
+}
 console.add("info", f"CONFIG PATH: {cfg_mgr.config_path}")
 console.add("info", f"CONFIG EXISTS: {cfg_mgr.config_path.exists()}")
 console.add("info", f"RAY5 HOST: {cfg.get('ray5', {}).get('host', '')}")
@@ -209,6 +220,7 @@ def reload_components() -> None:
     console.add("info", f"RAY5 PORT: {new_cfg.get('ray5', {}).get('port', '')}")
     console.add("info", f"RAY5 BASE URL: {new_ray5._base()}")
     _warn_if_non_local_bind()
+    ensure_runtime_directories(new_cfg)
     _ensure_watch_thread()
 
 
@@ -316,12 +328,108 @@ def _max_upload_bytes() -> int:
     return int(float(limits.get("max_gcode_upload_mb", 50)) * 1024 * 1024)
 
 
+def _set_system_check_flag(key: str, value: bool | None) -> None:
+    with app_state_lock:
+        system_check_state[key] = value
+        system_check_state[f"{key}_at"] = time.time() if value is not None else None
+
+
+def _set_camera_check_result(ok: bool | None, reason: str = "") -> None:
+    _set_system_check_flag("camera_test_passed", ok)
+    if reason:
+        level = "info" if ok is True else ("warn" if ok is False else "info")
+        console.add(level, f"Camera health update: {reason}")
+
+
+def _run_system_check_probe() -> None:
+    try:
+        with app_state_lock:
+            active_cfg = cfg
+            system_check_state["auto_check_in_progress"] = True
+            system_check_state["last_auto_check_at"] = time.time()
+        if not _is_ray5_host_configured(active_cfg):
+            return
+
+        # Lightweight HTTP reachability probe.
+        http_ok = bool(ray5.connectivity().get("connected"))
+        _set_system_check_flag("ray5_http_reachable", http_ok)
+        if not http_ok:
+            return
+
+        # Reuse existing SD listing method to update SD health without touching UI state.
+        req_path = str(active_cfg.get("ray5", {}).get("sd_path", "/") or "/")
+        sd_res = ray5.list_files(path=req_path)
+        _set_system_check_flag("sd_card_list_working", bool(sd_res.get("ok")))
+        if sd_res.get("ok"):
+            _set_system_check_flag("ray5_http_reachable", True)
+    except Exception as exc:
+        with app_state_lock:
+            now = time.time()
+            last_log = system_check_state.get("last_auto_check_log_at")
+            should_log = (last_log is None) or ((now - float(last_log)) >= 60.0)
+            if should_log:
+                system_check_state["last_auto_check_log_at"] = now
+        if should_log:
+            console.add("warn", f"System check auto-probe warning: {exc}")
+    finally:
+        with app_state_lock:
+            system_check_state["auto_check_in_progress"] = False
+
+
+def _schedule_system_check_probe() -> None:
+    with app_state_lock:
+        active_cfg = cfg
+        if not _is_ray5_host_configured(active_cfg):
+            return
+        if bool(system_check_state.get("auto_check_in_progress", False)):
+            return
+        now = time.time()
+        last = system_check_state.get("last_auto_check_at")
+        interval = 20.0
+        if isinstance(last, (int, float)) and (now - float(last) < interval):
+            return
+        system_check_state["auto_check_in_progress"] = True
+    threading.Thread(target=_run_system_check_probe, name="system-check-probe", daemon=True).start()
+
+
 def _is_ray5_host_configured(config: dict[str, Any] | None = None) -> bool:
     if config is None:
         with app_state_lock:
             config = cfg
     host = str(config.get("ray5", {}).get("host", "")).strip()
     return bool(host) and host.upper() != "YOUR_RAY5_IP"
+
+
+def _resolve_runtime_dir(path_like: str | Path) -> Path:
+    p = Path(path_like)
+    if p.is_absolute():
+        return p
+    return (BASE_DIR / p).resolve()
+
+
+def ensure_runtime_directories(config: dict[str, Any] | None = None) -> None:
+    if config is None:
+        with app_state_lock:
+            config = cfg
+    jobs_cfg = config.get("jobs", {}) if isinstance(config.get("jobs"), dict) else {}
+    camera_cfg = config.get("camera", {}) if isinstance(config.get("camera"), dict) else {}
+    timelapse_cfg = config.get("timelapse", {}) if isinstance(config.get("timelapse"), dict) else {}
+    dirs: dict[str, Path] = {
+        "imported_jobs": _resolve_runtime_dir(str(jobs_cfg.get("imported_jobs_dir", "imported_jobs") or "imported_jobs")),
+        "watched_gcode": _resolve_runtime_dir(str(jobs_cfg.get("watched_gcode_dir", "watched_gcode") or "watched_gcode")),
+        "rejected_jobs": _resolve_runtime_dir(str(jobs_cfg.get("rejected_jobs_dir", "rejected_jobs") or "rejected_jobs")),
+        "logs": _resolve_runtime_dir("logs"),
+        "camera_captures": _resolve_runtime_dir(str(camera_cfg.get("output_dir", "camera_captures") or "camera_captures")),
+        "timelapse": _resolve_runtime_dir(str(timelapse_cfg.get("output_dir", "timelapse") or "timelapse")),
+    }
+    created: list[str] = []
+    for name, directory in dirs.items():
+        existed = directory.exists()
+        directory.mkdir(parents=True, exist_ok=True)
+        if not existed:
+            created.append(f"{name}={directory}")
+    if created:
+        console.add("info", "Runtime folders created: " + ", ".join(created))
 
 
 def _warn_placeholder_host_once() -> None:
@@ -371,6 +479,9 @@ def start_runtime() -> None:
         active_monitor = status_monitor
         runtime_started = True
     _warn_if_non_local_bind()
+    with app_state_lock:
+        active_cfg = cfg
+    ensure_runtime_directories(active_cfg)
     _ensure_watch_thread()
     if active_monitor is not None:
         try:
@@ -569,11 +680,13 @@ def _timelapse_worker() -> None:
             snap_count += 1
             frame_target = session_dir / f"frame_{snap_count:06d}.jpg"
             camera.capture_timelapse_frame_to(frame_target, source=frame_source)
+            _set_camera_check_result(True, "timelapse frame capture succeeded")
             with timelapse_lock:
                 timelapse_state["snapshot_count"] = snap_count
                 timelapse_state["last_snapshot_at"] = time.time()
             console.add("info", f"Timelapse frame captured: {frame_target.name}")
         except Exception as exc:
+            _set_camera_check_result(False, "timelapse frame capture failed")
             with timelapse_lock:
                 timelapse_state["error"] = str(exc)
             console.add("warn", f"Timelapse capture warning: {exc}")
@@ -794,6 +907,7 @@ def api_status() -> Any:
     with app_state_lock:
         active_cfg = cfg
         active_monitor = status_monitor
+    _schedule_system_check_probe()
     st_cfg = active_cfg.get("status", {}) if isinstance(active_cfg.get("status"), dict) else {}
     prefer_live = bool(st_cfg.get("prefer_live_status", True))
     live_status_stale_seconds = float(st_cfg.get("live_status_stale_seconds", 15.0) or 15.0)
@@ -967,6 +1081,29 @@ def api_status() -> Any:
     cam_url = cam["url"]
     cam_scheme = (urlsplit(cam_url).scheme or "").lower() if cam_url else ""
     cam_masked = mask_camera_url(cam_url) if cam["mask_credentials"] else cam_url
+    with app_state_lock:
+        http_ok = system_check_state.get("ray5_http_reachable")
+        sd_ok = system_check_state.get("sd_card_list_working")
+        cam_test_ok = system_check_state.get("camera_test_passed")
+    ws_reachable: bool | None
+    if not _is_ray5_host_configured():
+        ws_reachable = None
+    else:
+        # Reachable means we currently have live websocket-backed machine status.
+        ws_reachable = bool(ws_connected and online and source == "live_websocket")
+    if ws_reachable is True:
+        page_id_captured: bool | None = bool(ws_page_id not in (None, ""))
+    elif ws_reachable is False:
+        page_id_captured = False
+    else:
+        page_id_captured = None
+
+    if http_ok is False:
+        sd_working_current: bool | None = False
+    elif http_ok is True:
+        sd_working_current = bool(sd_ok) if sd_ok is not None else None
+    else:
+        sd_working_current = None
     _timelapse_observe_machine_state(str(state), bool(online))
     tl_state = _timelapse_snapshot_state()
     return jsonify(
@@ -1014,6 +1151,15 @@ def api_status() -> Any:
             "camera_proxy_path": cam["proxy_path"],
             "camera_url_masked": cam_masked,
             "camera_scheme": cam_scheme,
+            "system_check": {
+                "ray5_host_configured": bool(_is_ray5_host_configured(active_cfg)),
+                "ray5_http_reachable": http_ok,
+                "ray5_websocket_reachable": ws_reachable,
+                "page_id_captured": page_id_captured,
+                "sd_card_list_working": sd_working_current,
+                "camera_url_configured": bool(cam_url),
+                "camera_test_passed": cam_test_ok,
+            },
             "timelapse_state": tl_state,
         }
     )
@@ -1134,16 +1280,48 @@ def camera_stream() -> Any:
         return "Camera proxy is disabled", 404
     if not cam["url"]:
         return "Camera URL not configured", 404
+    stream_health = {"last": None}
+
+    def _on_stream_frame_ok() -> None:
+        if stream_health["last"] is True:
+            return
+        stream_health["last"] = True
+        _set_camera_check_result(True, "live stream frame read succeeded")
+
+    def _on_stream_frame_fail(reason: str = "live stream frame read failed") -> None:
+        if stream_health["last"] is False:
+            return
+        stream_health["last"] = False
+        _set_camera_check_result(False, str(reason or "live stream frame read failed"))
+
     return app.response_class(
-        mjpeg_generator(cam["url"], cam["reconnect_seconds"]),
+        mjpeg_generator(
+            cam["url"],
+            cam["reconnect_seconds"],
+            on_frame_ok=_on_stream_frame_ok,
+            on_frame_fail=_on_stream_frame_fail,
+        ),
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+@app.post("/api/camera/mark-working")
+def api_camera_mark_working() -> Any:
+    # Frontend image load events are not authoritative camera health checks.
+    return jsonify({"ok": True, "message": "ignored: backend-only camera health tracking"})
+
+
+@app.post("/api/camera/mark-failed")
+def api_camera_mark_failed() -> Any:
+    # Frontend image error events are not authoritative camera health checks.
+    return jsonify({"ok": True, "message": "ignored: backend-only camera health tracking"})
 
 
 @app.get("/api/camera/snapshot")
 def camera_snapshot() -> Any:
     latest_path = camera.latest_path
     if latest_path.exists():
+        _set_camera_check_result(True, "latest snapshot served")
         return send_file(latest_path, mimetype="image/jpeg")
     return jsonify({"ok": False, "error": "No latest snapshot available. Take a snapshot first."}), 404
 
@@ -1152,16 +1330,21 @@ def camera_snapshot() -> Any:
 def api_camera_test() -> Any:
     cam = _camera_cfg()
     if not cam["enabled"]:
+        _set_camera_check_result(False, "camera test failed: camera disabled")
         return jsonify({"ok": False, "message": "Camera test failed: camera disabled."})
     if not cam["url"]:
+        _set_camera_check_result(False, "camera test failed: camera URL not configured")
         return jsonify({"ok": False, "message": "Camera test failed: camera URL not configured."})
     cap = cv2.VideoCapture(cam["url"])
     try:
         if not cap.isOpened():
+            _set_camera_check_result(False, "camera test failed: camera open failed")
             return jsonify({"ok": False, "message": "Camera test failed: camera open failed."})
         ok, frame = cap.read()
         if not ok or frame is None:
+            _set_camera_check_result(False, "camera test failed: camera read failed")
             return jsonify({"ok": False, "message": "Camera test failed: camera read failed."})
+        _set_camera_check_result(True, "camera test passed")
         return jsonify({"ok": True, "message": "Camera test passed."})
     finally:
         cap.release()
@@ -1183,6 +1366,7 @@ def api_camera_open_external() -> Any:
 def api_camera_capture() -> Any:
     try:
         p = camera.capture("manual")
+        _set_camera_check_result(True, "manual camera capture succeeded")
         dbg = dict(camera.last_capture_debug)
         raw_size = dbg.get("raw_size", ["?", "?"])
         proc_size = dbg.get("processed_size", ["?", "?"])
@@ -1218,6 +1402,7 @@ def api_camera_capture() -> Any:
             }
         )
     except CameraCaptureError as exc:
+        _set_camera_check_result(False, "manual camera capture failed")
         console.add("warn", f"Camera capture failed: {exc}")
         return jsonify({"ok": False, "error": str(exc)})
 
@@ -1568,6 +1753,11 @@ def api_jobs_upload() -> Any:
     else:
         console.add("info", f"G-code safety scan passed: {filename} detected={safety.get('detected_type')}")
     detail = ray5.upload_file_detailed(p)
+    if detail.get("filename_shortened"):
+        console.add(
+            "info",
+            f"Ray5 upload filename shortened: original='{detail.get('original_filename', filename)}' final='{detail.get('upload_filename', '')}'",
+        )
     console.add(
         "info",
         f"Upload source size={detail.get('source_size')} sha256={str(detail.get('source_sha256',''))[:12]} "
@@ -1639,6 +1829,11 @@ def api_jobs_start() -> Any:
         console.add("info", f"G-code safety scan passed: {filename} detected={safety.get('detected_type')}")
     console.add("info", f"Start request: {filename}")
     upload_detail = ray5.upload_file_detailed(local_path)
+    if upload_detail.get("filename_shortened"):
+        console.add(
+            "info",
+            f"Ray5 upload filename shortened: original='{upload_detail.get('original_filename', filename)}' final='{upload_detail.get('upload_filename', '')}'",
+        )
     upload_ok = bool(upload_detail.get("ok"))
     console.add(
         "info",
@@ -2030,6 +2225,8 @@ def api_files() -> Any:
     console.add("info", f"SD refresh requested path={req_path}")
     data = ray5.list_files(path=req_path)
     if not data.get("ok"):
+        _set_system_check_flag("ray5_http_reachable", False)
+        _set_system_check_flag("sd_card_list_working", False)
         dbg = ray5.debug_info(str(cfg_mgr.config_path))
         console.add(
             "error",
@@ -2040,6 +2237,8 @@ def api_files() -> Any:
         )
     else:
         storage = data.get("storage", {})
+        _set_system_check_flag("ray5_http_reachable", True)
+        _set_system_check_flag("sd_card_list_working", True)
         console.add(
             "info",
             f"SD refresh ok files={len(data.get('files', []))} used={storage.get('used', '---')} total={storage.get('total', '---')}",
@@ -2111,6 +2310,11 @@ def api_files_upload() -> Any:
         console.add("info", f"G-code safety scan passed: {filename} detected={safety.get('detected_type')}")
     console.add("info", f"SD direct upload start: {filename} size={len(data)} path={req_path}")
     result = ray5.upload_bytes_to_sd(filename=filename, data=data, path=req_path)
+    if result.get("filename_shortened"):
+        console.add(
+            "info",
+            f"Ray5 upload filename shortened: original='{result.get('original_filename', filename)}' final='{result.get('filename', filename)}'",
+        )
     if result.get("ok"):
         console.add("info", f"SD direct upload end: {filename} => ok")
         return jsonify(

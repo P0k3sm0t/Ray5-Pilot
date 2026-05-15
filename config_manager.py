@@ -141,6 +141,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "upload": {
         "preserve_original": True,
         "sanitize_filename": False,
+        "auto_shorten_long_filenames": False,
         "screen_compatible_rewrite": False,
         "convert_m4_to_m3": False,
         "force_extension": "",

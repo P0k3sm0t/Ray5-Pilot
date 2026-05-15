@@ -25,6 +25,11 @@ function axisStatusLine(axis, wVal, mVal){
   if(hasM) return `${axis}: M ${m.toFixed(3)}`;
   return `${axis}: —`;
 }
+function yesNoUnknown(v){
+  if(v === true) return 'Yes';
+  if(v === false) return 'No';
+  return 'Unknown';
+}
 function esc(v){return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'","&#39;")}
 function btn(t,fn){const b=document.createElement('button');b.textContent=t;b.onclick=fn;return b}
 function fmtBounds(b){if(!b||b.min_x===undefined||b.min_x===null)return 'Bounds unknown';return `X[${b.min_x.toFixed(3)}..${b.max_x.toFixed(3)}] Y[${b.min_y.toFixed(3)}..${b.max_y.toFixed(3)}]`;}
@@ -116,6 +121,20 @@ async function refreshStatus(){
   const wcoLine = hasWco ? `WCO: X ${Number(wco.x).toFixed(3)} / Y ${Number(wco.y).toFixed(3)}` : 'WCO: —';
   const stateDisplay = isOfflineFallback ? 'Offline' : stateText;
   const pageDisplay = isOfflineFallback ? '—' : pageId;
+  const sc = (d && d.system_check) ? d.system_check : {};
+  const sdWorkingNow = (sc.sd_card_list_working === true);
+  const httpReachableNow = (sc.ray5_http_reachable === true);
+  const sdWorkingTransition = (lastSystemSdWorking !== true) && sdWorkingNow;
+  const httpTransition = (lastSystemHttpReachable !== true) && httpReachableNow;
+  lastSystemSdWorking = sc.sd_card_list_working;
+  lastSystemHttpReachable = sc.ray5_http_reachable;
+  if((sdWorkingTransition || httpTransition) && !sdAutoRefreshInProgress){
+    const now = Date.now();
+    if((now - lastSdAutoRefreshAt) >= SD_AUTO_REFRESH_MIN_INTERVAL_MS){
+      lastSdAutoRefreshAt = now;
+      loadSdFiles({preserveMessage:true, auto:true}).catch(()=>{});
+    }
+  }
   document.getElementById('status').innerHTML = `
     <div class="status-top">
       <div>State: <b>${esc(stateDisplay)}</b></div>
@@ -137,6 +156,14 @@ async function refreshStatus(){
       <div>Source: ${esc(sourceText)}</div>
       <div>Coordinate source: ${esc(coordSourceText)}</div>
       <div>Last update: ${esc(lastUpdateText)}</div>
+      <div style="margin-top:4px;"><b>System check</b></div>
+      <div>Ray5 host configured: ${esc(yesNoUnknown(sc.ray5_host_configured))}</div>
+      <div>Ray5 HTTP reachable: ${esc(yesNoUnknown(sc.ray5_http_reachable))}</div>
+      <div>Ray5 WebSocket reachable: ${esc(yesNoUnknown(sc.ray5_websocket_reachable))}</div>
+      <div>PAGEID captured: ${esc(yesNoUnknown(sc.page_id_captured))}</div>
+      <div>SD card list working: ${esc(yesNoUnknown(sc.sd_card_list_working))}</div>
+      <div>Camera URL configured: ${esc(yesNoUnknown(sc.camera_url_configured))}</div>
+      <div>Camera test passed: ${esc(yesNoUnknown(sc.camera_test_passed))}</div>
     </div>
   `;
 
@@ -611,6 +638,11 @@ let sdEnableStart = true;
 let sdEnableDelete = true;
 const selectedSdFiles = new Map();
 let currentSdFiles = [];
+let lastSystemSdWorking = null;
+let lastSystemHttpReachable = null;
+let sdAutoRefreshInProgress = false;
+let lastSdAutoRefreshAt = 0;
+const SD_AUTO_REFRESH_MIN_INTERVAL_MS = 15000;
 
 function sdFileKey(file){
   const name = String((file && file.name) || '').trim();
@@ -798,17 +830,23 @@ function renderSdFiles(d){
 }
 
 async function loadSdFiles(opts={}){
+  if(sdAutoRefreshInProgress) return;
   const preserveMessage = !!(opts && opts.preserveMessage);
+  sdAutoRefreshInProgress = true;
   const msgEl = document.getElementById('sdMsg');
-  if(!preserveMessage) msgEl.textContent = 'Loading SD files...';
-  const d = await api('/api/files?path='+encodeURIComponent(currentSdPath||'/'));
-  if(!d.ok){
-    if(!preserveMessage) msgEl.textContent = 'SD refresh failed: '+(d.error||'unknown');
-    document.getElementById('sdFilesBody').innerHTML = '<tr><td colspan="6" class="sd-muted">Unable to load SD files.</td></tr>';
-    return;
+  try{
+    if(!preserveMessage) msgEl.textContent = 'Loading SD files...';
+    const d = await api('/api/files?path='+encodeURIComponent(currentSdPath||'/'));
+    if(!d.ok){
+      if(!preserveMessage) msgEl.textContent = 'SD refresh failed: '+(d.error||'unknown');
+      document.getElementById('sdFilesBody').innerHTML = '<tr><td colspan="6" class="sd-muted">Unable to load SD files.</td></tr>';
+      return;
+    }
+    renderSdFiles(d);
+    if(!preserveMessage) msgEl.textContent = `Loaded ${ (d.files||[]).length } item(s).`;
+  } finally {
+    sdAutoRefreshInProgress = false;
   }
-  renderSdFiles(d);
-  if(!preserveMessage) msgEl.textContent = `Loaded ${ (d.files||[]).length } item(s).`;
 }
 
 let manualBusy = false;
@@ -1094,6 +1132,9 @@ function bind(){
     if(off) off.style.display='none';
     document.getElementById('camMsg').textContent='Camera stream unavailable.';
     setCameraTestStatus('Camera stream unavailable.', 'error', 10000);
+  };
+  cam.onload=()=>{
+    if((cam.src||'').includes('camera_placeholder.svg')) return;
   };
 
   document.getElementById('importBtn').onclick=async()=>{

@@ -609,6 +609,20 @@ class Ray5Client:
         payload_sha = hashlib.sha256(payload).hexdigest()
         sanitize_filename = bool(up_cfg.get("sanitize_filename", False))
         upload_name = self._build_upload_filename(path.name, force_extension=force_extension, sanitize=sanitize_filename)
+        auto_shorten = bool(up_cfg.get("auto_shorten_long_filenames", False))
+        if auto_shorten and len(upload_name) > 24:
+            existing_names: set[str] | None = None
+            try:
+                listing = self.list_files(path=upload_path)
+                if listing.get("ok"):
+                    existing_names = {
+                        str(item.get("name", "")).strip().lower()
+                        for item in (listing.get("files") or [])
+                        if str(item.get("name", "")).strip()
+                    }
+            except Exception:
+                existing_names = None
+            upload_name = self.make_ray5_safe_upload_name(upload_name, max_chars=24, existing_names=existing_names)
 
         params = {"path": upload_path}
         data = {"path": upload_path, "size": str(len(payload))}
@@ -654,6 +668,8 @@ class Ray5Client:
                     "normalize_line_endings": normalize_line_endings,
                     "source_sha256": source_sha,
                     "payload_sha256": payload_sha,
+                    "original_filename": path.name,
+                    "filename_shortened": upload_name != path.name,
                 }
             return {
                 "ok": bool(resp.ok),
@@ -673,6 +689,8 @@ class Ray5Client:
                 "normalize_line_endings": normalize_line_endings,
                 "source_sha256": source_sha,
                 "payload_sha256": payload_sha,
+                "original_filename": path.name,
+                "filename_shortened": upload_name != path.name,
             }
         except requests.RequestException as exc:
             self.last_debug = {
@@ -703,14 +721,31 @@ class Ray5Client:
                 "normalize_line_endings": normalize_line_endings,
                 "source_sha256": source_sha,
                 "payload_sha256": payload_sha,
+                "original_filename": path.name,
+                "filename_shortened": upload_name != path.name,
             }
 
     def upload_bytes_to_sd(self, filename: str, data: bytes, path: str = "/") -> dict[str, Any]:
         ray = self.cfg.get("ray5", {})
+        up_cfg = self.cfg.get("upload", {})
         endpoint = str(ray.get("upload_endpoint", "/upload"))
         url = self._base() + endpoint
         upload_path = str(path or ray.get("upload_path", "/") or "/")
         upload_name = Path(str(filename or "upload.gcode")).name
+        auto_shorten = bool(up_cfg.get("auto_shorten_long_filenames", False))
+        if auto_shorten and len(upload_name) > 24:
+            existing_names: set[str] | None = None
+            try:
+                listing = self.list_files(path=upload_path)
+                if listing.get("ok"):
+                    existing_names = {
+                        str(item.get("name", "")).strip().lower()
+                        for item in (listing.get("files") or [])
+                        if str(item.get("name", "")).strip()
+                    }
+            except Exception:
+                existing_names = None
+            upload_name = self.make_ray5_safe_upload_name(upload_name, max_chars=24, existing_names=existing_names)
         ext = Path(upload_name).suffix.lower()
         if ext not in {".gc", ".nc", ".gcode"}:
             return {"ok": False, "message": f"extension {ext!r} not allowed", "raw": ""}
@@ -743,6 +778,8 @@ class Ray5Client:
             return {
                 "ok": ok,
                 "filename": upload_name,
+                "original_filename": filename,
+                "filename_shortened": upload_name != Path(str(filename or "")).name,
                 "path": upload_path,
                 "size": len(payload),
                 "message": "Uploaded to SD" if ok else (text or f"http {resp.status_code}"),
@@ -760,7 +797,16 @@ class Ray5Client:
                 "preview": "",
                 "error": str(exc),
             }
-            return {"ok": False, "filename": upload_name, "path": upload_path, "size": len(payload), "message": str(exc), "raw": ""}
+            return {
+                "ok": False,
+                "filename": upload_name,
+                "original_filename": filename,
+                "filename_shortened": upload_name != Path(str(filename or "")).name,
+                "path": upload_path,
+                "size": len(payload),
+                "message": str(exc),
+                "raw": "",
+            }
 
     def _build_upload_filename(self, original_name: str, force_extension: str = "", sanitize: bool = False) -> str:
         base_name = Path(str(original_name or "job.gcode")).name
@@ -774,6 +820,37 @@ class Ray5Client:
         if force_extension:
             return f"{Path(base_name).stem}.{force_extension}"
         return base_name
+
+    def make_ray5_safe_upload_name(self, original_name: str, max_chars: int = 24, existing_names: set[str] | None = None) -> str:
+        base_name = Path(str(original_name or "job.gcode")).name
+        stem = Path(base_name).stem
+        ext = Path(base_name).suffix.lower()
+        safe_stem = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("._-") or "job"
+        safe_ext = re.sub(r"[^A-Za-z0-9]+", "", ext.lstrip("."))
+        ext_part = f".{safe_ext}" if safe_ext else ""
+
+        max_chars = max(1, int(max_chars))
+        if len(ext_part) >= max_chars:
+            ext_part = ext_part[: max(0, max_chars - 1)]
+        max_stem_len = max(1, max_chars - len(ext_part))
+        trimmed_stem = safe_stem[:max_stem_len]
+        candidate = f"{trimmed_stem}{ext_part}"
+
+        if existing_names is None:
+            return candidate[:max_chars]
+
+        existing = {str(x).lower() for x in existing_names if str(x).strip()}
+        if candidate.lower() not in existing:
+            return candidate[:max_chars]
+
+        for idx in range(1, 1000):
+            suffix = f"_{idx}"
+            base_limit = max(1, max_stem_len - len(suffix))
+            alt_stem = f"{safe_stem[:base_limit]}{suffix}"
+            alt_name = f"{alt_stem}{ext_part}"[:max_chars]
+            if alt_name.lower() not in existing:
+                return alt_name
+        return candidate[:max_chars]
 
     def _rewrite_for_screen_compatibility(self, content: bytes, convert_m4_to_m3: bool = False) -> bytes:
         text = content.decode("utf-8", errors="ignore")

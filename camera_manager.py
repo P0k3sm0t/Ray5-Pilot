@@ -678,11 +678,21 @@ class CameraManager:
         }
 
 
-def mjpeg_generator(rtsp_url: str, reconnect_seconds: float = 5.0) -> Iterator[bytes]:
+def mjpeg_generator(
+    rtsp_url: str,
+    reconnect_seconds: float = 5.0,
+    on_frame_ok: Any | None = None,
+    on_frame_fail: Any | None = None,
+) -> Iterator[bytes]:
     delay = max(1.0, float(reconnect_seconds))
     while True:
         cap = cv2.VideoCapture(rtsp_url)
         if not cap.isOpened():
+            if callable(on_frame_fail):
+                try:
+                    on_frame_fail("camera open failed")
+                except Exception:
+                    pass
             frame = offline_frame_jpeg("Camera stream unavailable")
             yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
             time.sleep(delay)
@@ -691,10 +701,20 @@ def mjpeg_generator(rtsp_url: str, reconnect_seconds: float = 5.0) -> Iterator[b
             while True:
                 ok, img = cap.read()
                 if not ok or img is None:
+                    if callable(on_frame_fail):
+                        try:
+                            on_frame_fail("camera read failed")
+                        except Exception:
+                            pass
                     break
                 ok_enc, buf = cv2.imencode(".jpg", img)
                 if not ok_enc:
                     continue
+                if callable(on_frame_ok):
+                    try:
+                        on_frame_ok()
+                    except Exception:
+                        pass
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + bytes(buf) + b"\r\n"
         finally:
             cap.release()
