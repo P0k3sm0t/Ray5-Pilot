@@ -8,8 +8,8 @@ __pycache__/
 .venv/
 venv/
 env/
-camera_captures/*
-timelapse/*
+camera_captures/
+timelapse/
 snapshots/
 imported_jobs/*
 watched_gcode/*

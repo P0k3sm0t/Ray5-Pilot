@@ -15,7 +15,7 @@
 A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-style HTTP/WebSocket interface.
 
 ## Features
-- Dashboard web UI
+- Dashboard, Settings and Machine Settings, web UI
 - Live Ray5 status via ESP3D WebSocket port 8849
 - System check/health
 - X/Y live MPos/WPos display
@@ -154,6 +154,14 @@ Ray5 Pilot also includes an Upload setting to automatically shorten long filenam
 Example:
 `test_grid_390x360.gcode`  
 `large_alignment_grid_390x360_final.gcode` may upload successfully, but may not display clearly on the Ray5 screen.
+
+## v1.0.7-pre
+### Pre-release
+- dedicated Machine Settings page for reading Ray5/GRBL controller settings with $$, displaying them in a uniform editable table, downloading a raw settings backup, and saving only changed $number=value settings with strict validation and confirmation.
+- Machine Settings page now collects asynchronous `$$` output from Ray5/ESP3D WebSocket lines so GRBL settings load reliably instead of returning zero rows.
+- Machine Settings editing now keeps input focus/scroll stable while typing (no full table re-render per keypress).
+- Machine Settings save message now remains visible after post-save refresh.
+- Camera health no longer marks success from serving cached snapshot files alone; only real backend capture/read operations mark success.
 
 ## v1.0.6
 ### Added

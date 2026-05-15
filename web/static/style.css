@@ -5,6 +5,7 @@ header{display:flex;align-items:center;justify-content:space-between;gap:16px;pa
 .brand-logo-main{display:block;height:72px;width:auto;max-width:min(420px,70vw);object-fit:contain}
 header nav{flex:0 0 auto}
 nav a{color:#93c5fd;margin-left:12px;text-decoration:none}
+nav a:hover{text-decoration:underline}
 main{max-width:100%;overflow-x:hidden;padding:8px;position:relative;z-index:1}
 .card{background:#1a1f2b;border:1px solid #2b3345;border-radius:10px;padding:14px;margin:10px 0;width:100%;max-width:100%;overflow:hidden}
 .video-card{width:100%;max-width:100%;padding:14px;overflow:hidden}
@@ -140,6 +141,14 @@ input[type='checkbox']{width:auto}
 .card-actions{display:flex;flex-wrap:wrap;gap:8px}
 .console-card{display:flex;flex-direction:column}
 .console-command-wrap{margin-top:10px}
+
+.machine-settings-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.machine-settings-table td,.machine-settings-table th{vertical-align:top}
+.machine-settings-table input.machine-setting-input{width:100%;min-width:120px}
+.machine-setting-changed{background:rgba(59,130,246,.12)}
+.machine-settings-raw{margin-top:10px}
+.machine-settings-raw pre{max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.error{color:#fca5a5}
 .console-command-row{display:flex;gap:10px;align-items:center;margin-bottom:6px}
 .console-command-row input{flex:1;min-width:220px}
 .console-output{flex:1 1 auto;min-height:220px;max-height:360px;overflow-y:auto;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9rem;line-height:1.35;background:rgba(0,0,0,.25);border-radius:12px;padding:12px}

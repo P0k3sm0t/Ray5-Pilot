@@ -901,6 +901,11 @@ def setup_page() -> str:
     return render_template("setup.html")
 
 
+@app.get("/machine-settings")
+def machine_settings_page() -> str:
+    return render_template("machine_settings.html")
+
+
 @app.get("/api/status")
 def api_status() -> Any:
     global _last_logged_status_source, _status_error_logged
@@ -1252,6 +1257,177 @@ def api_console_command() -> Any:
     )
 
 
+GRBL_SETTING_INFO: dict[str, dict[str, str]] = {
+    "0": {"description": "Step pulse time", "unit": "microseconds", "notes": ""},
+    "1": {"description": "Step idle delay", "unit": "milliseconds", "notes": ""},
+    "2": {"description": "Step pulse invert", "unit": "mask", "notes": ""},
+    "3": {"description": "Direction invert", "unit": "mask", "notes": ""},
+    "4": {"description": "Step enable invert", "unit": "boolean", "notes": ""},
+    "5": {"description": "Limit pins invert", "unit": "boolean", "notes": ""},
+    "6": {"description": "Probe pin invert", "unit": "boolean", "notes": ""},
+    "10": {"description": "Status report options", "unit": "mask", "notes": ""},
+    "11": {"description": "Junction deviation", "unit": "mm", "notes": ""},
+    "12": {"description": "Arc tolerance", "unit": "mm", "notes": ""},
+    "13": {"description": "Report inches", "unit": "boolean", "notes": ""},
+    "20": {"description": "Soft limits", "unit": "boolean", "notes": ""},
+    "21": {"description": "Hard limits", "unit": "boolean", "notes": ""},
+    "22": {"description": "Homing cycle", "unit": "boolean", "notes": ""},
+    "23": {"description": "Homing direction invert", "unit": "mask", "notes": ""},
+    "24": {"description": "Homing locate feed rate", "unit": "mm/min", "notes": ""},
+    "25": {"description": "Homing seek rate", "unit": "mm/min", "notes": ""},
+    "26": {"description": "Homing debounce", "unit": "milliseconds", "notes": ""},
+    "27": {"description": "Homing pull-off", "unit": "mm", "notes": ""},
+    "30": {"description": "Maximum spindle/laser value", "unit": "S-value max", "notes": ""},
+    "31": {"description": "Minimum spindle/laser value", "unit": "S-value min", "notes": ""},
+    "32": {"description": "Laser mode", "unit": "boolean", "notes": ""},
+    "100": {"description": "X steps/mm", "unit": "steps/mm", "notes": ""},
+    "101": {"description": "Y steps/mm", "unit": "steps/mm", "notes": ""},
+    "102": {"description": "Z steps/mm", "unit": "steps/mm", "notes": ""},
+    "110": {"description": "X max rate", "unit": "mm/min", "notes": ""},
+    "111": {"description": "Y max rate", "unit": "mm/min", "notes": ""},
+    "112": {"description": "Z max rate", "unit": "mm/min", "notes": ""},
+    "120": {"description": "X acceleration", "unit": "mm/sec²", "notes": ""},
+    "121": {"description": "Y acceleration", "unit": "mm/sec²", "notes": ""},
+    "122": {"description": "Z acceleration", "unit": "mm/sec²", "notes": ""},
+    "130": {"description": "X max travel", "unit": "mm", "notes": ""},
+    "131": {"description": "Y max travel", "unit": "mm", "notes": ""},
+    "132": {"description": "Z max travel", "unit": "mm", "notes": ""},
+}
+
+
+def _parse_machine_settings_raw(raw_text: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for line in str(raw_text or "").replace("\r", "\n").split("\n"):
+        s = line.strip()
+        if not s:
+            continue
+        m = re.match(r"^\$(\d+)=(.+)$", s)
+        if not m:
+            continue
+        key = m.group(1)
+        value = m.group(2).strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        info = GRBL_SETTING_INFO.get(key, {"description": "Unknown / firmware-specific setting", "unit": "—", "notes": "—"})
+        rows.append(
+            {
+                "key": key,
+                "code": f"${key}",
+                "value": value,
+                "description": str(info.get("description", "")),
+                "unit": str(info.get("unit", "—")),
+                "notes": str(info.get("notes", "—")),
+                "raw": s,
+            }
+        )
+    rows.sort(key=lambda x: int(x["key"]))
+    return rows
+
+
+def _collect_machine_settings_raw(timeout_seconds: float = 4.0, max_lines: int = 200) -> tuple[str, str]:
+    start_ts = time.time()
+    initial_result = ray5.send_gcode("$$")
+    immediate_raw = str(initial_result.get("raw", "") or "")
+    lines: list[str] = []
+    seen_settings = False
+    end_at = start_ts + max(1.0, float(timeout_seconds))
+    while time.time() < end_at:
+        if status_monitor is not None:
+            new_lines = status_monitor.get_lines_since(start_ts)
+            if new_lines:
+                lines = new_lines[-max(1, int(max_lines)) :]
+                seen_settings = any(re.match(r"^\$(\d+)=(.+)$", str(x).strip()) for x in lines)
+        # If settings already arrived and stream has signaled completion, stop early.
+        if seen_settings and any(str(x).strip().lower() == "ok" for x in lines):
+            break
+        time.sleep(0.1)
+
+    combined_parts = [immediate_raw]
+    if lines:
+        combined_parts.append("\n".join(lines))
+    combined = "\n".join([p for p in combined_parts if str(p).strip()]).strip()
+    if not combined:
+        combined = immediate_raw.strip()
+    return combined, str(initial_result.get("message") or "")
+
+
+def _validate_machine_setting_change(item: Any) -> tuple[bool, str, str]:
+    if not isinstance(item, dict):
+        return False, "", "Change must be an object."
+    key = str(item.get("key", "")).strip()
+    value = str(item.get("value", "")).strip()
+    if not re.match(r"^\d+$", key):
+        return False, key, "Invalid setting key."
+    if not value:
+        return False, key, "Value cannot be empty."
+    if re.search(r"[\r\n;|&`]", value):
+        return False, key, "Value contains forbidden characters."
+    if re.search(r"[\x00-\x1f]", value):
+        return False, key, "Value contains control characters."
+    if not re.match(r"^-?\d+(\.\d+)?$", value):
+        return False, key, "Value must be numeric."
+    return True, key, value
+
+
+@app.get("/api/machine-settings")
+def api_machine_settings_get() -> Any:
+    guard = _require_ray5_configured()
+    if guard:
+        return guard
+    raw_text, initial_message = _collect_machine_settings_raw(timeout_seconds=4.0, max_lines=200)
+    settings = _parse_machine_settings_raw(raw_text)
+    if not settings:
+        detail = str(raw_text or initial_message or "No response text received.").strip()
+        return jsonify(
+            {
+                "ok": False,
+                "settings": [],
+                "raw": raw_text,
+                "error": f"No GRBL settings were found in the $$ response. Device output: {detail[:3000]}",
+            }
+        ), 502
+    return jsonify({"ok": True, "settings": settings, "raw": raw_text, "message": f"Loaded {len(settings)} setting(s)."})
+
+
+@app.post("/api/machine-settings")
+def api_machine_settings_post() -> Any:
+    guard = _require_ray5_configured()
+    if guard:
+        return guard
+    body = request.get_json(silent=True) or {}
+    changes = body.get("changes")
+    if not isinstance(changes, list) or not changes:
+        return jsonify({"ok": False, "error": "changes must be a non-empty list"}), 400
+    results: list[dict[str, Any]] = []
+    success_count = 0
+    for item in changes:
+        valid, key, value_or_error = _validate_machine_setting_change(item)
+        if not valid:
+            results.append({"key": key, "command": "", "ok": False, "message": value_or_error})
+            continue
+        command = f"${key}={value_or_error}"
+        send_res = ray5.send_gcode(command)
+        row_ok = bool(send_res.get("ok"))
+        if row_ok:
+            success_count += 1
+        results.append(
+            {
+                "key": key,
+                "command": command,
+                "ok": row_ok,
+                "message": str(send_res.get("message") or ("ok" if row_ok else "failed")),
+                "raw": str(send_res.get("raw", "") or ""),
+            }
+        )
+    total = len(changes)
+    all_ok = success_count == total
+    msg = f"Saved {success_count} setting(s)." if all_ok else f"Saved {success_count} setting(s), {total - success_count} failed."
+    status = 200 if all_ok else 207
+    return jsonify({"ok": all_ok, "results": results, "message": msg}), status
+
+
 @app.get("/api/camera/video-enabled")
 def api_camera_video_enabled_get() -> Any:
     cam = _camera_cfg()
@@ -1321,7 +1497,6 @@ def api_camera_mark_failed() -> Any:
 def camera_snapshot() -> Any:
     latest_path = camera.latest_path
     if latest_path.exists():
-        _set_camera_check_result(True, "latest snapshot served")
         return send_file(latest_path, mimetype="image/jpeg")
     return jsonify({"ok": False, "error": "No latest snapshot available. Take a snapshot first."}), 404
 

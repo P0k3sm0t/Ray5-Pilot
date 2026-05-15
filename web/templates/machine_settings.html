@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ray5 Pilot Machine Settings</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="alternate icon" href="/static/favicon.ico">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand brand-logo-only"><img src="/static/logo.svg" alt="Ray5 Pilot" class="brand-logo-main"></div>
+  <nav><a href="/">Dashboard</a><a href="/setup">Settings</a><a href="/machine-settings">Machine Settings</a></nav>
+</header>
+<main>
+  <section class="card">
+    <h2>Machine Settings</h2>
+    <p class="field-help">These are controller settings stored on the Ray5. Changing them can affect motion, limits, homing, and laser behavior. Back up your settings before saving changes.</p>
+    <div class="machine-settings-toolbar">
+      <button id="msRefresh">Refresh from Ray5</button>
+      <button id="msDownload">Download Backup</button>
+      <button id="msSave" disabled>Save Changed Settings</button>
+      <button id="msReset" disabled>Reset Unsaved Changes</button>
+    </div>
+    <div id="msMsg" class="muted small"></div>
+    <div class="table-wrap">
+      <table class="machine-settings-table">
+        <thead>
+          <tr>
+            <th>Setting</th>
+            <th>Description</th>
+            <th>Current value</th>
+            <th>New value</th>
+            <th>Unit / Notes</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="msBody"></tbody>
+      </table>
+    </div>
+    <details class="machine-settings-raw">
+      <summary>Raw $$ Output</summary>
+      <pre id="msRaw" class="small muted"></pre>
+    </details>
+  </section>
+</main>
+<script src="/static/machine_settings.js"></script>
+</body>
+</html>

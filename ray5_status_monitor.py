@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import re
+from collections import deque
 from typing import Any
 
 import websocket
@@ -47,6 +48,7 @@ class Ray5StatusMonitor:
         self._status_trigger_count = 0
         self._status_line_count = 0
         self._last_wco: dict[str, float | None] = {"x": None, "y": None, "z": None}
+        self._recent_lines: deque[tuple[float, str]] = deque(maxlen=800)
 
     def start(self) -> None:
         if not self.ws_enabled or not self.host or self.host.upper() == "YOUR_RAY5_IP":
@@ -132,6 +134,11 @@ class Ray5StatusMonitor:
                 "reconnect_count": self._reconnect_count,
                 "last_reconnect_time": self._last_reconnect_time,
             }
+
+    def get_lines_since(self, since_ts: float) -> list[str]:
+        cutoff = float(since_ts or 0.0)
+        with self._lock:
+            return [line for ts, line in self._recent_lines if ts >= cutoff]
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -249,6 +256,8 @@ class Ray5StatusMonitor:
             line = raw.strip()
             if not line:
                 continue
+            with self._lock:
+                self._recent_lines.append((time.time(), line))
             if line.startswith("CURRENT_ID:"):
                 pid = line.split(":", 1)[1].strip()
                 with self._lock:
