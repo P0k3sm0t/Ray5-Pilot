@@ -2852,9 +2852,9 @@ def api_config_debug() -> Any:
 
 @app.get("/api/github/check-updates")
 def api_github_check_updates() -> Any:
-    release_url = "https://github.com/P0k3sm0t/Ray5-Pilot/releases/latest"
+    release_url = "https://github.com/P0k3sm0t/Ray5-Pilot"
     source_zip_url = "https://github.com/P0k3sm0t/Ray5-Pilot/archive/refs/heads/main.zip"
-    api_url = "https://api.github.com/repos/P0k3sm0t/Ray5-Pilot/releases/latest"
+    version_url = "https://raw.githubusercontent.com/P0k3sm0t/Ray5-Pilot/main/VERSION"
     try:
         current_version = _normalize_version_text((BASE_DIR / "VERSION").read_text(encoding="utf-8").strip())
     except Exception:
@@ -2862,24 +2862,22 @@ def api_github_check_updates() -> Any:
 
     try:
         req = urlrequest.Request(
-            api_url,
+            version_url,
             headers={
-                "Accept": "application/vnd.github+json",
                 "User-Agent": "Ray5-Pilot-UpdateCheck",
             },
             method="GET",
         )
         with urlrequest.urlopen(req, timeout=5) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-        payload = json.loads(raw)
-        latest_tag = str(payload.get("tag_name") or payload.get("name") or "").strip()
-        latest_version = _normalize_version_text(latest_tag)
+            raw = resp.read().decode("utf-8", errors="replace").strip()
+        latest_version = _normalize_version_text(raw)
+        latest_tag = "main"
         cmp_result = _compare_versions(current_version, latest_version)
         update_available = cmp_result < 0
         if update_available:
-            message = f"Update available: {latest_tag or latest_version}"
+            message = f"Source update available: {latest_version}"
         else:
-            message = "Ray5 Pilot is up to date."
+            message = "Ray5 Pilot source is up to date."
         return jsonify(
             {
                 "ok": True,
