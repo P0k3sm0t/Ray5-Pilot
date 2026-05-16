@@ -186,9 +186,37 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
+## v1.0.8
+### Added
+- Added a **GitHub / Support** card to the Settings page.
+- Added quick links for:
+  - GitHub Repository
+  - Open an Issue
+  - Wiki Home
+  - Check for Updates
+  - Download Latest Source
+- Added a **Check for Updates** action that compares the local Ray5 Pilot version against the latest GitHub release.
+- Added a **Download Latest Source** link that opens the latest source ZIP from the main branch.
+
+### Changed
+- Updated the Dashboard layout for a cleaner card flow:
+  - Timelapse now spans the full width near the top.
+  - Status, Video / Camera, and Manual Controls now sit together in one row.
+  - Imported Jobs and SD Card Files now sit side-by-side.
+  - Live Console now spans the full width at the bottom.
+- Matched the Status, Video / Camera, and Manual Controls card heights so the middle dashboard row looks cleaner.
+- Aligned Imported Jobs and SD Card Files so their top edges line up.
+- Updated Settings page wording to be more inclusive of general laser software workflows instead of sounding LightBurn-only.
+- Updated Settings page cache/version reference for v1.0.8.
+
+### Notes
+- The update checker is informational only.
+- Ray5 Pilot does not auto-download, auto-install, or modify local files when checking for updates.
+- **Download Latest Source** opens the GitHub main-branch source ZIP.
+- GitHub Issues can be used to report bugs, request features, or share logs/screenshots when troubleshooting.
+
 ## v1.0.7
 ### Added
-
 - Added a dedicated **Machine Settings** page for Ray5/GRBL controller settings.
 - Added Machine Settings navigation links to the Dashboard and Settings pages.
 - Added support for reading controller settings with `$$`.
@@ -204,7 +232,6 @@ Always supervise laser operation, verify all files and settings before running a
 - Added combined XY jog support so diagonal moves are sent as one jog command instead of two separate axis moves.
 
 ### Changed
-
 - Manual Controls now use a full 3x3 jog pad:
   - diagonal jogs in all four corners
   - X/Y jogs on the sides
@@ -220,7 +247,6 @@ Always supervise laser operation, verify all files and settings before running a
 - README wording was broadened from LightBurn-specific wording to general laser software wording where appropriate.
 
 ### Fixed
-
 - Fixed Machine Settings initially loading zero settings when the HTTP command response returned only `ok` and the real `$$` output arrived asynchronously through the WebSocket stream.
 - Fixed Machine Settings input fields jumping or losing focus while typing.
 - Fixed Machine Settings save messages being overwritten by automatic reload messages.
@@ -230,7 +256,6 @@ Always supervise laser operation, verify all files and settings before running a
 - Fixed diagonal movement so each diagonal button sends one combined XY jog command.
 
 ### Notes
-
 - Always use **Download Backup** before changing machine settings.
 - Machine Settings save only sends changed rows and only allows validated numeric `$number=value` commands.
 - Factory reset commands such as `$RST=$`, `$RST=#`, and `$RST=*` are not exposed on the Machine Settings page.

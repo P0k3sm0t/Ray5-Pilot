@@ -11,6 +11,7 @@ import webbrowser
 from pathlib import Path
 from threading import RLock
 from typing import Any
+from urllib import request as urlrequest
 from urllib.parse import urlsplit
 
 import cv2
@@ -177,6 +178,40 @@ def _sanitize_plain_text_lines(raw: str) -> list[str]:
             else:
                 out.append(s)
     return out
+
+
+def _normalize_version_text(value: str) -> str:
+    txt = str(value or "").strip()
+    if txt.lower().startswith("v"):
+        txt = txt[1:]
+    return txt
+
+
+def _parse_version_parts(value: str) -> tuple[int, ...]:
+    core = _normalize_version_text(value).split("-", 1)[0].strip()
+    parts: list[int] = []
+    for token in core.split("."):
+        if token.isdigit():
+            parts.append(int(token))
+        else:
+            return tuple()
+    return tuple(parts)
+
+
+def _compare_versions(current: str, latest: str) -> int:
+    cur = list(_parse_version_parts(current))
+    lat = list(_parse_version_parts(latest))
+    if not cur or not lat:
+        return 0
+    while len(cur) < len(lat):
+        cur.append(0)
+    while len(lat) < len(cur):
+        lat.append(0)
+    if cur < lat:
+        return -1
+    if cur > lat:
+        return 1
+    return 0
 
 
 def reload_components() -> None:
@@ -2813,6 +2848,64 @@ def api_config_debug() -> Any:
             "using_placeholder_host": host.upper() == "YOUR_RAY5_IP" or host == "",
         }
     )
+
+
+@app.get("/api/github/check-updates")
+def api_github_check_updates() -> Any:
+    release_url = "https://github.com/P0k3sm0t/Ray5-Pilot/releases/latest"
+    source_zip_url = "https://github.com/P0k3sm0t/Ray5-Pilot/archive/refs/heads/main.zip"
+    api_url = "https://api.github.com/repos/P0k3sm0t/Ray5-Pilot/releases/latest"
+    try:
+        current_version = _normalize_version_text((BASE_DIR / "VERSION").read_text(encoding="utf-8").strip())
+    except Exception:
+        current_version = ""
+
+    try:
+        req = urlrequest.Request(
+            api_url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "Ray5-Pilot-UpdateCheck",
+            },
+            method="GET",
+        )
+        with urlrequest.urlopen(req, timeout=5) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        payload = json.loads(raw)
+        latest_tag = str(payload.get("tag_name") or payload.get("name") or "").strip()
+        latest_version = _normalize_version_text(latest_tag)
+        cmp_result = _compare_versions(current_version, latest_version)
+        update_available = cmp_result < 0
+        if update_available:
+            message = f"Update available: {latest_tag or latest_version}"
+        else:
+            message = "Ray5 Pilot is up to date."
+        return jsonify(
+            {
+                "ok": True,
+                "current_version": current_version,
+                "latest_version": latest_version,
+                "latest_tag": latest_tag,
+                "update_available": update_available,
+                "release_url": release_url,
+                "source_zip_url": source_zip_url,
+                "message": message,
+            }
+        )
+    except Exception as exc:
+        console.add("warn", f"GitHub update check failed: {exc}")
+        return jsonify(
+            {
+                "ok": False,
+                "current_version": current_version,
+                "latest_version": "",
+                "latest_tag": "",
+                "update_available": False,
+                "release_url": release_url,
+                "source_zip_url": source_zip_url,
+                "message": "Unable to check for updates right now.",
+            }
+        )
 
 
 @app.post("/api/config")

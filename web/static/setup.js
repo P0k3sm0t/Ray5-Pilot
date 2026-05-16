@@ -334,6 +334,29 @@ function collect(){
 
 async function init(){
   const saveBtn = v('saveCfg');
+  const updatesBtn = v('githubCheckUpdates');
+  const updateStatus = v('githubUpdateStatus');
+  const downloadLatestSource = v('githubDownloadLatestSource');
+
+  if(updatesBtn){
+    updatesBtn.onclick = async () => {
+      if(updateStatus) updateStatus.textContent = 'Checking for updates...';
+      updatesBtn.disabled = true;
+      try{
+        const res = await api('/api/github/check-updates');
+        const msg = (res && res.message) ? String(res.message) : 'Unable to check for updates right now.';
+        if(updateStatus) updateStatus.textContent = msg;
+        if(downloadLatestSource && res && res.source_zip_url){
+          downloadLatestSource.href = String(res.source_zip_url);
+        }
+      }catch(_err){
+        if(updateStatus) updateStatus.textContent = 'Unable to check for updates right now.';
+      }finally{
+        updatesBtn.disabled = false;
+      }
+    };
+  }
+
   try{
     const d=await api('/api/config');
     const cfg=unwrapConfigResponse(d);
