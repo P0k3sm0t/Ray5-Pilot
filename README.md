@@ -2,14 +2,14 @@
 
 ### Dashboard
 
-<a href="https://github.com/user-attachments/assets/f9f0c646-80d7-464a-ba8d-ec16e041f5db">
-  <img src="https://github.com/user-attachments/assets/f9f0c646-80d7-464a-ba8d-ec16e041f5db" width="420" alt="Ray5 Pilot dashboard screenshot">
+<a href="https://github.com/user-attachments/assets/e0e32ffb-08f1-4822-816f-dc110402b830">
+  <img src="https://github.com/user-attachments/assets/e0e32ffb-08f1-4822-816f-dc110402b830" width="420" alt="Ray5 Pilot dashboard screenshot">
 </a>
 
 ### Settings
 
-<a href="https://github.com/user-attachments/assets/529d3ec0-5aeb-4b5a-b661-cba17d937f28">
-  <img src="https://github.com/user-attachments/assets/529d3ec0-5aeb-4b5a-b661-cba17d937f28" width="420" alt="Ray5 Pilot settings screenshot">
+<a href="https://github.com/user-attachments/assets/a1008037-973a-46c8-a173-ba5e2c56a211">
+  <img src="https://github.com/user-attachments/assets/a1008037-973a-46c8-a173-ba5e2c56a211" width="420" alt="Ray5 Pilot settings screenshot">
 </a>
 
 ### Machine Settings
