@@ -1,4 +1,4 @@
-# Web Ui Demo Screenshots
+﻿# Web Ui Demo Screenshots
 
 ### Dashboard
 
@@ -154,16 +154,6 @@ CTRL + C
 - Diagnostic responses are sanitized to mask passwords, keys, tokens, secrets, credentials, and auth-like values.
 - Keep Ray5 Pilot bound to 127.0.0.1 unless you understand the risk.
 
-## Safety warning
-- Ray5 Pilot controls a laser engraver.
-- Always supervise laser operation.
-- Keep laser enclosure/eye protection/air assist/fire safety in place.
-- Default web host is 127.0.0.1 for local-only use.
-- Do not expose this app to the internet.
-- No authentication is currently included.
-- Binding to 0.0.0.0 allows LAN devices to access machine-control endpoints.
-- Stop/Abort uses soft reset by default; verify behavior on your machine with a safe test job.
-
 ## Config notes
 - config.json is local/private and is not committed.
 - config.example.json is only a template.
@@ -176,6 +166,25 @@ Ray5 Pilot also includes an Upload setting to automatically shorten long filenam
 Example:
 `test_grid_390x360.gcode`  
 `large_alignment_grid_390x360_final.gcode` may upload successfully, but may not display clearly on the Ray5 screen.
+
+## Safety warning
+- Ray5 Pilot controls a laser engraver.
+- Always supervise laser operation.
+- Keep laser enclosure/eye protection/air assist/fire safety in place.
+- Default web host is 127.0.0.1 for local-only use.
+- Do not expose this app to the internet.
+- No authentication is currently included.
+- Binding to 0.0.0.0 allows LAN devices to access machine-control endpoints.
+- Stop/Abort uses soft reset by default; verify behavior on your machine with a safe test job.
+- Changing machine settings can affect motion limits, homing, acceleration, travel, and laser behavior. Back up your settings first and change only values you understand.
+
+## Liability disclaimer
+
+Ray5 Pilot is provided as-is and is used at your own risk. This software controls a laser engraver, and incorrect configuration, machine behavior, G-code, camera alignment, firmware settings, or user operation can cause fire, equipment damage, material damage, personal injury, or other hazards.
+
+The author/contributors are not responsible for damage, injury, loss, failed jobs, machine misconfiguration, unsafe operation, or any other consequences resulting from the use or misuse of this software.
+
+Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
 ## v1.0.7
 ### Added
@@ -202,9 +211,9 @@ Example:
   - Center button in the middle
 - The previous center Home button was moved below the jog pad.
 - Home and Go To Preset now sit together in a centered row below the jog pad.
-- The preset helper text now reads: “Preset moves to configured X/Y position.”
+- The preset helper text now reads: â€œPreset moves to configured X/Y position.â€
 - Machine Settings now handles Ray5/ESP3D asynchronous `$$` output by collecting WebSocket response lines after the command is sent.
-- Machine Settings save results are preserved after refresh instead of being overwritten by “Loaded X setting(s).”
+- Machine Settings save results are preserved after refresh instead of being overwritten by â€œLoaded X setting(s).â€
 - Camera System Check behavior was tightened so cached `latest.jpg` / `latest_raw.jpg` files no longer mark the camera as working.
 - Camera test status is now based on backend-confirmed real camera operations only.
 - README screenshot formatting now uses clickable thumbnail-style images.
@@ -222,7 +231,6 @@ Example:
 
 ### Notes
 
-- The Machine Settings page is intended for advanced users. Changing controller settings can affect motion, limits, homing, and laser behavior.
 - Always use **Download Backup** before changing machine settings.
 - Machine Settings save only sends changed rows and only allows validated numeric `$number=value` commands.
 - Factory reset commands such as `$RST=$`, `$RST=#`, and `$RST=*` are not exposed on the Machine Settings page.
@@ -368,3 +376,4 @@ Example:
 - Set Stop Job default behavior to true abort using M5 + Ctrl-X soft reset.
 - Added Ray5 Pilot favicon/logo branding.
 - Improved release safety around local-only config and private runtime files.
+
