@@ -8,8 +8,8 @@
 
 ### Settings
 
-<a href="https://github.com/user-attachments/assets/a1008037-973a-46c8-a173-ba5e2c56a211">
-  <img src="https://github.com/user-attachments/assets/a1008037-973a-46c8-a173-ba5e2c56a211" width="420" alt="Ray5 Pilot settings screenshot">
+<a href="https://github.com/user-attachments/assets/7b418efe-f541-45b5-8919-627c6f849c7c">
+  <img src="https://github.com/user-attachments/assets/7b418efe-f541-45b5-8919-627c6f849c7c" width="420" alt="Ray5 Pilot settings screenshot">
 </a>
 
 ### Machine Settings
