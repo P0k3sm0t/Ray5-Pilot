@@ -50,75 +50,40 @@
     </div>
     <div id="timelapseMsg" class="muted small"></div>
   </section>
-  <section class="card video-card">
-    <div class="video-card-title">
-      <h2>Video / Camera</h2>
-    </div>
-    <div class="camera-top-actions">
-      <button id="camRefresh">Reload Camera</button>
-      <button id="camTest">Test Camera</button>
-      <button id="camCalibrate">Calibrate Overlay</button>
-      <button id="camVideoToggle">Disable Video</button>
-    </div>
-    <div id="camera-test-status" class="camera-test-status muted small"></div>
-    <div class="video-frame-wrap">
-      <img id="cam" class="camera-feed" src="" alt="camera stream">
-      <video id="timelapsePlayer" class="camera-feed timelapse-player" controls playsinline style="display:none;"></video>
-      <div id="cameraOffline" class="camera-offline" style="display:none;">Camera unavailable</div>
-    </div>
-    <div id="camMsg" class="muted small"></div>
-    <div class="camera-footer-row">
-      <div class="latest-overlay-info">
-        <strong>Latest Overlay</strong>
-        <span id="latestSnapshotInfo" class="muted small">No snapshot yet</span>
+  <div class="dashboard-middle-grid">
+    <section id="statusCard" class="card status-card"><h2>Status</h2><div id="status"></div></section>
+    <section class="card video-card">
+      <div class="video-card-title">
+        <h2>Video / Camera</h2>
       </div>
-      <div class="camera-bottom-actions">
-        <button id="camCapture">Take Snapshot</button>
-        <button id="snapOpenFolder">Open Folder</button>
-        <a id="openLatestSnapshot" href="#" target="_blank" class="camera-link-btn">Open Latest</a>
-        <a id="openLatestRaw" href="#" target="_blank" class="camera-link-btn">Open Raw</a>
-        <a id="downloadLatestSnapshot" href="#" target="_blank" class="camera-action-hidden" aria-hidden="true" tabindex="-1">Download Latest</a>
-        <a id="downloadLatestRaw" href="#" target="_blank" class="camera-action-hidden" aria-hidden="true" tabindex="-1">Download Raw</a>
+      <div class="camera-top-actions">
+        <button id="camRefresh">Reload Camera</button>
+        <button id="camTest">Test Camera</button>
+        <button id="camCalibrate">Calibrate Overlay</button>
+        <button id="camVideoToggle">Disable Video</button>
       </div>
-    </div>
-  </section>
-  <section id="importedJobsCard" class="card imported-jobs-card full-width-card">
-    <h2>Imported Jobs</h2>
-    <div class="job-import-toolbar">
-      <input type="file" id="jobFile" accept=".gcode,.gc,.nc">
-      <button id="importBtn">Import</button>
-      <button id="jobsRefresh">Refresh</button>
-    </div>
-    <div class="job-selection-toolbar imported-selection-toolbar">
-      <label class="jobs-select-all">
-        <input type="checkbox" id="jobsSelectAll">
-        <span>Select All</span>
-      </label>
-      <button id="jobsClearSelection">Clear Selection</button>
-      <button id="jobsDeleteSelected" class="danger" disabled>Delete Selected</button>
-      <span id="jobsSelectedCount" class="muted small">0 selected</span>
-    </div>
-    <div id="jobWatchInfo" class="muted small"></div>
-    <div class="table-wrap imported-jobs-table-wrap">
-      <table class="jobs-table">
-        <thead>
-          <tr>
-            <th class="jobs-col-select">Select</th>
-            <th>File</th>
-            <th>Size</th>
-            <th>Modified</th>
-            <th>Bounds</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="jobsBody"></tbody>
-      </table>
-    </div>
-    <div id="jobsMsg" class="muted small"></div>
-  </section>
-
-  <div class="dashboard-grid">
-    <section id="statusCard" class="card"><h2>Status</h2><div id="status"></div></section>
+      <div id="camera-test-status" class="camera-test-status muted small"></div>
+      <div class="video-frame-wrap">
+        <img id="cam" class="camera-feed" src="" alt="camera stream">
+        <video id="timelapsePlayer" class="camera-feed timelapse-player" controls playsinline style="display:none;"></video>
+        <div id="cameraOffline" class="camera-offline" style="display:none;">Camera unavailable</div>
+      </div>
+      <div id="camMsg" class="muted small"></div>
+      <div class="camera-footer-row">
+        <div class="latest-overlay-info">
+          <strong>Latest Overlay</strong>
+          <span id="latestSnapshotInfo" class="muted small">No snapshot yet</span>
+        </div>
+        <div class="camera-bottom-actions">
+          <button id="camCapture">Take Snapshot</button>
+          <button id="snapOpenFolder">Open Folder</button>
+          <a id="openLatestSnapshot" href="#" target="_blank" class="camera-link-btn">Open Latest</a>
+          <a id="openLatestRaw" href="#" target="_blank" class="camera-link-btn">Open Raw</a>
+          <a id="downloadLatestSnapshot" href="#" target="_blank" class="camera-action-hidden" aria-hidden="true" tabindex="-1">Download Latest</a>
+          <a id="downloadLatestRaw" href="#" target="_blank" class="camera-action-hidden" aria-hidden="true" tabindex="-1">Download Raw</a>
+        </div>
+      </div>
+    </section>
     <section id="manualControlsCard" class="card manual-card">
       <h2>Manual Controls</h2>
       <div class="manual-controls-inner">
@@ -178,6 +143,44 @@
         <div id="manualMsg"></div>
       </div>
     </section>
+  </div>
+
+  <div class="dashboard-files-grid">
+    <section id="importedJobsCard" class="card imported-jobs-card">
+      <h2>Imported Jobs</h2>
+      <div class="job-import-toolbar">
+        <input type="file" id="jobFile" accept=".gcode,.gc,.nc">
+        <button id="importBtn">Import</button>
+        <button id="jobsRefresh">Refresh</button>
+      </div>
+      <div class="job-selection-toolbar imported-selection-toolbar">
+        <label class="jobs-select-all">
+          <input type="checkbox" id="jobsSelectAll">
+          <span>Select All</span>
+        </label>
+        <button id="jobsClearSelection">Clear Selection</button>
+        <button id="jobsDeleteSelected" class="danger" disabled>Delete Selected</button>
+        <span id="jobsSelectedCount" class="muted small">0 selected</span>
+      </div>
+      <div id="jobWatchInfo" class="muted small"></div>
+      <div class="table-wrap imported-jobs-table-wrap">
+        <table class="jobs-table">
+          <thead>
+            <tr>
+              <th class="jobs-col-select">Select</th>
+              <th>File</th>
+              <th>Size</th>
+              <th>Modified</th>
+              <th>Bounds</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="jobsBody"></tbody>
+        </table>
+      </div>
+      <div id="jobsMsg" class="muted small"></div>
+    </section>
+
     <section id="sdFilesCard" class="card sd-card">
       <div class="sd-toolbar">
         <h2>SD Card Files</h2>

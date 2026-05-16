@@ -9,7 +9,7 @@
 <section class="card"><h3>Web UI</h3><p>Where Ray5 Pilot itself runs on this computer.</p><label>Host <input id="web_host"></label><p class="field-help">127.0.0.1 means this computer only. 0.0.0.0 allows other LAN devices to access the UI.</p><p class="field-help">Do not expose Ray5 Pilot to the internet. No authentication is currently included.</p><label>Port <input id="web_port" type="number"></label><p class="field-help">Browser port for Ray5 Pilot. Default: 5050.</p></section>
 <section class="card">
 <h3>Camera</h3>
-<p>Optional RTSP or snapshot camera used for live view and LightBurn overlay snapshots.</p>
+<p>Optional RTSP or snapshot camera used for live view and laser software overlay snapshots.</p>
 <label><input id="cam_enabled" type="checkbox"> Enabled</label><p class="field-help">Turns camera features on/off.</p>
 <label><input id="cam_video_enabled" type="checkbox"> Enable dashboard video feed</label><p class="field-help">Shows the live camera stream on the dashboard. When disabled, a placeholder overlay image is shown instead.</p>
 <label>Stream URL <input id="cam_stream"></label><p class="field-help">RTSP camera stream. Example: rtsp://USERNAME:PASSWORD@CAMERA_IP:554/stream1<br>HTTP/MJPEG examples: http://CAMERA_IP/video or http://USERNAME:PASSWORD@CAMERA_IP:8080/video</p>
@@ -30,7 +30,7 @@
 </section>
 <section class="card">
 <h3>Camera Processing / Deskew</h3>
-<p>Turns the raw camera image into a corrected overlay image for LightBurn/material alignment.</p>
+<p>Turns the raw camera image into a corrected overlay image for laser software/material alignment.</p>
 <label>Processed overlay rotation
   <select id="cam_rot">
     <option value="0">0&deg; / None</option>
@@ -49,7 +49,7 @@
 <label>Center crop margin <input id="cam_crop_margin" type="number"></label>
 <label>Final size width <input id="cam_final_w" type="number"></label>
 <label>Final size height <input id="cam_final_h" type="number"></label><p class="field-help">Pixel size of latest.jpg.</p>
-<label>DPI <input id="cam_dpi" type="number" step="0.01"></label><p class="field-help">Controls how large the image imports into LightBurn.</p>
+<label>DPI <input id="cam_dpi" type="number" step="0.01"></label><p class="field-help">Controls the saved overlay image size for use as a reference in laser software.</p>
 <label><input id="cam_guides_enabled" type="checkbox"> Overlay guides enabled</label>
 <label><input id="cam_guides_cross" type="checkbox"> Draw center cross</label>
 <label><input id="cam_guides_border" type="checkbox"> Draw border</label>
@@ -61,8 +61,8 @@
 <h3>Camera Overlay Alignment</h3>
 <p>Fine-tunes the processed overlay when the camera calibration is close but the burn lands slightly off.</p>
 <label><input id="cam_align_enabled" type="checkbox"> Enable overlay alignment</label><p class="field-help">Turns fine alignment correction on/off.</p>
-<label>Physical width (mm) <input id="cam_align_width_mm" type="number" step="0.01"></label><p class="field-help">Real-world width that latest.jpg should represent in LightBurn. Example: 300 for a 300 mm calibration grid.</p>
-<label>Physical height (mm) <input id="cam_align_height_mm" type="number" step="0.01"></label><p class="field-help">Real-world height that latest.jpg should represent in LightBurn. Example: 300 for a 300 mm calibration grid.</p>
+<label>Physical width (mm) <input id="cam_align_width_mm" type="number" step="0.01"></label><p class="field-help">Real-world width that latest.jpg should represent in your laser software. Example: 300 for a 300 mm calibration grid.</p>
+<label>Physical height (mm) <input id="cam_align_height_mm" type="number" step="0.01"></label><p class="field-help">Real-world height that latest.jpg should represent in your laser software. Example: 300 for a 300 mm calibration grid.</p>
 <label>Source X offset (px) <input id="cam_align_offset_x" type="number" step="1"></label><p class="field-help">Moves selected camera area before deskew. Positive samples farther right; negative samples farther left.</p>
 <label>Source Y offset (px) <input id="cam_align_offset_y" type="number" step="1"></label><p class="field-help">Moves selected camera area before deskew. Positive samples farther down; negative samples farther up.</p>
 <label>Scale X <input id="cam_align_scale_x" type="number" step="0.0001"></label><p class="field-help">Fine horizontal scaling. Example: 1.010 makes overlay ~1% wider; 0.990 makes it ~1% narrower.</p>

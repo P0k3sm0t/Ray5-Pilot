@@ -32,11 +32,15 @@ main{max-width:100%;overflow-x:hidden;padding:8px;position:relative;z-index:1}
 .overlay-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;max-width:100%}
 .overlay-actions a{display:inline-block;background:#1d4ed8;color:#fff;border-radius:8px;padding:7px 10px;text-decoration:none;font-size:13px}
 .overlay-actions a,.overlay-actions button{white-space:nowrap;max-width:100%}
-.dashboard-grid{display:grid;grid-template-columns:minmax(260px,.9fr) minmax(320px,1.05fr) minmax(320px,1.05fr);gap:18px;align-items:start;max-width:100%}
-.wide-card{grid-column:span 3}
-.full-width-card{grid-column:1/-1}
-.imported-jobs-card{margin-top:18px}
-.dashboard-grid{margin-top:18px}
+.dashboard-middle-grid{display:grid;grid-template-columns:minmax(260px,.85fr) minmax(460px,1.6fr) minmax(280px,.95fr);gap:18px;align-items:stretch;max-width:100%;margin-top:18px}
+.dashboard-files-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start;max-width:100%;margin-top:18px}
+.dashboard-middle-grid > .card{height:100%;margin:0}
+.full-width-card{width:100%}
+.status-card{grid-column:1}
+.video-card{grid-column:2}
+.manual-card{grid-column:3}
+.dashboard-files-grid > .card{margin:0}
+.imported-jobs-card{margin-top:0}
 .console-card{margin-top:18px}
 .row{display:flex;gap:8px;flex-wrap:wrap}
 button{background:#2563eb;color:white;border:none;border-radius:8px;padding:8px 10px;cursor:pointer;min-height:38px}
@@ -166,12 +170,20 @@ input[type='checkbox']{width:auto}
 #camera-calibration-frame{width:100%;height:100%;border:0;background:#0b1020}
 
 @media (max-width:1300px){
-  .dashboard-grid{grid-template-columns:1fr 1fr}
-  .wide-card,.full-width-card{grid-column:1/-1}
+  .dashboard-middle-grid{grid-template-columns:1fr 1.2fr}
+  .status-card{grid-column:1}
+  .video-card{grid-column:2}
+  .manual-card{grid-column:1/-1}
 }
 @media (max-width:850px){
-  .dashboard-grid{grid-template-columns:1fr}
-  .wide-card,.full-width-card{grid-column:1/-1}
+  .dashboard-middle-grid{grid-template-columns:1fr;gap:14px}
+  .dashboard-middle-grid > .card{height:auto}
+  .dashboard-files-grid{grid-template-columns:1fr;gap:14px}
+  .video-card{order:1}
+  .status-card{order:2}
+  .manual-card{order:3}
+  .imported-jobs-card{order:4}
+  .sd-card{order:5}
 }
 @media (max-width:700px){
   .manual-settings-row{width:100%}
