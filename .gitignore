@@ -1,4 +1,4 @@
-config.json
+﻿config.json
 *.log
 logs/*.log
 logs/*
@@ -17,3 +17,12 @@ rejected_jobs/*
 *.tmp
 .DS_Store
 Thumbs.db
+
+# Windows launcher / PyInstaller local-only files
+launcher.py
+build_launcher.bat
+Ray5 Pilot.exe
+build/
+dist/
+*.spec
+*.exe

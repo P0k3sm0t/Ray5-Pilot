@@ -58,9 +58,13 @@ input[type='checkbox']{width:auto}
 .jog-btn{width:64px;height:64px;padding:0;font-weight:800;font-size:1.05rem;border-radius:14px}
 .jog-y-plus{grid-column:2;grid-row:1}
 .jog-x-minus{grid-column:1;grid-row:2}
-.jog-home{grid-column:2;grid-row:2;font-size:1.25rem}
+.jog-center{grid-column:2;grid-row:2;font-size:.8rem;font-weight:700}
 .jog-x-plus{grid-column:3;grid-row:2}
 .jog-y-minus{grid-column:2;grid-row:3}
+.jog-xy-minus-plus{grid-column:1;grid-row:1}
+.jog-xy-plus-plus{grid-column:3;grid-row:1}
+.jog-xy-minus-minus{grid-column:1;grid-row:3}
+.jog-xy-plus-minus{grid-column:3;grid-row:3}
 .danger-zone{border-top:1px solid rgba(255,255,255,.12);padding-top:12px}
 .manual-preset-help{text-align:center;margin-top:6px}
 #manualMsg{text-align:center;margin-top:12px;color:#cbd5e1}

@@ -917,7 +917,7 @@ async function sendRawConsoleCommand(){
 let jobImportBusy = false;
 function setManualBusy(state){
   manualBusy = state;
-  document.querySelectorAll('#homeAll,#unlock,#xMinus,#xPlus,#yMinus,#yPlus,#airOn,#airOff,#testFire,#stop,#pauseBtn,#resumeBtn,#presetMoveBtn').forEach(el=>{if(el)el.disabled=state;});
+  document.querySelectorAll('#homeAll,#unlock,#xMinus,#xPlus,#yMinus,#yPlus,#xyMinusPlus,#xyPlusPlus,#xyMinusMinus,#xyPlusMinus,#centerBed,#airOn,#airOff,#testFire,#stop,#pauseBtn,#resumeBtn,#presetMoveBtn').forEach(el=>{if(el)el.disabled=state;});
 }
 
 async function manualCall(url, body=null, confirmText=''){
@@ -1211,13 +1211,18 @@ function bind(){
   }
 
   document.getElementById('homeAll').onclick=()=>manualCall('/api/home',{axis:'all'});
-  document.getElementById('presetMoveBtn').onclick=()=>manualCall('/api/preset-move',{},manualCfg.confirm_dangerous_actions?'Move to preset position?':'');
+  document.getElementById('presetMoveBtn').onclick=()=>manualCall('/api/preset-move',{});
   document.getElementById('unlock').onclick=()=>manualCall('/api/unlock',{});
 
   document.getElementById('xMinus').onclick=()=>manualCall('/api/move',{axis:'x',distance:-currentStep(),feedrate:currentFeed()});
   document.getElementById('xPlus').onclick=()=>manualCall('/api/move',{axis:'x',distance:currentStep(),feedrate:currentFeed()});
   document.getElementById('yMinus').onclick=()=>manualCall('/api/move',{axis:'y',distance:-currentStep(),feedrate:currentFeed()});
   document.getElementById('yPlus').onclick=()=>manualCall('/api/move',{axis:'y',distance:currentStep(),feedrate:currentFeed()});
+  document.getElementById('xyMinusPlus').onclick=()=>manualCall('/api/move',{dx:-currentStep(),dy:currentStep(),feedrate:currentFeed()});
+  document.getElementById('xyPlusPlus').onclick=()=>manualCall('/api/move',{dx:currentStep(),dy:currentStep(),feedrate:currentFeed()});
+  document.getElementById('xyMinusMinus').onclick=()=>manualCall('/api/move',{dx:-currentStep(),dy:-currentStep(),feedrate:currentFeed()});
+  document.getElementById('xyPlusMinus').onclick=()=>manualCall('/api/move',{dx:currentStep(),dy:-currentStep(),feedrate:currentFeed()});
+  document.getElementById('centerBed').onclick=()=>manualCall('/api/manual/center',{});
   document.getElementById('airOn').onclick=()=>manualCall('/api/air/on',{});
   document.getElementById('airOff').onclick=()=>manualCall('/api/air/off',{});
   document.getElementById('testFire').onclick=()=>{

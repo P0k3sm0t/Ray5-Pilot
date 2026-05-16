@@ -1,5 +1,4 @@
 # Web Ui Demo Screenshots
-## Web UI Demo Screenshots
 
 ### Dashboard
 
@@ -39,6 +38,7 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 ## Features
 - Dashboard, Settings and Machine Settings, web UI
 - Live Ray5 status via ESP3D WebSocket port 8849
+- Backup, Change and save firmware settings
 - System check/health
 - X/Y live MPos/WPos display
 - Manual controls with jog pad
@@ -53,7 +53,7 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - SD card file list, start, delete, refresh
 - Timelapse with manual start and auto start from using upload+run in imported files, or start from sd files
 - Camera stream proxy, RTSP or HTTP feed
-- Calibrated camera snapshot overlay for LightBurn/material alignment
+- Calibrated camera snapshot overlay for laser software/material alignment
 - Camera deskew/postprocess/rotation/source-offset alignment settings
 - Camera Overlay Alignment card with source X/Y offset explanations
 - Live Console with smart auto-scroll
@@ -133,7 +133,7 @@ CTRL + C
 
 ## Camera overlay notes
 - latest_raw.jpg is the raw camera snapshot.
-- latest.jpg is the processed LightBurn overlay.
+- latest.jpg is the processed laser software overlay.
 - Source X offset px moves the selected camera source area before deskew.
 - Positive Source X samples farther right in the raw image.
 - Negative Source X samples farther left.
@@ -177,13 +177,57 @@ Example:
 `test_grid_390x360.gcode`  
 `large_alignment_grid_390x360_final.gcode` may upload successfully, but may not display clearly on the Ray5 screen.
 
-## v1.0.7-pre
-### Pre-release
-- dedicated Machine Settings page for reading Ray5/GRBL controller settings with $$, displaying them in a uniform editable table, downloading a raw settings backup, and saving only changed $number=value settings with strict validation and confirmation.
-- Machine Settings page now collects asynchronous `$$` output from Ray5/ESP3D WebSocket lines so GRBL settings load reliably instead of returning zero rows.
-- Machine Settings editing now keeps input focus/scroll stable while typing (no full table re-render per keypress).
-- Machine Settings save message now remains visible after post-save refresh.
-- Camera health no longer marks success from serving cached snapshot files alone; only real backend capture/read operations mark success.
+## v1.0.7
+### Added
+
+- Added a dedicated **Machine Settings** page for Ray5/GRBL controller settings.
+- Added Machine Settings navigation links to the Dashboard and Settings pages.
+- Added support for reading controller settings with `$$`.
+- Added automatic parsing of GRBL-style settings such as `$0=10`, `$30=1000`, `$130=400.000`, and similar.
+- Added a uniform editable Machine Settings table with setting number, description, current value, new value, unit/notes, and status.
+- Added known descriptions and units for common GRBL settings.
+- Added **Download Backup** for raw `$$` machine settings output.
+- Added changed-only Machine Settings save support using safe `$number=value` commands.
+- Added strict validation for Machine Settings saves to prevent arbitrary commands or reset commands.
+- Added a raw `$$` output/debug section to help diagnose devices that return settings asynchronously.
+- Added diagonal jog buttons to Manual Controls for all four diagonal directions.
+- Added a **Center** button in the jog pad to move the laser head to the configured bed/work-area center.
+- Added combined XY jog support so diagonal moves are sent as one jog command instead of two separate axis moves.
+
+### Changed
+
+- Manual Controls now use a full 3x3 jog pad:
+  - diagonal jogs in all four corners
+  - X/Y jogs on the sides
+  - Center button in the middle
+- The previous center Home button was moved below the jog pad.
+- Home and Go To Preset now sit together in a centered row below the jog pad.
+- The preset helper text now reads: “Preset moves to configured X/Y position.”
+- Machine Settings now handles Ray5/ESP3D asynchronous `$$` output by collecting WebSocket response lines after the command is sent.
+- Machine Settings save results are preserved after refresh instead of being overwritten by “Loaded X setting(s).”
+- Camera System Check behavior was tightened so cached `latest.jpg` / `latest_raw.jpg` files no longer mark the camera as working.
+- Camera test status is now based on backend-confirmed real camera operations only.
+- README screenshot formatting now uses clickable thumbnail-style images.
+- README wording was broadened from LightBurn-specific wording to general laser software wording where appropriate.
+
+### Fixed
+
+- Fixed Machine Settings initially loading zero settings when the HTTP command response returned only `ok` and the real `$$` output arrived asynchronously through the WebSocket stream.
+- Fixed Machine Settings input fields jumping or losing focus while typing.
+- Fixed Machine Settings save messages being overwritten by automatic reload messages.
+- Fixed cached camera snapshot serving from incorrectly marking **Camera test passed** as Yes.
+- Fixed Manual Controls diagonal jog button labels showing `?` instead of proper diagonal arrows.
+- Fixed Manual Controls layout so Home is no longer mixed into the jog pad.
+- Fixed diagonal movement so each diagonal button sends one combined XY jog command.
+
+### Notes
+
+- The Machine Settings page is intended for advanced users. Changing controller settings can affect motion, limits, homing, and laser behavior.
+- Always use **Download Backup** before changing machine settings.
+- Machine Settings save only sends changed rows and only allows validated numeric `$number=value` commands.
+- Factory reset commands such as `$RST=$`, `$RST=#`, and `$RST=*` are not exposed on the Machine Settings page.
+- Diagonal jog commands use the selected Step and Feedrate values.
+- The Center button uses configured machine/work-area limits to calculate the bed center.
 
 ## v1.0.6
 ### Added

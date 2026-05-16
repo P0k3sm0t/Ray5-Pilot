@@ -2146,6 +2146,22 @@ def api_move() -> Any:
     axis = str(body.get("axis", "")).strip().lower()
     distance = float(body.get("distance", controls.get("default_jog_step", controls.get("default_jog_step_mm", 10))))
     feedrate = float(body.get("feedrate", controls.get("default_feedrate", 3000)))
+    dx_in = body.get("dx")
+    dy_in = body.get("dy")
+    has_dx = dx_in is not None
+    has_dy = dy_in is not None
+    if has_dx or has_dy:
+        dx = float(dx_in or 0.0)
+        dy = float(dy_in or 0.0)
+        if dx == 0.0 and dy == 0.0:
+            return jsonify({"ok": False, "message": "dx/dy move requires non-zero delta", "raw": ""}), 400
+        if bool(controls.get("force_laser_off_before_move", True)):
+            ray5.laser_off()
+        console.add("info", f"Manual move XY X{dx:.3f} Y{dy:.3f} F{feedrate:.0f}")
+        cmd = f"$J=G91 G21 X{dx:.3f} Y{dy:.3f} F{feedrate:.0f}"
+        result = ray5.send_gcode(cmd)
+        console.add("info", f"Move result: {'ok' if result.get('ok') else 'fail'} {str(result.get('message',''))[:120]}")
+        return jsonify(result)
     if axis == "z" and not bool(controls.get("enable_z_jog", controls.get("enable_jog_z", False))):
         return jsonify({"ok": False, "message": "Z jog is disabled in config", "raw": ""}), 400
     if bool(controls.get("force_laser_off_before_move", True)):
@@ -2154,6 +2170,29 @@ def api_move() -> Any:
     result = ray5.move(axis=axis, distance=distance, feedrate=feedrate)
     console.add("info", f"Move result: {'ok' if result.get('ok') else 'fail'} {str(result.get('message',''))[:120]}")
     return jsonify(result)
+
+
+@app.post("/api/manual/center")
+def api_manual_center() -> Any:
+    guard = _require_ray5_configured()
+    if guard:
+        return guard
+    mc = cfg.get("manual_controls", {}) if isinstance(cfg.get("manual_controls"), dict) else {}
+    machine = cfg.get("machine", {}) if isinstance(cfg.get("machine"), dict) else {}
+    min_x = float(machine.get("min_x", 0))
+    min_y = float(machine.get("min_y", 0))
+    max_x = float(machine.get("max_x", machine.get("bed_width_mm", 390)))
+    max_y = float(machine.get("max_y", machine.get("bed_height_mm", 360)))
+    center_x = (min_x + max_x) / 2.0
+    center_y = (min_y + max_y) / 2.0
+    feed = float(mc.get("preset_feedrate", mc.get("default_feedrate", 1500)))
+    if feed <= 0:
+        return jsonify({"ok": False, "message": "Center move feedrate must be positive."}), 400
+    console.add("info", f"Manual center move requested: X={center_x:.3f} Y={center_y:.3f} F={feed:.0f}")
+    result = ray5.send_gcode(["M5", "G21", "G90", f"G0 X{center_x:.3f} Y{center_y:.3f} F{feed:.0f}"])
+    ok = bool(result.get("ok"))
+    console.add("info", f"Manual center move result: {'ok' if ok else 'failed'} {str(result.get('message',''))[:120]}")
+    return jsonify({"ok": ok, "message": (f"Moved to bed center X={center_x:.3f} Y={center_y:.3f}" if ok else str(result.get("message", "Center move failed"))), "raw": result.get("raw", ""), "x": center_x, "y": center_y})
 
 
 @app.post("/api/preset-move")
