@@ -1,18 +1,37 @@
 # Web Ui Demo Screenshots
-## Dashboard
-<img width="1920" height="2566" alt="ray5_dashboard_demo_full_22" src="https://github.com/user-attachments/assets/3bd7091a-3122-4d82-b69e-0150887bb315" />
+## Web UI Demo Screenshots
 
-## Settings
-<img width="1920" height="5788" alt="ray5_settings_demo_full_22" src="https://github.com/user-attachments/assets/5a30c030-d68b-4eeb-87d2-16994ba27d5b" />
+### Dashboard
 
-## Machine Settings
-<img width="1920" height="1080" alt="ray5_machine_settings_demo_full_22" src="https://github.com/user-attachments/assets/837578e5-4ff0-4ee7-ba3a-ad0fa1ffceda" />
+<a href="https://github.com/user-attachments/assets/f9f0c646-80d7-464a-ba8d-ec16e041f5db">
+  <img src="https://github.com/user-attachments/assets/f9f0c646-80d7-464a-ba8d-ec16e041f5db" width="420" alt="Ray5 Pilot dashboard screenshot">
+</a>
 
-## Overlay accuracy Preview
-<img width="1279" height="763" alt="Screenshot 2026-05-12 210316" src="https://github.com/user-attachments/assets/c6f0f90b-7a65-46d2-88ff-bce0b0c6a276" />
+### Settings
 
-## Make sure output is NOT selected so it wont include the image.
-<img width="1279" height="762" alt="Screenshot 2026-05-12 171846" src="https://github.com/user-attachments/assets/a683917f-615b-4a31-be19-4062e4554d1e" />
+<a href="https://github.com/user-attachments/assets/529d3ec0-5aeb-4b5a-b661-cba17d937f28">
+  <img src="https://github.com/user-attachments/assets/529d3ec0-5aeb-4b5a-b661-cba17d937f28" width="420" alt="Ray5 Pilot settings screenshot">
+</a>
+
+### Machine Settings
+
+<a href="https://github.com/user-attachments/assets/758234ab-6f16-41f5-8d09-a1403b6bb6fb">
+  <img src="https://github.com/user-attachments/assets/758234ab-6f16-41f5-8d09-a1403b6bb6fb" width="420" alt="Ray5 Pilot machine settings screenshot">
+</a>
+
+### Overlay Accuracy Preview
+
+<a href="https://github.com/user-attachments/assets/c6f0f90b-7a65-46d2-88ff-bce0b0c6a276">
+  <img src="https://github.com/user-attachments/assets/c6f0f90b-7a65-46d2-88ff-bce0b0c6a276" width="420" alt="Ray5 Pilot overlay accuracy preview">
+</a>
+
+### Output Layer Note
+
+Make sure **Output** is not selected so the reference image is not included in the laser job.
+
+<a href="https://github.com/user-attachments/assets/a683917f-615b-4a31-be19-4062e4554d1e">
+  <img src="https://github.com/user-attachments/assets/a683917f-615b-4a31-be19-4062e4554d1e" width="420" alt="Output disabled reference image example">
+</a>
 
 # Ray5 Pilot
 A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-style HTTP/WebSocket interface.
