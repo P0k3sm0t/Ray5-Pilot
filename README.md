@@ -186,6 +186,45 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
+## v1.0.9
+### Added
+- Added a controlled **Update Ray5 Pilot** workflow from the Settings page.
+- Added an **Update Ray5 Pilot** button in the GitHub / Support card that appears only when an update is available.
+- Added a separate `updater.py` script to handle update operations after the main app shuts down.
+- Added post-update status reporting so the Settings page can show whether the last update succeeded or failed after Ray5 Pilot restarts.
+- Added local update log/status output under `update_logs/`.
+
+### Changed
+- **Check for Updates** now compares the local `VERSION` file against the main-branch `VERSION` file on GitHub.
+- The update workflow now matches the **Download Latest Source** behavior by using the GitHub main branch source ZIP.
+- The update process now backs up current source files before replacing them.
+- The updater copies only allowlisted Ray5 Pilot source/UI files.
+- The updater preserves local/private files and runtime folders.
+
+### Safety / Update Behavior
+- Updates are never installed silently.
+- Checking for updates does not download, install, or modify files.
+- Updating requires the user to click **Update Ray5 Pilot** and confirm before anything is changed.
+- Ray5 Pilot blocks the update if the Ray5 appears to be running or paused.
+- The updater preserves:
+  - `config.json`
+  - runtime folders
+  - camera captures
+  - timelapse output
+  - imported jobs
+  - watched G-code files
+  - rejected jobs
+  - logs
+  - local launcher/build files
+- The updater backs up current files before copying the new source files.
+- After updating, Ray5 Pilot restarts and reports update success or failure in the GitHub / Support card.
+
+### Notes
+- The self-update feature downloads the latest source ZIP from the GitHub main branch.
+- The updater is intended for normal source/UI updates, not full installer-style upgrades.
+- If an update fails, check the update log in `update_logs/`.
+- Manual download is still available through **Download Latest Source**.
+
 ## v1.0.8
 ### Added
 - Added a **GitHub / Support** card to the Settings page.

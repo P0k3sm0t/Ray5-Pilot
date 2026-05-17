@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -85,6 +86,11 @@ console.add("info", f"RAY5 BASE URL: {ray5._base()}")
 
 
 _SENSITIVE_DEBUG_TOKENS = ("password", "pass", "key", "token", "secret", "credential", "auth")
+GITHUB_REPO_URL = "https://github.com/P0k3sm0t/Ray5-Pilot"
+GITHUB_SOURCE_ZIP_URL = "https://github.com/P0k3sm0t/Ray5-Pilot/archive/refs/heads/main.zip"
+GITHUB_MAIN_VERSION_URL = "https://raw.githubusercontent.com/P0k3sm0t/Ray5-Pilot/main/VERSION"
+UPDATE_STATUS_PATH = BASE_DIR / "update_logs" / "update_status.json"
+_update_shutdown_started = False
 
 
 def _is_sensitive_key(name: str) -> bool:
@@ -212,6 +218,89 @@ def _compare_versions(current: str, latest: str) -> int:
     if cur > lat:
         return 1
     return 0
+
+
+def _read_local_version() -> str:
+    try:
+        return _normalize_version_text((BASE_DIR / "VERSION").read_text(encoding="utf-8").strip())
+    except Exception:
+        return ""
+
+
+def _fetch_remote_main_version(timeout_seconds: float = 5.0) -> str:
+    req = urlrequest.Request(
+        GITHUB_MAIN_VERSION_URL,
+        headers={"User-Agent": "Ray5-Pilot-UpdateCheck"},
+        method="GET",
+    )
+    with urlrequest.urlopen(req, timeout=timeout_seconds) as resp:
+        raw = resp.read().decode("utf-8", errors="replace").strip()
+    return _normalize_version_text(raw)
+
+
+def _check_source_update() -> dict[str, Any]:
+    current_version = _read_local_version()
+    latest_version = ""
+    try:
+        latest_version = _fetch_remote_main_version(timeout_seconds=5.0)
+        cmp_result = _compare_versions(current_version, latest_version)
+        update_available = cmp_result < 0
+        if update_available:
+            message = f"Source update available: {latest_version}"
+        else:
+            message = "Ray5 Pilot source is up to date."
+        return {
+            "ok": True,
+            "current_version": current_version,
+            "latest_version": latest_version,
+            "latest_tag": "main",
+            "update_available": update_available,
+            "release_url": GITHUB_REPO_URL,
+            "source_zip_url": GITHUB_SOURCE_ZIP_URL,
+            "message": message,
+        }
+    except Exception as exc:
+        console.add("warn", f"GitHub update check failed: {exc}")
+        return {
+            "ok": False,
+            "current_version": current_version,
+            "latest_version": latest_version,
+            "latest_tag": "",
+            "update_available": False,
+            "release_url": GITHUB_REPO_URL,
+            "source_zip_url": GITHUB_SOURCE_ZIP_URL,
+            "message": "Unable to check for updates right now.",
+        }
+
+
+def _get_machine_state_for_update_guard() -> str:
+    with app_state_lock:
+        active_monitor = status_monitor
+        active_cfg = cfg
+    st_cfg = active_cfg.get("status", {}) if isinstance(active_cfg.get("status"), dict) else {}
+    prefer_live = bool(st_cfg.get("prefer_live_status", True))
+    if not active_monitor or not prefer_live:
+        return "UNKNOWN"
+    latest = active_monitor.get_latest_status() or {}
+    return str(latest.get("state") or "UNKNOWN").strip()
+
+
+def _delayed_process_exit(delay_seconds: float = 0.8) -> None:
+    global _update_shutdown_started
+    if _update_shutdown_started:
+        return
+    _update_shutdown_started = True
+
+    def _shutdown_worker() -> None:
+        time.sleep(max(0.2, float(delay_seconds)))
+        try:
+            console.add("warn", "Ray5 Pilot shutting down for updater handoff.")
+        except Exception:
+            pass
+        os._exit(0)
+
+    t = threading.Thread(target=_shutdown_worker, daemon=True, name="update-shutdown")
+    t.start()
 
 
 def reload_components() -> None:
@@ -2852,58 +2941,77 @@ def api_config_debug() -> Any:
 
 @app.get("/api/github/check-updates")
 def api_github_check_updates() -> Any:
-    release_url = "https://github.com/P0k3sm0t/Ray5-Pilot"
-    source_zip_url = "https://github.com/P0k3sm0t/Ray5-Pilot/archive/refs/heads/main.zip"
-    version_url = "https://raw.githubusercontent.com/P0k3sm0t/Ray5-Pilot/main/VERSION"
-    try:
-        current_version = _normalize_version_text((BASE_DIR / "VERSION").read_text(encoding="utf-8").strip())
-    except Exception:
-        current_version = ""
+    return jsonify(_check_source_update())
 
+
+@app.get("/api/github/update-status")
+def api_github_update_status() -> Any:
     try:
-        req = urlrequest.Request(
-            version_url,
-            headers={
-                "User-Agent": "Ray5-Pilot-UpdateCheck",
-            },
-            method="GET",
+        if not UPDATE_STATUS_PATH.exists():
+            return jsonify({"ok": True, "status": "none", "message": ""})
+        raw = UPDATE_STATUS_PATH.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return jsonify({"ok": True, "status": "none", "message": ""})
+        return jsonify(data)
+    except Exception as exc:
+        console.add("warn", f"Failed to read update status: {exc}")
+        return jsonify({"ok": True, "status": "none", "message": ""})
+
+
+@app.post("/api/github/apply-update")
+def api_github_apply_update() -> Any:
+    update_info = _check_source_update()
+    if not bool(update_info.get("ok")):
+        return jsonify({"ok": False, "message": "Unable to check for updates right now."}), 503
+    if not bool(update_info.get("update_available")):
+        return jsonify({"ok": False, "message": "Ray5 Pilot source is already up to date."}), 409
+
+    state_raw = _get_machine_state_for_update_guard()
+    state_norm = _timelapse_normalize_state(state_raw).lower()
+    if state_norm in {"run", "hold"}:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "message": "Update blocked because the Ray5 appears to be running or paused. Stop the job before updating.",
+                }
+            ),
+            409,
         )
-        with urlrequest.urlopen(req, timeout=5) as resp:
-            raw = resp.read().decode("utf-8", errors="replace").strip()
-        latest_version = _normalize_version_text(raw)
-        latest_tag = "main"
-        cmp_result = _compare_versions(current_version, latest_version)
-        update_available = cmp_result < 0
-        if update_available:
-            message = f"Source update available: {latest_version}"
-        else:
-            message = "Ray5 Pilot source is up to date."
-        return jsonify(
-            {
-                "ok": True,
-                "current_version": current_version,
-                "latest_version": latest_version,
-                "latest_tag": latest_tag,
-                "update_available": update_available,
-                "release_url": release_url,
-                "source_zip_url": source_zip_url,
-                "message": message,
-            }
+
+    updater_path = BASE_DIR / "updater.py"
+    if not updater_path.exists():
+        return jsonify({"ok": False, "message": "Updater script is missing. Cannot apply update."}), 500
+
+    args = [
+        sys.executable,
+        str(updater_path),
+        "--project-root",
+        str(BASE_DIR),
+        "--python-exe",
+        str(sys.executable),
+        "--parent-pid",
+        str(os.getpid()),
+        "--source-url",
+        str(update_info.get("source_zip_url") or GITHUB_SOURCE_ZIP_URL),
+        "--current-version",
+        str(update_info.get("current_version") or _read_local_version()),
+        "--remote-version",
+        str(update_info.get("latest_version") or ""),
+    ]
+    try:
+        subprocess.Popen(
+            args,
+            cwd=str(BASE_DIR),
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         )
     except Exception as exc:
-        console.add("warn", f"GitHub update check failed: {exc}")
-        return jsonify(
-            {
-                "ok": False,
-                "current_version": current_version,
-                "latest_version": "",
-                "latest_tag": "",
-                "update_available": False,
-                "release_url": release_url,
-                "source_zip_url": source_zip_url,
-                "message": "Unable to check for updates right now.",
-            }
-        )
+        console.add("error", f"Failed to launch updater: {exc}")
+        return jsonify({"ok": False, "message": f"Failed to launch updater: {exc}"}), 500
+
+    _delayed_process_exit(delay_seconds=0.8)
+    return jsonify({"ok": True, "message": "Update started. Ray5 Pilot will restart."})
 
 
 @app.post("/api/config")

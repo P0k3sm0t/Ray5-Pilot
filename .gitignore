@@ -26,3 +26,6 @@ build/
 dist/
 *.spec
 *.exe
+update_work/
+update_backups/
+update_logs/
