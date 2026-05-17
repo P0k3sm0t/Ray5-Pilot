@@ -187,7 +187,7 @@ def _sanitize_plain_text_lines(raw: str) -> list[str]:
 
 
 def _normalize_version_text(value: str) -> str:
-    txt = str(value or "").strip()
+    txt = str(value or "").strip().lstrip("\ufeff")
     if txt.lower().startswith("v"):
         txt = txt[1:]
     return txt
@@ -195,12 +195,9 @@ def _normalize_version_text(value: str) -> str:
 
 def _parse_version_parts(value: str) -> tuple[int, ...]:
     core = _normalize_version_text(value).split("-", 1)[0].strip()
-    parts: list[int] = []
-    for token in core.split("."):
-        if token.isdigit():
-            parts.append(int(token))
-        else:
-            return tuple()
+    if not re.fullmatch(r"\d+(?:\.\d+)*", core):
+        return tuple()
+    parts = [int(token) for token in core.split(".")]
     return tuple(parts)
 
 
