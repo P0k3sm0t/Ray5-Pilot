@@ -21,11 +21,14 @@ Thumbs.db
 # Windows launcher / PyInstaller local-only files
 launcher.py
 build_launcher.bat
-Ray5 Pilot.exe
 build/
 dist/
 *.spec
+
+# Ignore EXE files by default, but allow the official root launcher.
 *.exe
+!/Ray5 Pilot.exe
+
 update_work/
 update_backups/
 update_logs/

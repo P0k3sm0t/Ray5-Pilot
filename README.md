@@ -67,12 +67,29 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 
 ## Setup
 1. Download/clone Ray5-Pilot.
-2. Run Start_Ray5_Pilot.bat.
+2. Run Start_Ray5_Pilot.bat or Ray5 Pilot.exe.
 3. Edit config.json or open Settings.
 4. Set Ray5 IP.
 5. Optional: configure RTSP camera URL.
 6. Restart Ray5 Pilot.
 7. Open http://127.0.0.1:5050.
+
+### Launcher Options
+
+Ray5 Pilot can be started manually with `python app.py`, or by using one of the included launch helpers.
+
+#### BAT Launcher
+
+The `.bat` launcher is a simple Windows batch file that starts Ray5 Pilot from the project folder. It opens a console window so you can see logs and errors while the app is running.
+
+This is useful for troubleshooting because the commands are easy to inspect or edit.
+
+#### EXE Launcher
+
+`Ray5 Pilot.exe` is an optional Windows launcher for easier daily startup. It starts Ray5 Pilot from the project folder, keeps a console window available for logs, and opens the web interface at:
+
+```text
+http://127.0.0.1:5050
 
 ## Manual setup and run without the `.bat` file
 
@@ -185,6 +202,56 @@ Ray5 Pilot is provided as-is and is used at your own risk. This software control
 The author/contributors are not responsible for damage, injury, loss, failed jobs, machine misconfiguration, unsafe operation, or any other consequences resulting from the use or misuse of this software.
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
+
+## v1.1.0
+### Added
+- Added a controlled **Update Ray5 Pilot** workflow from the Settings page.
+- Added an **Update Ray5 Pilot** button in the GitHub / Support card that appears only when an update is available.
+- Added a separate `updater.py` script to perform updates after the main app shuts down.
+- Added post-update status reporting so the Settings page can show whether the last update succeeded or failed after Ray5 Pilot restarts.
+- Added local update logs and status output under `update_logs/`.
+- Added automatic Settings page reconnect/refresh behavior after an update restart.
+- Added app **Version** display to the Dashboard Status card.
+- Added startup **Update** status display to the Dashboard Status card.
+- Added a one-time startup update check that compares the local `VERSION` file against the GitHub main-branch `VERSION`.
+- Added support for detecting dotted versions such as `1.0.9.1` and `1.1.0`.
+- Added support for including the official root `Ray5 Pilot.exe` launcher in the repository while keeping build artifacts ignored.
+
+### Changed
+- **Check for Updates** now compares the local `VERSION` file against the GitHub main-branch `VERSION` file.
+- The update workflow now matches the **Download Latest Source** behavior by using the GitHub main branch source ZIP.
+- The updater now backs up current source files before replacing them.
+- The updater copies only allowlisted Ray5 Pilot source/UI files.
+- The updater preserves local/private files and runtime folders.
+- The updater now restarts Ray5 Pilot in a new Windows console so `CTRL+C` should stop the restarted app normally.
+- The Settings page now waits for Ray5 Pilot to come back online after an update and reloads automatically when reachable.
+- The Dashboard Status card now reports the current app version and cached update status.
+- Version comparison now handles variable-length dotted versions and leading `v` values.
+
+### Safety / Update Behavior
+- Updates are never installed silently.
+- Checking for updates does not download, install, or modify files.
+- Updating requires the user to click **Update Ray5 Pilot** and confirm before anything is changed.
+- Ray5 Pilot blocks the update if the Ray5 appears to be running or paused.
+- The updater preserves:
+  - `config.json`
+  - runtime folders
+  - camera captures
+  - timelapse output
+  - imported jobs
+  - watched G-code files
+  - rejected jobs
+  - logs
+  - local-only build folders
+- The updater backs up current files before copying new source files.
+- After updating, Ray5 Pilot restarts and reports update success or failure in the GitHub / Support card.
+
+### Notes
+- The self-update feature downloads the latest source ZIP from the GitHub main branch.
+- The updater is intended for normal source/UI updates, not full installer-style upgrades.
+- If an update fails, check the update log in `update_logs/`.
+- Manual download remains available through **Download Latest Source**.
+- The included `Ray5 Pilot.exe` is a launcher convenience, not a full standalone installer. Python and project dependencies are still required unless a future packaged installer is added.
 
 ## v1.0.9
 ### Added
