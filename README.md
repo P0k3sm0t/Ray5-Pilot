@@ -42,6 +42,12 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - X/Y live MPos/WPos display
 - Manual controls with jog pad
 - Pause, Resume, and true Stop/Abort controls
+- Communication-loss safety lockout for active or recently started jobs
+- Status card safety warning when Ray5 communication is lost during a possible active job
+- SD Card Files auto-refresh pauses during active/busy machine states
+- Background timelapse stop/save/build handling to keep status polling responsive
+- Improved live camera stream lifecycle handling to reduce duplicate/stale stream requests
+- Improved Pause/Resume handling for GRBL real-time commands
 - Stop Job defaults to M5 + Ctrl-X soft reset
 - Unlock / Clear Alarm using M5 + $X
 - Preset move button
@@ -195,6 +201,20 @@ CTRL + C
 - Stop Job defaults to M5 followed by Ctrl-X soft reset to terminate the run.
 - Users can change Stop Mode to hold_only in Settings if they prefer pause-only behavior.
 
+## Communication-loss safety behavior
+If Ray5 Pilot loses communication with the Ray5 while a job may be active, recently started, running, paused, holding, jogging, or in an uncertain state, Ray5 Pilot enters a communication-loss safety lockout.
+
+During this lockout:
+
+- Automatic SD refresh is paused.
+- System-check SD probing is skipped.
+- Status/WebSocket reconnect attempts continue.
+- Manual Stop Job and safety-related controls remain available.
+- Ray5 Pilot does not automatically send laser-on, resume, test-fire, or other job-start commands.
+- The user must verify the Ray5 screen and machine state before clearing the warning.
+
+The safety lockout is intentionally conservative. It is designed to prevent Ray5 Pilot from resuming normal automatic behavior immediately after a reconnect when the machine state may still need to be checked physically.
+
 ## Camera overlay notes
 - latest_raw.jpg is the raw camera snapshot.
 - latest.jpg is the processed laser software overlay.
@@ -243,6 +263,9 @@ Example:
 - Binding to 0.0.0.0 allows LAN devices to access machine-control endpoints.
 - Stop/Abort uses soft reset by default; verify behavior on your machine with a safe test job.
 - Changing machine settings can affect motion limits, homing, acceleration, travel, and laser behavior. Back up your settings first and change only values you understand.
+- If communication is lost during a job, Ray5 Pilot enters a safety lockout and requires the user to verify the Ray5 screen/machine state before normal automatic behavior resumes.
+- Ray5 Pilot does not automatically send laser-on, resume, or test-fire commands after reconnecting.
+- During communication-loss lockout, automatic SD refresh/system-check SD probing is paused.
 
 ## Liability disclaimer
 
@@ -251,6 +274,59 @@ Ray5 Pilot is provided as-is and is used at your own risk. This software control
 The author/contributors are not responsible for damage, injury, loss, failed jobs, machine misconfiguration, unsafe operation, or any other consequences resulting from the use or misuse of this software.
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
+
+## v1.1.2
+### Added
+- Added a communication-loss safety lockout for active or recently started Ray5 jobs.
+- Added tracking for recent job activity from Imported Jobs Start and SD Start.
+- Added a Status card safety warning when Ray5 Pilot loses communication while a job may still be active.
+- Added a **Clear Safety Lockout** action so the user must verify the Ray5 screen/machine state before normal automatic behavior resumes.
+- Added backend communication-safety state reporting through `/api/status`.
+- Added camera stream client connect/disconnect logging with active client counts.
+- Added guarded background handling for job-mode timelapse stop/save/build work.
+- Added duplicate-prevention flags for background timelapse stop/build tasks.
+
+### Changed
+- Improved live camera stream lifecycle handling to prevent duplicate or stale `/camera/stream` requests.
+- Centralized Dashboard live-video start/stop behavior so stream state is managed consistently across Enable/Disable Video, Pop Out Video, refresh, error handling, placeholder display, and timelapse playback.
+- Dashboard video now stops cleanly when the feed is popped out, disabled, unavailable, or replaced by timelapse playback.
+- Improved `/camera/stream` cleanup visibility by wrapping the stream generator with connect/disconnect tracking.
+- Paused SD Card Files auto-refresh while the Ray5 is in active/busy states such as `Run`, `Hold`, `Jog`, or `Door`.
+- Paused SD Card Files auto-refresh during communication-loss safety lockout.
+- Manual SD Refresh remains available, but auto-refresh no longer repeatedly hits the Ray5 SD endpoint while the controller may be busy or unreachable.
+- SD auto-refresh now resumes after the machine returns to a safe non-busy state, with a short delay to avoid hammering the controller.
+- Moved long job-mode timelapse stop/save/build work out of `/api/status` and into a guarded background worker.
+- `/api/status` now stays responsive while timelapse output is being stopped, saved, or built.
+- Preserved existing job-mode timelapse behavior for `Run`, `Hold`, resume, and terminal/Idle stop states.
+- Improved Pause and Resume handling for GRBL real-time commands.
+- Pause `!` and Resume `~` are now treated as successful when the command is successfully sent, even if the Ray5/ESP3D endpoint does not return a normal `ok` response.
+- Improved Manual Controls messaging so successful Pause/Resume actions no longer show misleading `Error:` messages.
+
+### Safety / Reliability
+- If communication is lost while a job may be active, Ray5 Pilot now enters a safety lockout instead of immediately resuming automatic SD/system-check behavior when the connection returns.
+- During communication-loss lockout, automatic SD refresh and system-check SD probing are skipped.
+- Ray5 Pilot does **not** automatically send `M3`, `M4`, Resume, Test Fire, or other laser-on commands during reconnect.
+- The safety lockout does **not** auto-send `M5`; the user must verify the machine state and use the proper controls if needed.
+- Manual Stop Job and safety-related controls remain available during lockout.
+- SD refresh failures now clear loading/in-progress state cleanly so the SD Card Files card does not stay stuck on busy.
+- Timelapse stop/build queueing prevents duplicate background workers for the same timelapse session.
+- `/api/status` no longer blocks on long timelapse output processing.
+
+### Fixed
+- Fixed repeated/stale Dashboard camera stream starts that could happen around video toggle, pop-out, refresh, error, and timelapse playback transitions.
+- Fixed possible duplicate live camera streams between the Dashboard and pop-out video window.
+- Fixed SD Card Files auto-refresh continuing during active jobs and causing the card to get stuck on busy.
+- Fixed SD Card Files auto-refresh continuing during Ray5 communication loss.
+- Fixed job-mode timelapse stop/build work blocking status polling.
+- Fixed misleading Pause/Resume failure messages when the machine actually paused or resumed correctly.
+- Fixed Manual Controls showing messages such as `Error: Resume sent.` or `Error: Error` for successful real-time Pause/Resume commands.
+
+### Notes
+- The communication-loss safety lockout is intentionally conservative. If Ray5 Pilot loses communication while a job may still be active, verify the Ray5 screen and machine state before clearing the warning.
+- SD auto-refresh is paused during active/busy states to avoid stressing the Ray5 controller while a job is running.
+- Manual SD Refresh is still available when needed, but automatic refresh behavior is now more cautious.
+- Timelapse output still builds as before, but long stop/save/build work now runs outside the status request path.
+- Pause and Resume use GRBL real-time commands, which may not return a normal `ok` response from the Ray5/ESP3D HTTP endpoint even when they work correctly.
 
 ## v1.1.1
 ### Added

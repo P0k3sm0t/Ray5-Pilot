@@ -61,6 +61,7 @@ let cameraPopoutWindow = null;
 let cameraPopoutClosePoll = null;
 let cameraPopoutWasLiveEnabled = false;
 let cameraPopoutActive = false;
+let currentTimelapsePlaybackFile = '';
 const selectedImportedJobs = new Set();
 let lastImportedJobs = [];
 const selectedTimelapseFiles = new Set();
@@ -411,14 +412,30 @@ function stopTimelapsePlayback(showPlaceholder=true){
   if(player){
     player.pause();
     player.removeAttribute('src');
+    player.load();
     player.style.display='none';
   }
+  currentTimelapsePlaybackFile = '';
   if(cam) cam.style.display='block';
   if(showPlaceholder){
     stopDashboardLiveVideo('Camera video disabled.');
     const msg = document.getElementById('camMsg');
     if(msg) msg.textContent = 'Camera video disabled.';
   }
+}
+
+function clearDeletedTimelapsePlayback(message='Selected timelapse was deleted.'){
+  const player = document.getElementById('timelapsePlayer');
+  if(player){
+    player.pause();
+    player.removeAttribute('src');
+    player.load();
+    player.style.display='none';
+  }
+  currentTimelapsePlaybackFile = '';
+  setDashboardCameraPlaceholder(message);
+  const msg = document.getElementById('camMsg');
+  if(msg) msg.textContent = message;
 }
 
 async function playTimelapse(item){
@@ -434,6 +451,7 @@ async function playTimelapse(item){
   cameraActivePath = '';
   player.style.display='block';
   player.src = item.url;
+  currentTimelapsePlaybackFile = normalizeName(item.name || '');
   player.onended = ()=>{
     // Keep the ended timelapse visible in the video card until user action replaces it.
     cameraDisplayMode = 'timelapse';
@@ -462,10 +480,15 @@ async function deleteSelectedTimelapses(){
   if(delBtn) delBtn.disabled = true;
   setTimelapseMessage('Deleting selected timelapse file(s)...');
   try{
+    const selectedBeforeDelete = new Set(names.map(n => normalizeName(n)));
     const r = await api('/api/timelapses/delete','POST',{filenames:names});
     const failed = Array.isArray(r.failed) ? r.failed : [];
+    const failedNames = new Set(failed.map(f => normalizeName(f.filename)));
+    const deletedNames = new Set(Array.from(selectedBeforeDelete).filter(n => !failedNames.has(n)));
+    if(currentTimelapsePlaybackFile && deletedNames.has(currentTimelapsePlaybackFile)){
+      clearDeletedTimelapsePlayback('Selected timelapse was deleted.');
+    }
     if(failed.length){
-      const failedNames = new Set(failed.map(f => normalizeName(f.filename)));
       for(const n of names){
         if(!failedNames.has(n)) selectedTimelapseFiles.delete(n);
       }
@@ -542,6 +565,12 @@ async function loadTimelapses(opts={}){
     modified: Number(it.modified || 0),
     url: String(it.url || ''),
   })).filter(it => it.name);
+  if(currentTimelapsePlaybackFile){
+    const liveNamesNow = new Set(currentTimelapseItems.map(it => normalizeName(it.name)));
+    if(!liveNamesNow.has(currentTimelapsePlaybackFile)){
+      clearDeletedTimelapsePlayback('Selected timelapse was deleted.');
+    }
+  }
   if(!currentTimelapseItems.length){
     const tr = document.createElement('tr');
     tr.innerHTML = '<td colspan="5" class="muted small">No timelapse videos found.</td>';
@@ -755,8 +784,10 @@ function startDashboardLiveVideo(path, opts={}){
   if(timelapsePlayer){
     timelapsePlayer.pause();
     timelapsePlayer.removeAttribute('src');
+    timelapsePlayer.load();
     timelapsePlayer.style.display='none';
   }
+  currentTimelapsePlaybackFile = '';
   cam.style.display='block';
   cam.style.opacity='1';
   cam.removeAttribute('src');
