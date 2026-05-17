@@ -90,6 +90,7 @@ This is useful for troubleshooting because the commands are easy to inspect or e
 
 ```text
 http://127.0.0.1:5050
+```
 
 ## Manual setup and run without the `.bat` file
 
