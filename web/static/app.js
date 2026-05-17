@@ -115,6 +115,14 @@ async function refreshStatus(){
   const coordSourceText = isOfflineFallback ? '—' : (d.coordinate_source_label || '—');
   const connectionText = isOfflineFallback ? 'Offline' : (d.connection_status || ((d.online && sourceText === 'live_websocket') ? 'Online' : 'Offline'));
   const lastUpdateText = isOfflineFallback ? '—' : statusAgeText(d.last_update_age_seconds);
+  const appVersionText = String(d.app_version || 'unknown');
+  const us = (d && d.update_status) ? d.update_status : {};
+  let updateText = 'Unable to check';
+  if(us && us.checked === false){
+    updateText = 'Checking...';
+  } else if(us && typeof us.message === 'string' && us.message.trim()){
+    updateText = us.message.trim();
+  }
   const xLine = isOfflineFallback ? 'X: 0.000' : axisStatusLine('X', wpos.x, mpos.x);
   const yLine = isOfflineFallback ? 'Y: 0.000' : axisStatusLine('Y', wpos.y, mpos.y);
   const hasWco = !isOfflineFallback && !!d.wco_available && Number.isFinite(Number(wco.x)) && Number.isFinite(Number(wco.y));
@@ -156,6 +164,8 @@ async function refreshStatus(){
       <div>Source: ${esc(sourceText)}</div>
       <div>Coordinate source: ${esc(coordSourceText)}</div>
       <div>Last update: ${esc(lastUpdateText)}</div>
+      <div>Version: ${esc(appVersionText)}</div>
+      <div>Update: ${esc(updateText)}</div>
       <div style="margin-top:4px;"><b>System check</b></div>
       <div>Ray5 host configured: ${esc(yesNoUnknown(sc.ray5_host_configured))}</div>
       <div>Ray5 HTTP reachable: ${esc(yesNoUnknown(sc.ray5_http_reachable))}</div>

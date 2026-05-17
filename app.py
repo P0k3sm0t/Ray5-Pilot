@@ -78,6 +78,16 @@ system_check_state: dict[str, Any] = {
     "auto_check_in_progress": False,
     "last_auto_check_log_at": None,
 }
+github_update_status: dict[str, Any] = {
+    "checked": False,
+    "ok": None,
+    "current_version": "unknown",
+    "latest_version": "",
+    "update_available": False,
+    "message": "Checking...",
+    "checked_at": None,
+}
+github_update_check_started = False
 console.add("info", f"CONFIG PATH: {cfg_mgr.config_path}")
 console.add("info", f"CONFIG EXISTS: {cfg_mgr.config_path.exists()}")
 console.add("info", f"RAY5 HOST: {cfg.get('ray5', {}).get('host', '')}")
@@ -268,6 +278,56 @@ def _check_source_update() -> dict[str, Any]:
             "source_zip_url": GITHUB_SOURCE_ZIP_URL,
             "message": "Unable to check for updates right now.",
         }
+
+
+def _snapshot_startup_update_status() -> dict[str, Any]:
+    with app_state_lock:
+        return dict(github_update_status)
+
+
+def _run_startup_update_check() -> None:
+    result = _check_source_update()
+    checked_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+    if bool(result.get("ok")):
+        latest = str(result.get("latest_version") or "").strip()
+        message = "Up to date"
+        if bool(result.get("update_available")):
+            message = f"Update available: {latest or 'latest'}"
+        with app_state_lock:
+            github_update_status.update(
+                {
+                    "checked": True,
+                    "ok": True,
+                    "current_version": str(result.get("current_version") or "unknown"),
+                    "latest_version": latest,
+                    "update_available": bool(result.get("update_available")),
+                    "message": message,
+                    "checked_at": checked_at,
+                }
+            )
+    else:
+        with app_state_lock:
+            github_update_status.update(
+                {
+                    "checked": True,
+                    "ok": False,
+                    "current_version": str(result.get("current_version") or "unknown"),
+                    "latest_version": str(result.get("latest_version") or ""),
+                    "update_available": False,
+                    "message": "Unable to check",
+                    "checked_at": checked_at,
+                }
+            )
+
+
+def _start_startup_update_check() -> None:
+    global github_update_check_started
+    with app_state_lock:
+        if github_update_check_started:
+            return
+        github_update_check_started = True
+    t = threading.Thread(target=_run_startup_update_check, daemon=True, name="github-startup-update-check")
+    t.start()
 
 
 def _get_machine_state_for_update_guard() -> str:
@@ -603,6 +663,7 @@ def start_runtime() -> None:
     with app_state_lock:
         active_cfg = cfg
     ensure_runtime_directories(active_cfg)
+    _start_startup_update_check()
     _ensure_watch_thread()
     if active_monitor is not None:
         try:
@@ -1232,6 +1293,8 @@ def api_status() -> Any:
         sd_working_current = None
     _timelapse_observe_machine_state(str(state), bool(online))
     tl_state = _timelapse_snapshot_state()
+    app_version_value = _read_local_version() or "unknown"
+    update_status_cached = _snapshot_startup_update_status()
     return jsonify(
         {
             "ok": True,
@@ -1277,6 +1340,8 @@ def api_status() -> Any:
             "camera_proxy_path": cam["proxy_path"],
             "camera_url_masked": cam_masked,
             "camera_scheme": cam_scheme,
+            "app_version": app_version_value,
+            "update_status": update_status_cached,
             "system_check": {
                 "ray5_host_configured": bool(_is_ray5_host_configured(active_cfg)),
                 "ray5_http_reachable": http_ok,
