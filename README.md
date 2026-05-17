@@ -1,15 +1,14 @@
 ﻿# Web UI Demo Screenshots
-
 ### Dashboard
 
-<a href="https://github.com/user-attachments/assets/e0e32ffb-08f1-4822-816f-dc110402b830">
-  <img src="https://github.com/user-attachments/assets/e0e32ffb-08f1-4822-816f-dc110402b830" width="420" alt="Ray5 Pilot dashboard screenshot">
+<a href="https://github.com/user-attachments/assets/310f0630-182f-42ac-8b9e-2949695c9b33">
+  <img src="https://github.com/user-attachments/assets/310f0630-182f-42ac-8b9e-2949695c9b33" width="420" alt="Ray5 Pilot dashboard screenshot">
 </a>
 
 ### Settings
 
-<a href="https://github.com/user-attachments/assets/7b418efe-f541-45b5-8919-627c6f849c7c">
-  <img src="https://github.com/user-attachments/assets/7b418efe-f541-45b5-8919-627c6f849c7c" width="420" alt="Ray5 Pilot settings screenshot">
+<a href="https://github.com/user-attachments/assets/d5e1bc64-a3af-42f4-b7d1-dc81d31deb76">
+  <img src="https://github.com/user-attachments/assets/d5e1bc64-a3af-42f4-b7d1-dc81d31deb76" width="420" alt="Ray5 Pilot settings screenshot">
 </a>
 
 ### Machine Settings
@@ -253,13 +252,16 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
-## v1.1.1
+## v1.1.1<img width="1920" height="2151" alt="ray5_dashboard_1_1_1" src="https://github.com/user-attachments/assets/d99652c9-5549-4404-8b81-02fe39d4f790" />
+<img width="1920" height="2151" alt="ray5_dashboard_1_1_1" src="https://github.com/user-attachments/assets/d47a89a8-627d-4588-baee-ed3db91a5ce3" />
+
 ### Added
-- Added live video pop-out support for the Dashboard Video / Camera card.
+- Added live video pop-out support for the Dashboard **Video / Camera** card.
 - Added Dashboard placeholder behavior while live video is popped out.
 - Added automatic Dashboard live video restore when the pop-out window is closed.
-- Added a 100 mm Manual Controls jog step option.
-- Added Manual Controls feedrate options:
+- Added `web/templates/camera_popout.html` for the standalone live video pop-out page.
+- Added a 100 mm option to the Manual Controls **Step (mm)** dropdown.
+- Added fixed Manual Controls feedrate options:
   - 500
   - 1000
   - 1500
@@ -268,20 +270,43 @@ Always supervise laser operation, verify all files and settings before running a
   - 3000
 - Added automatic Timelapse card refresh after a successful timelapse is created.
 - Added support for keeping completed timelapse playback visible in the Video / Camera card after playback ends.
+- Added atomic `config.json` save behavior to reduce the chance of config corruption during interrupted saves.
+- Added machine dimension validation so invalid `machine.min_x/max_x` or `machine.min_y/max_y` values are rejected.
+- Added safer updater logging for Python/virtual-environment detection during requirements installation.
+- Added updater cleanup/rotation behavior for update work, backup, and log folders.
+- Added camera external-open URL scheme validation.
+- Added guard logic to prevent launching multiple camera calibration subprocesses at once.
+- Added version ranges to `requirements.txt`.
 
 ### Changed
 - Renamed the Settings **GitHub / Support** card to **Support**.
-- Renamed the Status card timestamp label from **Last update** to **Machine status update** so it is clear the timestamp refers to machine/status communication.
+- Renamed the Status card timestamp label from **Last update** to **Machine status update** so it is clear the timestamp refers to Ray5/machine communication.
+- Improved live video pop-out behavior so the main Dashboard does not show two live feeds at once.
 - Improved watched-folder auto-import behavior so same-name files can be imported again after the previous imported copy was deleted.
 - Improved watched-folder filename conflict handling with numeric suffixes such as `test_1.gcode` and `test_2.gcode`.
-- Hid `System Volume Information` from the SD Card Files list.
+- Improved Settings reload behavior so an active timelapse is stopped cleanly before runtime camera/status/job objects are replaced.
+- Improved updater restart behavior by keeping the new Windows console restart flow for better `CTRL+C` behavior.
+- Improved README wording, launcher notes, and manual setup formatting.
 - Updated Manual Controls feedrate dropdown values to a cleaner fixed set.
-- Improved live video pop-out behavior so the main Dashboard does not show two live feeds at once.
+- Hid `System Volume Information` from the SD Card Files list.
+- Hardened `web_ui.debug` behavior so debug mode is blocked/rejected on non-localhost host bindings.
+
+### Safety / Reliability
+- `config.json` is now written through a temporary file and atomically replaced.
+- Invalid machine work-area limits are rejected before save.
+- Flask debug mode is prevented on non-local bindings to reduce risk if users expose the app on a LAN.
+- External camera opening now only allows expected camera/browser URL schemes.
+- Camera calibration launch is protected against repeated rapid subprocess starts.
+- The updater now logs whether requirements are being installed inside a likely virtual environment or into the current Python environment.
+- Update temporary files, backups, and logs now have safer cleanup/retention behavior.
+- `System Volume Information` is hidden only from the SD Card Files UI; Ray5 Pilot does not delete or modify that folder.
 
 ### Notes
 - The live video pop-out uses Ray5 Pilot’s existing camera stream/proxy behavior and does not expose direct camera credentials.
 - Timelapse playback now remains visible after playback completes until live video is re-enabled or another timelapse is selected.
 - Watched-folder imports no longer treat a previously imported filename as permanently blocked after the imported copy is deleted.
+- The root `Ray5 Pilot.exe` launcher is allowed in the repository while general build artifacts remain ignored.
+- `__pycache__/` may appear when Python runs, but it is ignored and should not be committed.
 
 ## v1.1.0
 ### Added
