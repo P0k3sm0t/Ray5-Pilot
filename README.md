@@ -1,4 +1,4 @@
-﻿# Web Ui Demo Screenshots
+﻿# Web UI Demo Screenshots
 
 ### Dashboard
 
@@ -36,34 +36,36 @@ Make sure **Output** is not selected so the reference image is not included in t
 A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-style HTTP/WebSocket interface.
 
 ## Features
-- Dashboard, Settings and Machine Settings, web UI
+- Dashboard, Settings, and Machine Settings web UI
 - Live Ray5 status via ESP3D WebSocket port 8849
-- Backup, Change and save firmware settings
-- System check/health
+- Back up, edit, and save firmware settings
+- System check / health status
 - X/Y live MPos/WPos display
 - Manual controls with jog pad
 - Pause, Resume, and true Stop/Abort controls
 - Stop Job defaults to M5 + Ctrl-X soft reset
 - Unlock / Clear Alarm using M5 + $X
 - Preset move button
-- Watched folder to save gcode files too, for auto import.
+- Watched folder for saving G-code files directly for auto-import
 - Imported Jobs workflow: import, frame, upload, upload + run, delete
 - Direct SD card upload
-- Auto shorten file length if enabled
-- SD card file list, start, delete, refresh
-- Timelapse with manual start and auto start from using upload+run in imported files, or start from sd files
-- Camera stream proxy, RTSP or HTTP feed
+- Auto-shorten long filenames when enabled
+- SD card file list, start, delete, and refresh
+- Timelapse with manual start and automatic job-mode start from Imported Upload + Run or SD Start
+- Camera stream proxy for RTSP or HTTP feeds
 - Calibrated camera snapshot overlay for laser software/material alignment
 - Camera deskew/postprocess/rotation/source-offset alignment settings
-- Camera Overlay Alignment card with source X/Y offset explanations
+- Camera Overlay Alignment card with source X/Y offset and scaling explanations
 - Live Console with smart auto-scroll
 - Send commands through the web/manual console area
 - Enable/Disable Video button near the camera controls
+- Full-size pop-out window for live camera video
 - Disabled-video placeholder when camera preview is turned off
 - Settings page with expanded descriptions and examples
 - 3D-printer G-code rejection safety scanner
 - Optional sanitized Ray5 diagnostic endpoints
-- Portable Windows startup BAT file
+- Portable Windows BAT and EXE launcher options
+- Wiki pages for setup, usage, troubleshooting, and feature help
 
 ## Setup
 1. Download/clone Ray5-Pilot.
@@ -92,50 +94,95 @@ This is useful for troubleshooting because the commands are easy to inspect or e
 http://127.0.0.1:5050
 ```
 
+The EXE launcher is a convenience launcher, not a full standalone installer. Python, the Ray5 Pilot project files, and the required dependencies are still needed.
+
+Advanced users can still start Ray5 Pilot manually with:
+
+```cmd
+python app.py
+```
+
 ## Manual setup and run without the `.bat` file
 
 Ray5 Pilot can be started manually from Command Prompt without using the included batch file.
 
-- 1.Open Command Prompt in the Ray5 Pilot folder
-Open the folder where Ray5 Pilot is saved, right click open command promp:
+### 1. Open Command Prompt in the Ray5 Pilot folder
+
+Open the folder where Ray5 Pilot is saved, then right-click and open Command Prompt or Terminal there.
 
 Or open Command Prompt and run:
+
+```cmd
 cd "C:\path\to\Ray5-Pilot"
+```
 
 Example:
-cd "C:\Users\YourName\Documents\GitHub\Ray5-Pilot"
 
-- 2. Make sure Python and pip are available
+```cmd
+cd "C:\Users\YourName\Documents\GitHub\Ray5-Pilot"
+```
+
+### 2. Make sure Python and pip are available
+
 Check Python:
+
+```cmd
 python --version
+```
 
 Check pip:
+
+```cmd
 python -m pip --version
+```
 
 If pip is missing, install/enable it with:
+
+```cmd
 python -m ensurepip --upgrade
+```
 
 Then upgrade pip:
+
+```cmd
 python -m pip install --upgrade pip
+```
 
-- 3. Install Ray5 Pilot requirements
+### 3. Install Ray5 Pilot requirements
+
 From inside the Ray5 Pilot folder, run:
-python -m pip install -r requirements.txt
 
-- 4. Start Ray5 Pilot
+```cmd
+python -m pip install -r requirements.txt
+```
+
+### 4. Start Ray5 Pilot
+
 Run:
+
+```cmd
 python app.py
+```
 
 Leave this Command Prompt window open while using Ray5 Pilot.
 
-- 5. Open Ray5 Pilot in a web browser
+### 5. Open Ray5 Pilot in a web browser
+
 Open your browser and go to:
+
+```text
 http://127.0.0.1:5050
+```
+
 If the app prints a different address or port in the Command Prompt window, use the address shown there instead.
 
-- 6. Stop Ray5 Pilot
+### 6. Stop Ray5 Pilot
+
 To stop Ray5 Pilot, click inside the Command Prompt window and press:
+
+```text
 CTRL + C
+```
 
 ## Network details
 - Ray5 HTTP port: 8848
@@ -152,12 +199,14 @@ CTRL + C
 ## Camera overlay notes
 - latest_raw.jpg is the raw camera snapshot.
 - latest.jpg is the processed laser software overlay.
+- Adjust scalling first
 - Source X offset px moves the selected camera source area before deskew.
 - Positive Source X samples farther right in the raw image.
 - Negative Source X samples farther left.
 - Positive Source Y samples farther down.
 - Negative Source Y samples farther up.
 - Use small offset values like 10 or 20 px and retest.
+
 
 ## 3D-printer G-code safety scanner
 - Blocks obvious 3D-printer slicer files before import/upload/run.
@@ -375,9 +424,9 @@ Always supervise laser operation, verify all files and settings before running a
   - Center button in the middle
 - The previous center Home button was moved below the jog pad.
 - Home and Go To Preset now sit together in a centered row below the jog pad.
-- The preset helper text now reads: â€œPreset moves to configured X/Y position.â€
+- The preset helper text now reads: “Preset moves to configured X/Y position.”
 - Machine Settings now handles Ray5/ESP3D asynchronous `$$` output by collecting WebSocket response lines after the command is sent.
-- Machine Settings save results are preserved after refresh instead of being overwritten by â€œLoaded X setting(s).â€
+- Machine Settings save results are preserved after refresh instead of being overwritten by “Loaded X setting(s).”
 - Camera System Check behavior was tightened so cached `latest.jpg` / `latest_raw.jpg` files no longer mark the camera as working.
 - Camera test status is now based on backend-confirmed real camera operations only.
 - README screenshot formatting now uses clickable thumbnail-style images.
