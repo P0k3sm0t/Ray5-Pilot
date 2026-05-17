@@ -252,9 +252,7 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
-## v1.1.1<img width="1920" height="2151" alt="ray5_dashboard_1_1_1" src="https://github.com/user-attachments/assets/d99652c9-5549-4404-8b81-02fe39d4f790" />
-<img width="1920" height="2151" alt="ray5_dashboard_1_1_1" src="https://github.com/user-attachments/assets/d47a89a8-627d-4588-baee-ed3db91a5ce3" />
-
+## v1.1.1
 ### Added
 - Added live video pop-out support for the Dashboard **Video / Camera** card.
 - Added Dashboard placeholder behavior while live video is popped out.
