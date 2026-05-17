@@ -347,6 +347,47 @@ async function init(){
     if(applyUpdateBtn) applyUpdateBtn.disabled = !updateAvailableNow;
   }
 
+  function waitForUpdateRestart(){
+    const startedAt = Date.now();
+    const maxWaitMs = 120000;
+    const pollMs = 2000;
+    const initialDelayMs = 3000;
+
+    const poll = async () => {
+      if(Date.now() - startedAt > maxWaitMs){
+        if(updateStatus){
+          updateStatus.textContent = 'Ray5 Pilot did not reconnect automatically. Refresh this page manually after the app restarts.';
+        }
+        return;
+      }
+      try{
+        const res = await fetch(`/api/github/update-status?ts=${Date.now()}`, {
+          method: 'GET',
+          cache: 'no-store',
+          headers: { 'Cache-Control': 'no-cache' }
+        });
+        if(res.ok){
+          try{
+            const body = await res.json();
+            const status = String((body && body.status) || '');
+            if((status === 'success' || status === 'failed') && updateStatus && body.message){
+              updateStatus.textContent = String(body.message);
+            }
+          }catch(_err){
+            // Ignore JSON parse failure; reconnect itself is enough to reload.
+          }
+          window.location.reload();
+          return;
+        }
+      }catch(_err){
+        // Expected while app is shutting down/restarting.
+      }
+      setTimeout(poll, pollMs);
+    };
+
+    setTimeout(poll, initialDelayMs);
+  }
+
   setUpdateButtonVisible(false);
 
   async function loadUpdateStatus(){
@@ -401,13 +442,18 @@ async function init(){
       applyUpdateBtn.disabled = true;
       try{
         const res = await api('/api/github/apply-update', 'POST', {});
-        const msg = (res && res.message) ? String(res.message) : 'Updating Ray5 Pilot. The app will restart. Wait a few seconds, then refresh this page.';
-        if(updateStatus) updateStatus.textContent = msg || 'Updating Ray5 Pilot. The app will restart. Wait a few seconds, then refresh this page.';
+        const msg = 'Updating Ray5 Pilot. The app will restart. This page will refresh automatically when Ray5 Pilot is back online.';
+        if(updateStatus) updateStatus.textContent = msg;
         if(res && res.ok){
-          if(updateStatus) updateStatus.textContent = 'Updating Ray5 Pilot. The app will restart. Wait a few seconds, then refresh this page.';
           if(updatesBtn) updatesBtn.disabled = true;
           applyUpdateBtn.disabled = true;
+          waitForUpdateRestart();
         }else{
+          if(updateStatus){
+            updateStatus.textContent = (res && res.message)
+              ? String(res.message)
+              : 'Unable to start update right now.';
+          }
           if(updatesBtn) updatesBtn.disabled = false;
           applyUpdateBtn.disabled = false;
         }

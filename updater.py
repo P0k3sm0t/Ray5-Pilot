@@ -224,10 +224,20 @@ def _run(argv: argparse.Namespace) -> int:
         log(f"Update status written: update_logs/update_status.json")
 
         restart_cmd = [python_exe, "app.py"]
-        log("Restarting Ray5 Pilot in same console without new process group.")
+        if os.name == "nt":
+            log("Restarting Ray5 Pilot in a new console so CTRL+C works normally.")
+        else:
+            log("Restarting Ray5 Pilot in current shell session.")
         log(f"Restart command: {' '.join(restart_cmd)}")
         try:
-            subprocess.Popen(restart_cmd, cwd=str(project_root))
+            if os.name == "nt":
+                subprocess.Popen(
+                    restart_cmd,
+                    cwd=str(project_root),
+                    creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+                )
+            else:
+                subprocess.Popen(restart_cmd, cwd=str(project_root))
             log("Ray5 Pilot restart launched.")
         except Exception as exc:
             log(f"ERROR: failed to restart app.py: {exc}")
