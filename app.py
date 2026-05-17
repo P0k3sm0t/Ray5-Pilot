@@ -88,6 +88,8 @@ github_update_status: dict[str, Any] = {
     "checked_at": None,
 }
 github_update_check_started = False
+camera_stream_clients = 0
+camera_stream_clients_lock = RLock()
 console.add("info", f"CONFIG PATH: {cfg_mgr.config_path}")
 console.add("info", f"CONFIG EXISTS: {cfg_mgr.config_path.exists()}")
 console.add("info", f"RAY5 HOST: {cfg.get('ray5', {}).get('host', '')}")
@@ -1648,6 +1650,7 @@ def api_camera_video_enabled_post() -> Any:
 
 @app.get("/camera/stream")
 def camera_stream() -> Any:
+    global camera_stream_clients
     cam = _camera_cfg()
     if not cam["enabled"] or not cam["proxy_enabled"]:
         return "Camera proxy is disabled", 404
@@ -1667,13 +1670,28 @@ def camera_stream() -> Any:
         stream_health["last"] = False
         _set_camera_check_result(False, str(reason or "live stream frame read failed"))
 
+    with camera_stream_clients_lock:
+        camera_stream_clients += 1
+        active_clients = camera_stream_clients
+    console.add("info", f"Camera stream client connected. active_clients={active_clients}")
+
+    def _stream_wrapper():
+        global camera_stream_clients
+        try:
+            yield from mjpeg_generator(
+                cam["url"],
+                cam["reconnect_seconds"],
+                on_frame_ok=_on_stream_frame_ok,
+                on_frame_fail=_on_stream_frame_fail,
+            )
+        finally:
+            with camera_stream_clients_lock:
+                camera_stream_clients = max(0, int(camera_stream_clients) - 1)
+                remaining = camera_stream_clients
+            console.add("info", f"Camera stream client disconnected. active_clients={remaining}")
+
     return app.response_class(
-        mjpeg_generator(
-            cam["url"],
-            cam["reconnect_seconds"],
-            on_frame_ok=_on_stream_frame_ok,
-            on_frame_fail=_on_stream_frame_fail,
-        ),
+        _stream_wrapper(),
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
 
