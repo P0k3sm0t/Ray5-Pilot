@@ -113,6 +113,7 @@ async function refreshStatus(){
   const srcRaw = String(d.status_source || '').trim().toLowerCase();
   const isOfflineFallback = srcRaw === 'offline' || srcRaw === 'fallback_offline' || srcRaw === 'synthetic' || !d.online;
   const stateText = d.display_state || d.state_base || d.machine_state_label || d.state || 'Unknown';
+  latestMachineStateForSd = stateText;
   const pageId = (d.websocket_page_id===null || d.websocket_page_id===undefined || d.websocket_page_id==='') ? '—' : String(d.websocket_page_id);
   const feedText = isOfflineFallback ? '0' : ((d.feed===null || d.feed===undefined) ? '—' : fmtNum(d.feed, 0));
   const laserText = isOfflineFallback ? '0' : ((d.spindle===null || d.spindle===undefined) ? '—' : fmtNum(d.spindle, 0));
@@ -150,6 +151,15 @@ async function refreshStatus(){
       loadSdFiles({preserveMessage:true, auto:true}).catch(()=>{});
     }
   }
+  const nowBusyForSd = isMachineBusyForSdRefresh(latestMachineStateForSd);
+  if(sdWasBusyForAutoRefresh && !nowBusyForSd){
+    setTimeout(()=>{
+      if(!isMachineBusyForSdRefresh(latestMachineStateForSd)){
+        loadSdFiles({preserveMessage:true, auto:true}).catch(()=>{});
+      }
+    }, 3000);
+  }
+  sdWasBusyForAutoRefresh = nowBusyForSd;
   document.getElementById('status').innerHTML = `
     <div class="status-top">
       <div>State: <b>${esc(stateDisplay)}</b></div>
@@ -647,6 +657,34 @@ let lastSystemHttpReachable = null;
 let sdAutoRefreshInProgress = false;
 let lastSdAutoRefreshAt = 0;
 const SD_AUTO_REFRESH_MIN_INTERVAL_MS = 15000;
+let latestMachineStateForSd = 'unknown';
+let sdAutoRefreshPausedNoticeAt = 0;
+let sdWasBusyForAutoRefresh = false;
+let sdAutoRefreshSeconds = 0;
+let sdAutoRefreshTimer = null;
+
+function normalizeMachineState(state){
+  const s = String(state || '').trim().toLowerCase();
+  if(!s) return 'unknown';
+  return s.split(':')[0];
+}
+
+function isMachineBusyForSdRefresh(state){
+  const s = normalizeMachineState(state);
+  return s === 'run' || s === 'hold' || s === 'jog' || s === 'door';
+}
+
+function startSdAutoRefreshTimer(){
+  if(sdAutoRefreshTimer){
+    clearInterval(sdAutoRefreshTimer);
+    sdAutoRefreshTimer = null;
+  }
+  if(!(sdAutoRefreshSeconds > 0)) return;
+  const intervalMs = Math.max(1000, Math.floor(Number(sdAutoRefreshSeconds) * 1000));
+  sdAutoRefreshTimer = setInterval(()=>{
+    loadSdFiles({preserveMessage:true, auto:true}).catch(()=>{});
+  }, intervalMs);
+}
 
 function setDashboardCameraPlaceholder(message=''){
   const cam = document.getElementById('cam');
@@ -898,7 +936,18 @@ function renderSdFiles(d){
 }
 
 async function loadSdFiles(opts={}){
+  const manual = !!(opts && opts.manual);
+  const auto = !!(opts && opts.auto);
   if(sdAutoRefreshInProgress) return;
+  if(auto && isMachineBusyForSdRefresh(latestMachineStateForSd)){
+    const msgEl = document.getElementById('sdMsg');
+    const now = Date.now();
+    if(msgEl && (now - sdAutoRefreshPausedNoticeAt) >= 10000){
+      msgEl.textContent = 'SD auto-refresh paused while job is running.';
+      sdAutoRefreshPausedNoticeAt = now;
+    }
+    return;
+  }
   const preserveMessage = !!(opts && opts.preserveMessage);
   sdAutoRefreshInProgress = true;
   const msgEl = document.getElementById('sdMsg');
@@ -906,12 +955,14 @@ async function loadSdFiles(opts={}){
     if(!preserveMessage) msgEl.textContent = 'Loading SD files...';
     const d = await api('/api/files?path='+encodeURIComponent(currentSdPath||'/'));
     if(!d.ok){
-      if(!preserveMessage) msgEl.textContent = 'SD refresh failed: '+(d.error||'unknown');
+      const errMsg = String(d.error || d.message || 'unknown');
+      const prefix = manual ? 'SD refresh failed: ' : 'SD auto-refresh failed: ';
+      if(!preserveMessage || manual) msgEl.textContent = prefix + errMsg;
       document.getElementById('sdFilesBody').innerHTML = '<tr><td colspan="6" class="sd-muted">Unable to load SD files.</td></tr>';
       return;
     }
     renderSdFiles(d);
-    if(!preserveMessage) msgEl.textContent = `Loaded ${ (d.files||[]).length } item(s).`;
+    if(!preserveMessage || manual) msgEl.textContent = `Loaded ${ (d.files||[]).length } item(s).`;
   } finally {
     sdAutoRefreshInProgress = false;
   }
@@ -1036,6 +1087,8 @@ async function loadManualConfig(){
     sdPreviewSupported = !!sdCfg.enable_preview;
     sdEnableStart = sdCfg.enable_start !== false;
     sdEnableDelete = sdCfg.enable_delete !== false;
+    sdAutoRefreshSeconds = Math.max(0, Number(sdCfg.auto_refresh_seconds || 0));
+    startSdAutoRefreshTimer();
 
     const stepSel = document.getElementById('jogStep');
     const feedSel = document.getElementById('jogFeed');
@@ -1412,7 +1465,7 @@ function bind(){
       }
     });
   }
-  document.getElementById('filesRefresh').onclick=loadSdFiles;
+  document.getElementById('filesRefresh').onclick=()=>loadSdFiles({manual:true});
   const sdSelectAll = document.getElementById('sdSelectAll');
   if(sdSelectAll){
     sdSelectAll.onchange = ()=>{
@@ -1426,14 +1479,14 @@ function bind(){
       }else{
         selectedSdFiles.clear();
       }
-      loadSdFiles();
+      loadSdFiles({preserveMessage:true});
     };
   }
   const sdClearSelection = document.getElementById('sdClearSelection');
   if(sdClearSelection){
     sdClearSelection.onclick = ()=>{
       selectedSdFiles.clear();
-      loadSdFiles();
+      loadSdFiles({preserveMessage:true});
     };
   }
   const sdDeleteSelected = document.getElementById('sdDeleteSelected');
@@ -1481,7 +1534,7 @@ function bind(){
 
 bind();
 loadManualConfig();
-refreshStatus();refreshJobs();loadSdFiles();loadTimelapses();loadTimelapseState();refreshConsole();loadSnapshots();
+refreshStatus();refreshJobs();loadSdFiles({manual:true});loadTimelapses();loadTimelapseState();refreshConsole();loadSnapshots();
 setInterval(refreshStatus,3000);
 setInterval(refreshConsole,5000);
 setInterval(()=>refreshJobs({preserveMessage:true}),5000);
