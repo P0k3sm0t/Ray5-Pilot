@@ -224,6 +224,7 @@ def _run(argv: argparse.Namespace) -> int:
         log(f"Update status written: update_logs/update_status.json")
 
         restart_cmd = [python_exe, "app.py"]
+        log("Restarting Ray5 Pilot in same console without new process group.")
         log(f"Restart command: {' '.join(restart_cmd)}")
         try:
             subprocess.Popen(restart_cmd, cwd=str(project_root))

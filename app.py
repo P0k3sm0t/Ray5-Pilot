@@ -3001,11 +3001,7 @@ def api_github_apply_update() -> Any:
         str(update_info.get("latest_version") or ""),
     ]
     try:
-        subprocess.Popen(
-            args,
-            cwd=str(BASE_DIR),
-            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-        )
+        subprocess.Popen(args, cwd=str(BASE_DIR))
     except Exception as exc:
         console.add("error", f"Failed to launch updater: {exc}")
         return jsonify({"ok": False, "message": f"Failed to launch updater: {exc}"}), 500
