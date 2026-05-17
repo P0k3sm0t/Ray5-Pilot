@@ -26,8 +26,6 @@ class JobManager:
         self._watch_state: dict[str, tuple[int, int]] = {}
         self._imported_signatures: set[tuple[str, int, str]] = set()
         self._currently_importing: set[str] = set()
-        self._recently_processed: dict[str, float] = {}
-        self._recent_ttl_seconds = 300.0
         limits = cfg.get("limits", {}) if isinstance(cfg.get("limits"), dict) else {}
         self.max_upload_bytes = int(float(limits.get("max_gcode_upload_mb", 50)) * 1024 * 1024)
         self.max_bounds_parse_bytes = int(float(limits.get("max_bounds_parse_mb", 50)) * 1024 * 1024)
@@ -51,10 +49,9 @@ class JobManager:
         candidate = self.imported_dir / base
         if not candidate.exists():
             return candidate
-        stamp = time.strftime("%Y%m%d_%H%M%S")
         idx = 1
         while True:
-            c = self.imported_dir / f"{stem}_{stamp}_{idx:02d}{suffix}"
+            c = self.imported_dir / f"{stem}_{idx}{suffix}"
             if not c.exists():
                 return c
             idx += 1
@@ -138,7 +135,6 @@ class JobManager:
         }
 
     def poll_watched_imports(self) -> list[dict[str, Any]]:
-        self._prune_recently_processed()
         imported: list[dict[str, Any]] = []
         if self.imported_dir.resolve() == self.watched_dir.resolve():
             raise RuntimeError("watched_gcode_dir and imported_jobs_dir cannot be the same folder")
@@ -148,8 +144,6 @@ class JobManager:
                 continue
             key = str(p.resolve()).lower()
             if key in self._currently_importing:
-                continue
-            if key in self._recently_processed:
                 continue
             try:
                 stat = p.stat()
@@ -168,16 +162,9 @@ class JobManager:
                 meta = self._import_watched_file(p)
                 if meta:
                     imported.append(meta)
-                self._recently_processed[key] = time.time() + self._recent_ttl_seconds
             finally:
                 self._currently_importing.discard(key)
         return imported
-
-    def _prune_recently_processed(self) -> None:
-        now = time.time()
-        expired = [k for k, until in self._recently_processed.items() if until <= now]
-        for k in expired:
-            self._recently_processed.pop(k, None)
 
     def _import_watched_file(self, src: Path) -> dict[str, Any] | None:
         if src.suffix.lower() not in self.allowed:
@@ -206,16 +193,21 @@ class JobManager:
             print(f"[WATCHER] Hash read failed for {src.name}: {exc}")
             return None
 
-        sig = (src.name.lower(), s2, sha)
-        if sig in self._imported_signatures:
-            if self.delete_watched_after_import:
-                try:
-                    src.unlink()
-                except OSError:
-                    pass
+        target_primary = (self.imported_dir / Path(src.name).name).resolve()
+        if self.imported_dir not in target_primary.parents:
             return None
+        target = target_primary
+        if target_primary.exists():
+            try:
+                existing_sig = (target_primary.name.lower(), target_primary.stat().st_size, self._file_sha256(target_primary))
+            except OSError:
+                existing_sig = None
+            src_sig = (target_primary.name.lower(), s2, sha)
+            if existing_sig is not None and src_sig == existing_sig:
+                # Same watched content already imported to same target file; skip.
+                return None
+            target = self._safe_target(src.name)
 
-        target = self._safe_target(src.name)
         if src.stat().st_size > self.max_upload_bytes:
             return None
         safety = self.validate_gcode_path(src)

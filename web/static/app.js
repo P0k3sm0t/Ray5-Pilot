@@ -56,11 +56,16 @@ let cameraActivePath = '';
 const cameraPlaceholderPath = '/static/camera_placeholder.svg';
 let cameraVideoEnabled = true;
 let cameraDisplayMode = 'placeholder'; // live | placeholder | timelapse
+let cameraPopoutWindow = null;
+let cameraPopoutClosePoll = null;
+let cameraPopoutWasLiveEnabled = false;
+let cameraPopoutActive = false;
 const selectedImportedJobs = new Set();
 let lastImportedJobs = [];
 const selectedTimelapseFiles = new Set();
 let currentTimelapseItems = [];
 let timelapseRuntimeState = null;
+let lastTimelapseCompletionRefreshKey = '';
 
 function setTimelapseMessage(message){
   const msg = document.getElementById('timelapseMsg');
@@ -100,6 +105,7 @@ function updateConsoleJumpButton(){
 
 async function refreshStatus(){
   const d=await api('/api/status');
+  const previousTimelapseState = timelapseRuntimeState ? {...timelapseRuntimeState} : null;
   const mpos = d.machine_position || d.position || {};
   const wpos = d.work_position || {};
   const wco = d.work_offset || {};
@@ -163,7 +169,7 @@ async function refreshStatus(){
     <div class="status-foot muted small">
       <div>Source: ${esc(sourceText)}</div>
       <div>Coordinate source: ${esc(coordSourceText)}</div>
-      <div>Last update: ${esc(lastUpdateText)}</div>
+      <div>Machine status update: ${esc(lastUpdateText)}</div>
       <div>Version: ${esc(appVersionText)}</div>
       <div>Update: ${esc(updateText)}</div>
       <div style="margin-top:4px;"><b>System check</b></div>
@@ -188,6 +194,21 @@ async function refreshStatus(){
   if(d.timelapse_state){
     timelapseRuntimeState = d.timelapse_state;
     updateTimelapseRuntimeUi();
+    const prevActiveLike = !!(previousTimelapseState && (previousTimelapseState.active || previousTimelapseState.armed || previousTimelapseState.paused));
+    const nowActiveLike = !!(timelapseRuntimeState && (timelapseRuntimeState.active || timelapseRuntimeState.armed || timelapseRuntimeState.paused));
+    if(prevActiveLike && !nowActiveLike){
+      const completionKey = String(
+        (previousTimelapseState && (previousTimelapseState.session_id || previousTimelapseState.started_at || previousTimelapseState.last_snapshot_at))
+        || ''
+      );
+      if(completionKey && completionKey !== lastTimelapseCompletionRefreshKey){
+        lastTimelapseCompletionRefreshKey = completionKey;
+        loadTimelapses({preserveMessage:true}).catch(()=>{});
+      } else if(!completionKey){
+        // Fallback: if there is no key, still refresh once for this transition.
+        loadTimelapses({preserveMessage:true}).catch(()=>{});
+      }
+    }
   }
   if(videoToggleBtn) videoToggleBtn.textContent = cameraVideoEnabled ? 'Disable Video' : 'Enable Video';
 
@@ -228,6 +249,11 @@ async function refreshStatus(){
   if(cameraDisplayMode === 'timelapse'){
     if(cam) cam.style.display='none';
     if(timelapsePlayer) timelapsePlayer.style.display='block';
+    return;
+  }
+
+  if(cameraPopoutActive){
+    showPlaceholder('Live video is popped out. Close the popout window to return video here.');
     return;
   }
 
@@ -413,7 +439,9 @@ async function playTimelapse(item){
   player.style.display='block';
   player.src = item.url;
   player.onended = ()=>{
-    stopTimelapsePlayback(true);
+    // Keep the ended timelapse visible in the video card until user action replaces it.
+    cameraDisplayMode = 'timelapse';
+    if(msg) msg.textContent = 'Timelapse playback ended. Re-enable live video to return to camera.';
   };
   player.onerror = ()=>{
     stopTimelapsePlayback(true);
@@ -981,8 +1009,11 @@ async function loadManualConfig(){
 
     const stepSel = document.getElementById('jogStep');
     const feedSel = document.getElementById('jogFeed');
-    const steps = Array.isArray(mc.jog_steps) && mc.jog_steps.length ? mc.jog_steps : [0.1,1,5,10,50];
-    const feeds = Array.isArray(mc.feedrates) && mc.feedrates.length ? mc.feedrates : [500,1000,3000,6000];
+    const baseSteps = Array.isArray(mc.jog_steps) && mc.jog_steps.length ? mc.jog_steps : [0.1,1,5,10,50];
+    const stepSet = new Set(baseSteps.map(x => Number(x)));
+    stepSet.add(100);
+    const steps = Array.from(stepSet).filter(Number.isFinite).sort((a,b)=>a-b);
+    const feeds = [500,1000,1500,2000,2500,3000];
     stepSel.innerHTML = '';
     feedSel.innerHTML = '';
     steps.forEach(s=>{ const o=document.createElement('option'); o.value=String(s); o.textContent=String(s); stepSel.append(o); });
@@ -990,7 +1021,7 @@ async function loadManualConfig(){
     stepSel.value = String(mc.default_jog_step ?? mc.default_jog_step_mm ?? 10);
     feedSel.value = String(mc.default_feedrate ?? 3000);
     if(!steps.map(String).includes(stepSel.value)){ stepSel.value = String(steps[0]); }
-    if(!feeds.map(String).includes(feedSel.value)){ feedSel.value = String(feeds[0]); }
+    if(!feeds.map(String).includes(feedSel.value)){ feedSel.value = '1000'; }
 
     const testFire = document.getElementById('testFire');
     if(testFire){
@@ -1051,6 +1082,84 @@ function bind(){
     setCameraTestStatus('Camera stream reloaded.', 'muted', 5000);
     refreshConsole();
   };
+
+  const stopCameraPopoutPoll = ()=>{
+    if(cameraPopoutClosePoll){
+      clearInterval(cameraPopoutClosePoll);
+      cameraPopoutClosePoll = null;
+    }
+  };
+
+  const clearCameraPopoutTracking = ()=>{
+    stopCameraPopoutPoll();
+    cameraPopoutWindow = null;
+    cameraPopoutActive = false;
+    cameraPopoutWasLiveEnabled = false;
+  };
+
+  const restoreDashboardLiveAfterPopoutClose = ()=>{
+    if(cameraDisplayMode === 'timelapse') return;
+    if(!cameraPopoutWasLiveEnabled) return;
+    if(!cameraVideoEnabled) return;
+    cameraDisplayMode = 'live';
+    const path = cameraActivePath || '/camera/stream';
+    cam.removeAttribute('src');
+    cam.src = path + '?_=' + Date.now();
+    if(cameraStatus) cameraStatus.textContent = 'Live video restored after popout closed.';
+    const camMsg = document.getElementById('camMsg');
+    if(camMsg) camMsg.textContent = 'Live video restored after popout closed.';
+  };
+
+  const startCameraPopoutClosePoll = ()=>{
+    stopCameraPopoutPoll();
+    cameraPopoutClosePoll = setInterval(()=>{
+      if(!cameraPopoutWindow){
+        clearCameraPopoutTracking();
+        return;
+      }
+      if(cameraPopoutWindow.closed){
+        stopCameraPopoutPoll();
+        cameraPopoutWindow = null;
+        cameraPopoutActive = false;
+        restoreDashboardLiveAfterPopoutClose();
+      }
+    }, 1000);
+  };
+
+  const camPopoutBtn = document.getElementById('camPopout');
+  if(camPopoutBtn){
+    camPopoutBtn.onclick = ()=>{
+      if(cameraPopoutWindow && !cameraPopoutWindow.closed){
+        cameraPopoutWindow.focus();
+        return;
+      }
+      const popout = window.open(
+        '/camera/popout',
+        'ray5CameraPopout',
+        'width=960,height=720,resizable=yes,scrollbars=no'
+      );
+      if(!popout){
+        setCameraTestStatus('Popup blocked. Allow popups to use Pop Out Video.', 'warn', 10000);
+        return;
+      }
+      cameraPopoutWindow = popout;
+      cameraPopoutWasLiveEnabled = cameraVideoEnabled && cameraDisplayMode !== 'timelapse';
+      cameraPopoutActive = true;
+      if(cameraDisplayMode !== 'timelapse'){
+        cameraDisplayMode = 'placeholder';
+        cam.removeAttribute('src');
+        cameraActivePath = '';
+        cam.src = cameraPlaceholderPath;
+        cam.style.opacity='1';
+        cam.style.display='block';
+        const camMsg = document.getElementById('camMsg');
+        if(camMsg) camMsg.textContent = 'Live video is popped out. Close the popout window to return video here.';
+      }
+      setCameraTestStatus('Live video is popped out. Close the popout window to return video here.', 'muted', 12000);
+      startCameraPopoutClosePoll();
+      popout.focus();
+    };
+  }
   const camTestBtn = document.getElementById('camTest');
   camTestBtn.onclick=async()=>{
     camTestBtn.disabled = true;
@@ -1115,6 +1224,10 @@ function bind(){
       return;
     }
     if(cameraVideoEnabled){
+      if(cameraPopoutWindow && !cameraPopoutWindow.closed){
+        try{ cameraPopoutWindow.close(); }catch(_err){}
+        clearCameraPopoutTracking();
+      }
       stopTimelapsePlayback(false);
       cameraDisplayMode = 'live';
       const path = cameraActivePath || '/camera/stream';

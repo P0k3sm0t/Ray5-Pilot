@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ray5 Pilot Live Video</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="alternate icon" href="/static/favicon.ico">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    body{margin:0}
+    main{padding:10px}
+    .popout-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+    .popout-frame{width:100%;height:calc(100vh - 120px);min-height:320px;background:#05070c;border:1px solid rgba(255,255,255,.12);border-radius:12px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+    .popout-feed{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain}
+    .popout-placeholder{color:#94a3b8;text-align:center;padding:20px}
+  </style>
+</head>
+<body>
+<main>
+  <section class="card">
+    <h2>Ray5 Pilot Live Video</h2>
+    <div class="popout-toolbar">
+      <button id="popoutRefresh" type="button">Refresh Stream</button>
+      <button id="popoutClose" type="button">Close</button>
+      <span id="popoutStatus" class="muted small"></span>
+    </div>
+    <div class="popout-frame">
+      <img id="popoutFeed" class="popout-feed" src="" alt="Live camera stream">
+      <div id="popoutPlaceholder" class="popout-placeholder" style="display:none;">Camera stream unavailable.</div>
+    </div>
+  </section>
+</main>
+<script>
+(() => {
+  const feed = document.getElementById('popoutFeed');
+  const placeholder = document.getElementById('popoutPlaceholder');
+  const status = document.getElementById('popoutStatus');
+  const refreshBtn = document.getElementById('popoutRefresh');
+  const closeBtn = document.getElementById('popoutClose');
+  const streamPath = '/camera/stream';
+
+  function showPlaceholder(message){
+    if(feed){ feed.style.display='none'; feed.removeAttribute('src'); }
+    if(placeholder){ placeholder.style.display='block'; placeholder.textContent = message || 'Camera stream unavailable.'; }
+    if(status) status.textContent = message || 'Camera stream unavailable.';
+  }
+
+  function showStream(){
+    if(!feed) return;
+    if(placeholder) placeholder.style.display='none';
+    feed.style.display='block';
+    feed.src = `${streamPath}?popout=1&_=${Date.now()}`;
+    if(status) status.textContent = 'Live stream active.';
+  }
+
+  if(feed){
+    feed.onerror = () => showPlaceholder('Camera stream unavailable or disabled.');
+    feed.onload = () => { if(status) status.textContent = 'Live stream active.'; };
+  }
+  if(refreshBtn) refreshBtn.onclick = () => showStream();
+  if(closeBtn) closeBtn.onclick = () => window.close();
+  document.addEventListener('keydown', (ev) => {
+    if(ev.key === 'Escape') window.close();
+  });
+  showStream();
+})();
+</script>
+</body>
+</html>

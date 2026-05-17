@@ -72,7 +72,7 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 4. Set Ray5 IP.
 5. Optional: configure RTSP camera URL.
 6. Restart Ray5 Pilot.
-7. Open http://127.0.0.1:5050.
+7. Open http://127.0.0.1:5050 if it does not automatically open.
 
 ### Launcher Options
 
@@ -203,6 +203,36 @@ Ray5 Pilot is provided as-is and is used at your own risk. This software control
 The author/contributors are not responsible for damage, injury, loss, failed jobs, machine misconfiguration, unsafe operation, or any other consequences resulting from the use or misuse of this software.
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
+
+## v1.1.1
+### Added
+- Added live video pop-out support for the Dashboard Video / Camera card.
+- Added Dashboard placeholder behavior while live video is popped out.
+- Added automatic Dashboard live video restore when the pop-out window is closed.
+- Added a 100 mm Manual Controls jog step option.
+- Added Manual Controls feedrate options:
+  - 500
+  - 1000
+  - 1500
+  - 2000
+  - 2500
+  - 3000
+- Added automatic Timelapse card refresh after a successful timelapse is created.
+- Added support for keeping completed timelapse playback visible in the Video / Camera card after playback ends.
+
+### Changed
+- Renamed the Settings **GitHub / Support** card to **Support**.
+- Renamed the Status card timestamp label from **Last update** to **Machine status update** so it is clear the timestamp refers to machine/status communication.
+- Improved watched-folder auto-import behavior so same-name files can be imported again after the previous imported copy was deleted.
+- Improved watched-folder filename conflict handling with numeric suffixes such as `test_1.gcode` and `test_2.gcode`.
+- Hid `System Volume Information` from the SD Card Files list.
+- Updated Manual Controls feedrate dropdown values to a cleaner fixed set.
+- Improved live video pop-out behavior so the main Dashboard does not show two live feeds at once.
+
+### Notes
+- The live video pop-out uses Ray5 Pilot’s existing camera stream/proxy behavior and does not expose direct camera credentials.
+- Timelapse playback now remains visible after playback completes until live video is re-enabled or another timelapse is selected.
+- Watched-folder imports no longer treat a previously imported filename as permanently blocked after the imported copy is deleted.
 
 ## v1.1.0
 ### Added

@@ -60,6 +60,7 @@
         <button id="camRefresh">Reload Camera</button>
         <button id="camTest">Test Camera</button>
         <button id="camCalibrate">Calibrate Overlay</button>
+        <button id="camPopout">Pop Out Video</button>
         <button id="camVideoToggle">Disable Video</button>
       </div>
       <div id="camera-test-status" class="camera-test-status muted small"></div>
@@ -90,12 +91,12 @@
         <div class="manual-settings-row">
           <label>Step (mm)
             <select id="jogStep">
-              <option>0.1</option><option>1</option><option>5</option><option selected>10</option><option>50</option>
+              <option>0.1</option><option>1</option><option>5</option><option selected>10</option><option>50</option><option>100</option>
             </select>
           </label>
           <label>Feedrate
             <select id="jogFeed">
-              <option>500</option><option>1000</option><option selected>3000</option><option>6000</option>
+              <option>500</option><option>1000</option><option>1500</option><option>2000</option><option>2500</option><option selected>3000</option>
             </select>
           </label>
         </div>

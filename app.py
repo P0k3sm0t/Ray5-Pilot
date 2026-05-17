@@ -1773,6 +1773,11 @@ def camera_calibration_page() -> Any:
     return render_template("camera_calibration.html")
 
 
+@app.get("/camera/popout")
+def camera_popout_page() -> Any:
+    return render_template("camera_popout.html")
+
+
 @app.get("/camera-calibration")
 def camera_calibration_page_legacy() -> Any:
     return render_template("camera_calibration.html")

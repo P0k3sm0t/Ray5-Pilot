@@ -894,6 +894,9 @@ class Ray5Client:
                     out["x"], out["y"], out["z"] = vals[0], vals[1], vals[2]
         return out
 
+    def _is_hidden_sd_entry(self, name: Any) -> bool:
+        return str(name or "").strip().lower() == "system volume information"
+
     def normalize_sd_file(self, entry: Any) -> dict[str, Any]:
         name = ""
         path = ""
@@ -924,7 +927,7 @@ class Ray5Client:
             path = "/" + name.lstrip("/") if name else ""
 
         lower_name = name.lower()
-        if lower_name in {"system volume information", "$recycle.bin"}:
+        if lower_name == "system volume information":
             is_dir = True
         ext = Path(name).suffix.lower()
         file_type = "folder" if is_dir else ("gcode" if ext in {".gcode", ".gc", ".nc", ".txt"} else "unknown")
@@ -998,6 +1001,7 @@ class Ray5Client:
                 "status": str(parsed.get("status") or "---"),
             }
         normalized = [self.normalize_sd_file(row) for row in rows]
+        normalized = [row for row in normalized if not self._is_hidden_sd_entry(row.get("name"))]
         return {"ok": True, "path": resp_path or "/", "files": normalized, "storage": storage, "raw": parsed}
 
     def debug_info(self, config_path: str = "") -> dict[str, Any]:
