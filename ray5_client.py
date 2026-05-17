@@ -426,13 +426,19 @@ class Ray5Client:
         return {"ok": False, "message": f"Unknown stop_mode: {stop_mode}", "raw": "", "mode": stop_mode}
 
     def pause_job(self) -> dict[str, Any]:
-        r = self.send_gcode("!")
-        r["message"] = "Pause/feed hold sent."
+        r = self._request_single_command("!", tolerate_error_text=True)
+        # Real-time feed-hold can return empty/"ok"/"Error" text even when accepted.
+        # For this command, success is based on HTTP transport delivery.
+        r["ok"] = bool(r.get("ok"))
+        r["message"] = "Pause/feed hold sent." if r["ok"] else str(r.get("message", "Pause/feed hold failed."))
         return r
 
     def resume_job(self) -> dict[str, Any]:
-        r = self.send_gcode("~")
-        r["message"] = "Resume sent."
+        r = self._request_single_command("~", tolerate_error_text=True)
+        # Real-time cycle-start can return empty/"ok"/"Error" text even when accepted.
+        # For this command, success is based on HTTP transport delivery.
+        r["ok"] = bool(r.get("ok"))
+        r["message"] = "Resume sent." if r["ok"] else str(r.get("message", "Resume failed."))
         return r
 
     def status(self) -> dict[str, Any]:

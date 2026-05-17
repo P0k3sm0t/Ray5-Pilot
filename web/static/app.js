@@ -138,20 +138,23 @@ async function refreshStatus(){
   const stateDisplay = isOfflineFallback ? 'Offline' : stateText;
   const pageDisplay = isOfflineFallback ? '—' : pageId;
   const sc = (d && d.system_check) ? d.system_check : {};
+  const commSafety = (d && d.comm_safety) ? d.comm_safety : {};
+  commSafetyLockout = !!commSafety.comm_lost_during_job;
+  commSafetyMessage = String(commSafety.message || '').trim();
   const sdWorkingNow = (sc.sd_card_list_working === true);
   const httpReachableNow = (sc.ray5_http_reachable === true);
   const sdWorkingTransition = (lastSystemSdWorking !== true) && sdWorkingNow;
   const httpTransition = (lastSystemHttpReachable !== true) && httpReachableNow;
   lastSystemSdWorking = sc.sd_card_list_working;
   lastSystemHttpReachable = sc.ray5_http_reachable;
-  if((sdWorkingTransition || httpTransition) && !sdAutoRefreshInProgress){
+  if((sdWorkingTransition || httpTransition) && !sdAutoRefreshInProgress && !commSafetyLockout){
     const now = Date.now();
     if((now - lastSdAutoRefreshAt) >= SD_AUTO_REFRESH_MIN_INTERVAL_MS){
       lastSdAutoRefreshAt = now;
       loadSdFiles({preserveMessage:true, auto:true}).catch(()=>{});
     }
   }
-  const nowBusyForSd = isMachineBusyForSdRefresh(latestMachineStateForSd);
+  const nowBusyForSd = isMachineBusyForSdRefresh(latestMachineStateForSd) || commSafetyLockout;
   if(sdWasBusyForAutoRefresh && !nowBusyForSd){
     setTimeout(()=>{
       if(!isMachineBusyForSdRefresh(latestMachineStateForSd)){
@@ -191,8 +194,25 @@ async function refreshStatus(){
       <div>SD card list working: ${esc(yesNoUnknown(sc.sd_card_list_working))}</div>
       <div>Camera URL configured: ${esc(yesNoUnknown(sc.camera_url_configured))}</div>
       <div>Camera test passed: ${esc(yesNoUnknown(sc.camera_test_passed))}</div>
+      ${commSafetyLockout ? `<div class="warn-text"><b>Safety lockout:</b> ${esc(commSafetyMessage || 'Communication was lost while a job may have been active. Verify the Ray5 screen and machine state before continuing.')}</div><div><button id="clearCommLossLockoutBtn" type="button">Clear Safety Lockout</button></div>` : ''}
     </div>
   `;
+  const clearLockoutBtn = document.getElementById('clearCommLossLockoutBtn');
+  if(clearLockoutBtn){
+    clearLockoutBtn.onclick = async()=>{
+      const ok = confirm('Clear communication-loss safety lockout? Verify the Ray5 machine is safe and idle before continuing.');
+      if(!ok) return;
+      try{
+        const r = await api('/api/safety/clear-comm-loss','POST',{});
+        if(r && r.ok){
+          const sdMsg = document.getElementById('sdMsg');
+          if(sdMsg) sdMsg.textContent = 'Safety lockout cleared.';
+          await refreshStatus();
+          await loadSdFiles({preserveMessage:true, auto:true});
+        }
+      }catch(_err){}
+    };
+  }
 
   const cam=document.getElementById('cam');
   const timelapsePlayer = document.getElementById('timelapsePlayer');
@@ -662,6 +682,8 @@ let sdAutoRefreshPausedNoticeAt = 0;
 let sdWasBusyForAutoRefresh = false;
 let sdAutoRefreshSeconds = 0;
 let sdAutoRefreshTimer = null;
+let commSafetyLockout = false;
+let commSafetyMessage = '';
 
 function normalizeMachineState(state){
   const s = String(state || '').trim().toLowerCase();
@@ -939,6 +961,25 @@ async function loadSdFiles(opts={}){
   const manual = !!(opts && opts.manual);
   const auto = !!(opts && opts.auto);
   if(sdAutoRefreshInProgress) return;
+  if(manual && commSafetyLockout){
+    const proceed = confirm(
+      'Communication was lost while a job may have been active. Verify the Ray5 screen and machine state before continuing SD refresh. Continue anyway?'
+    );
+    if(!proceed){
+      const msgEl = document.getElementById('sdMsg');
+      if(msgEl) msgEl.textContent = commSafetyMessage || 'SD refresh blocked by communication-loss safety lockout.';
+      return;
+    }
+  }
+  if(auto && commSafetyLockout){
+    const msgEl = document.getElementById('sdMsg');
+    const now = Date.now();
+    if(msgEl && (now - sdAutoRefreshPausedNoticeAt) >= 10000){
+      msgEl.textContent = commSafetyMessage || 'SD auto-refresh paused while communication-loss safety lockout is active.';
+      sdAutoRefreshPausedNoticeAt = now;
+    }
+    return;
+  }
   if(auto && isMachineBusyForSdRefresh(latestMachineStateForSd)){
     const msgEl = document.getElementById('sdMsg');
     const now = Date.now();

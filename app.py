@@ -47,6 +47,7 @@ runtime_started = False
 timelapse_lock = RLock()
 timelapse_stop_event = threading.Event()
 timelapse_thread: threading.Thread | None = None
+timelapse_stop_worker: threading.Thread | None = None
 timelapse_state: dict[str, Any] = {
     "enabled": False,
     "armed": False,
@@ -65,6 +66,10 @@ timelapse_state: dict[str, Any] = {
     "snapshot_count": 0,
     "session_dir": "",
     "session_id": "",
+    "stop_pending": False,
+    "build_in_progress": False,
+    "stop_reason": "",
+    "stop_pending_session_id": "",
     "status": "Disabled",
 }
 system_check_state: dict[str, Any] = {
@@ -77,6 +82,15 @@ system_check_state: dict[str, Any] = {
     "last_auto_check_at": None,
     "auto_check_in_progress": False,
     "last_auto_check_log_at": None,
+}
+ray5_comm_safety_state: dict[str, Any] = {
+    "comm_lost_during_job": False,
+    "last_known_machine_state": "",
+    "last_job_start_time": None,
+    "last_comm_ok_time": None,
+    "message": "",
+    "entered_at": None,
+    "last_skip_log_at": None,
 }
 github_update_status: dict[str, Any] = {
     "checked": False,
@@ -535,6 +549,71 @@ def _set_camera_check_result(ok: bool | None, reason: str = "") -> None:
         console.add(level, f"Camera health update: {reason}")
 
 
+def _record_job_activity(source: str, name: str = "") -> None:
+    now = time.time()
+    with app_state_lock:
+        ray5_comm_safety_state["last_job_start_time"] = now
+        if not ray5_comm_safety_state.get("last_known_machine_state"):
+            ray5_comm_safety_state["last_known_machine_state"] = "Run"
+    console.add("warn", f"Job activity recorded source={source} name={name or 'unknown'}")
+
+
+def _is_machine_active_state(state: str) -> bool:
+    s = str(state or "").strip().lower().split(":", 1)[0]
+    return s in {"run", "hold", "jog", "door"}
+
+
+def _is_recent_job_activity(now: float | None = None) -> bool:
+    ts = ray5_comm_safety_state.get("last_job_start_time")
+    if not isinstance(ts, (int, float)):
+        return False
+    now_ts = float(now if isinstance(now, (int, float)) else time.time())
+    return (now_ts - float(ts)) <= 180.0
+
+
+def _update_comm_safety_state(status_source: str, online: bool, state_base: str) -> None:
+    now = time.time()
+    source = str(status_source or "").strip().lower()
+    state = str(state_base or "").strip()
+    state_norm = state.lower().split(":", 1)[0] if state else ""
+    entered = False
+    with app_state_lock:
+        if source == "live_websocket" and bool(online):
+            ray5_comm_safety_state["last_comm_ok_time"] = now
+            if state:
+                ray5_comm_safety_state["last_known_machine_state"] = state
+            if state_norm == "idle":
+                ray5_comm_safety_state["last_job_start_time"] = None
+        comm_lost = bool(ray5_comm_safety_state.get("comm_lost_during_job", False))
+        last_known = str(ray5_comm_safety_state.get("last_known_machine_state", "") or "")
+        active_or_recent = _is_machine_active_state(last_known) or _is_recent_job_activity(now)
+        comm_unavailable = source in {"offline", "fallback_offline", "synthetic"} or not bool(online)
+        if (not comm_lost) and comm_unavailable and active_or_recent:
+            ray5_comm_safety_state["comm_lost_during_job"] = True
+            ray5_comm_safety_state["message"] = (
+                "Communication was lost while a job may have been active. "
+                "Verify the Ray5 screen and machine state before continuing."
+            )
+            ray5_comm_safety_state["entered_at"] = now
+            entered = True
+    if entered:
+        console.add("warn", "Communication-loss safety lockout entered (job may have been active).")
+
+
+def _snapshot_comm_safety_state() -> dict[str, Any]:
+    with app_state_lock:
+        snap = dict(ray5_comm_safety_state)
+    return {
+        "comm_lost_during_job": bool(snap.get("comm_lost_during_job", False)),
+        "last_known_machine_state": str(snap.get("last_known_machine_state", "") or ""),
+        "last_job_start_time": snap.get("last_job_start_time"),
+        "last_comm_ok_time": snap.get("last_comm_ok_time"),
+        "message": str(snap.get("message", "") or ""),
+        "entered_at": snap.get("entered_at"),
+        "requires_ack": bool(snap.get("comm_lost_during_job", False)),
+    }
+
+
 def _run_system_check_probe() -> None:
     try:
         with app_state_lock:
@@ -542,6 +621,14 @@ def _run_system_check_probe() -> None:
             system_check_state["auto_check_in_progress"] = True
             system_check_state["last_auto_check_at"] = time.time()
         if not _is_ray5_host_configured(active_cfg):
+            return
+        if bool(ray5_comm_safety_state.get("comm_lost_during_job", False)):
+            now = time.time()
+            with app_state_lock:
+                last_log = ray5_comm_safety_state.get("last_skip_log_at")
+                if (last_log is None) or ((now - float(last_log)) >= 60.0):
+                    ray5_comm_safety_state["last_skip_log_at"] = now
+                    console.add("warn", "System-check SD probe skipped due to communication-loss safety lockout.")
             return
 
         # Lightweight HTTP reachability probe.
@@ -755,6 +842,10 @@ def _timelapse_output_dir(config: dict[str, Any] | None = None) -> Path:
 def _timelapse_status_label(state: dict[str, Any]) -> str:
     if not bool(state.get("enabled", False)):
         return "Disabled"
+    if bool(state.get("build_in_progress", False)):
+        return "Building"
+    if bool(state.get("stop_pending", False)):
+        return "Stopping (Queued)"
     if bool(state.get("stopping", False)):
         return "Stopping"
     if bool(state.get("active", False)) and bool(state.get("paused", False)):
@@ -912,6 +1003,10 @@ def _timelapse_start_internal(reason: str, job_name: str = "", job_source: str =
         timelapse_state["active"] = True
         timelapse_state["paused"] = False
         timelapse_state["stopping"] = False
+        timelapse_state["stop_pending"] = False
+        timelapse_state["build_in_progress"] = False
+        timelapse_state["stop_reason"] = ""
+        timelapse_state["stop_pending_session_id"] = ""
         timelapse_state["error"] = ""
         timelapse_state["job_name"] = job_name or str(timelapse_state.get("job_name", ""))
         timelapse_state["job_source"] = job_source or str(timelapse_state.get("job_source", ""))
@@ -945,9 +1040,14 @@ def _timelapse_start_internal(reason: str, job_name: str = "", job_source: str =
 
 
 def _timelapse_stop_internal(reason: str) -> dict[str, Any]:
+    global timelapse_stop_worker
     with timelapse_lock:
         was_active = bool(timelapse_state.get("active", False))
         was_armed = bool(timelapse_state.get("armed", False))
+        timelapse_state["stop_pending"] = False
+        timelapse_state["stop_pending_session_id"] = ""
+        timelapse_state["build_in_progress"] = False
+        timelapse_state["stop_reason"] = str(reason or "")
         timelapse_state["stopping"] = was_active
     if not was_active and not was_armed:
         with timelapse_lock:
@@ -1012,12 +1112,17 @@ def _timelapse_stop_internal(reason: str) -> dict[str, Any]:
         timelapse_state["paused"] = False
         timelapse_state["armed"] = False
         timelapse_state["stopping"] = False
+        timelapse_state["stop_pending"] = False
+        timelapse_state["stop_pending_session_id"] = ""
+        timelapse_state["build_in_progress"] = False
+        timelapse_state["stop_reason"] = ""
         timelapse_state["job_name"] = ""
         timelapse_state["job_source"] = ""
         timelapse_state["control_mode"] = ""
         timelapse_state["session_dir"] = ""
         timelapse_state["session_id"] = ""
         timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+    timelapse_stop_worker = None
     msg = "Timelapse stopped."
     if built_video:
         msg = f"Timelapse stopped. Video saved: {built_video}"
@@ -1041,6 +1146,10 @@ def _timelapse_arm(job_name: str, job_source: str) -> dict[str, Any]:
         timelapse_state["armed"] = True
         timelapse_state["paused"] = False
         timelapse_state["stopping"] = False
+        timelapse_state["stop_pending"] = False
+        timelapse_state["build_in_progress"] = False
+        timelapse_state["stop_reason"] = ""
+        timelapse_state["stop_pending_session_id"] = ""
         timelapse_state["error"] = ""
         timelapse_state["job_name"] = str(job_name or "")
         timelapse_state["job_source"] = str(job_source or "")
@@ -1083,7 +1192,88 @@ def _timelapse_observe_machine_state(machine_state: str, online: bool) -> None:
                     timelapse_state["status"] = _timelapse_status_label(timelapse_state)
             return
     if control_mode == "job" and state_now.get("active", False) and _timelapse_is_terminal_state(normalized_state, online):
-        _timelapse_stop_internal(reason=f"state={machine_state or 'unknown'}")
+        _queue_timelapse_stop_from_status(reason=f"state={machine_state or 'unknown'}", machine_state=machine_state)
+
+
+def _timelapse_stop_worker_run(reason: str, session_id: str, machine_state: str) -> None:
+    global timelapse_stop_worker
+    console.add(
+        "info",
+        f"Timelapse stop/build worker start: session={session_id or 'none'} reason={reason} machine_state={machine_state or 'unknown'}",
+    )
+    with timelapse_lock:
+        timelapse_state["build_in_progress"] = True
+        timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+    try:
+        result = _timelapse_stop_internal(reason=reason)
+        if result.get("ok"):
+            console.add("info", f"Timelapse stop/build worker complete: session={session_id or 'none'}")
+        else:
+            console.add(
+                "warn",
+                f"Timelapse stop/build worker completed with warning: session={session_id or 'none'} message={result.get('message','')}",
+            )
+    except Exception as exc:
+        with timelapse_lock:
+            timelapse_state["error"] = str(exc)
+            timelapse_state["build_in_progress"] = False
+            timelapse_state["stop_pending"] = False
+            timelapse_state["stop_pending_session_id"] = ""
+            timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+        console.add("error", f"Timelapse stop/build worker failed: {exc}")
+    finally:
+        with timelapse_lock:
+            timelapse_state["build_in_progress"] = False
+            timelapse_state["stop_pending"] = False
+            timelapse_state["stop_pending_session_id"] = ""
+            timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+        timelapse_stop_worker = None
+
+
+def _queue_timelapse_stop_from_status(reason: str, machine_state: str) -> bool:
+    global timelapse_stop_worker
+    with timelapse_lock:
+        session_id = str(timelapse_state.get("session_id", "")).strip()
+        control_mode = str(timelapse_state.get("control_mode", "")).strip().lower()
+        active = bool(timelapse_state.get("active", False))
+        if control_mode != "job" or not active:
+            return False
+        if bool(timelapse_state.get("build_in_progress", False)):
+            console.add(
+                "info",
+                f"Timelapse stop/build already running; duplicate request ignored for session={session_id or 'none'}",
+            )
+            return False
+        pending_session = str(timelapse_state.get("stop_pending_session_id", "")).strip()
+        if bool(timelapse_state.get("stop_pending", False)) and pending_session == session_id and session_id:
+            console.add(
+                "info",
+                f"Timelapse stop/build already queued; duplicate request ignored for session={session_id}",
+            )
+            return False
+        if timelapse_stop_worker is not None and timelapse_stop_worker.is_alive():
+            console.add(
+                "info",
+                f"Timelapse stop/build worker alive; duplicate request ignored for session={session_id or 'none'}",
+            )
+            return False
+        timelapse_state["stop_pending"] = True
+        timelapse_state["stop_pending_session_id"] = session_id
+        timelapse_state["stop_reason"] = str(reason or "")
+        timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+    console.add(
+        "info",
+        f"Queued background timelapse stop/build: session={session_id or 'none'} reason={reason} machine_state={machine_state or 'unknown'}",
+    )
+    worker = threading.Thread(
+        target=_timelapse_stop_worker_run,
+        name=f"timelapse-stop-{session_id or int(time.time())}",
+        args=(str(reason or ""), str(session_id or ""), str(machine_state or "")),
+        daemon=True,
+    )
+    timelapse_stop_worker = worker
+    worker.start()
+    return True
 
 
 @app.get("/")
@@ -1194,6 +1384,7 @@ def api_status() -> Any:
 
     raw_state = str(state or "").strip()
     state_base = raw_state.split(":", 1)[0] if raw_state else "UNKNOWN"
+    _update_comm_safety_state(status_source=source, online=bool(online), state_base=state_base)
     if source in {"offline", "fallback_offline"} or not online:
         display_state = "Offline" if _is_ray5_host_configured() else "Not Configured"
     else:
@@ -1308,6 +1499,7 @@ def api_status() -> Any:
     tl_state = _timelapse_snapshot_state()
     app_version_value = _read_local_version() or "unknown"
     update_status_cached = _snapshot_startup_update_status()
+    comm_safety = _snapshot_comm_safety_state()
     return jsonify(
         {
             "ok": True,
@@ -1355,6 +1547,7 @@ def api_status() -> Any:
             "camera_scheme": cam_scheme,
             "app_version": app_version_value,
             "update_status": update_status_cached,
+            "comm_safety": comm_safety,
             "system_check": {
                 "ray5_host_configured": bool(_is_ray5_host_configured(active_cfg)),
                 "ray5_http_reachable": http_ok,
@@ -2265,6 +2458,7 @@ def api_jobs_start() -> Any:
     console.add("info", f"Start result {filename}: {'ok' if ok else 'fail'} {str(resp)[:120]}")
     timelapse_arm = None
     if ok:
+        _record_job_activity(source="imported_start", name=filename)
         timelapse_arm = _timelapse_arm(job_name=filename, job_source="imported")
     return jsonify({"ok": ok, "response": resp, "upload_ok": upload_ok, "upload": upload_detail, "run_filename": machine_filename, "timelapse_arm": timelapse_arm})
 
@@ -2722,6 +2916,7 @@ def api_files_start() -> Any:
     console.add("info", f"SD start {'ok' if result.get('ok') else 'fail'} file={filename}")
     timelapse_arm = None
     if result.get("ok"):
+        _record_job_activity(source="sd_start", name=filename)
         timelapse_arm = _timelapse_arm(job_name=filename, job_source="sd")
     return jsonify(result | {"timelapse_arm": timelapse_arm})
 
@@ -3072,6 +3267,19 @@ def api_github_update_status() -> Any:
     except Exception as exc:
         console.add("warn", f"Failed to read update status: {exc}")
         return jsonify({"ok": True, "status": "none", "message": ""})
+
+
+@app.post("/api/safety/clear-comm-loss")
+def api_safety_clear_comm_loss() -> Any:
+    with app_state_lock:
+        was_locked = bool(ray5_comm_safety_state.get("comm_lost_during_job", False))
+        ray5_comm_safety_state["comm_lost_during_job"] = False
+        ray5_comm_safety_state["message"] = ""
+        ray5_comm_safety_state["entered_at"] = None
+        ray5_comm_safety_state["last_skip_log_at"] = None
+    if was_locked:
+        console.add("warn", "Communication-loss safety lockout cleared by user acknowledgement.")
+    return jsonify({"ok": True, "message": "Communication-loss safety lockout cleared."})
 
 
 @app.post("/api/github/apply-update")
