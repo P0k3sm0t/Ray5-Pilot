@@ -101,6 +101,8 @@ GITHUB_SOURCE_ZIP_URL = "https://github.com/P0k3sm0t/Ray5-Pilot/archive/refs/hea
 GITHUB_MAIN_VERSION_URL = "https://raw.githubusercontent.com/P0k3sm0t/Ray5-Pilot/main/VERSION"
 UPDATE_STATUS_PATH = BASE_DIR / "update_logs" / "update_status.json"
 _update_shutdown_started = False
+calibration_lock = RLock()
+calibration_process: subprocess.Popen[Any] | None = None
 
 
 def _is_sensitive_key(name: str) -> bool:
@@ -362,6 +364,15 @@ def _delayed_process_exit(delay_seconds: float = 0.8) -> None:
 
 def reload_components() -> None:
     global cfg, ray5, camera, jobs, status_monitor, _placeholder_api_warned, _placeholder_host_warned
+    tl_state = _timelapse_snapshot_state()
+    if bool(tl_state.get("active", False)) or bool(tl_state.get("paused", False)) or bool(tl_state.get("armed", False)):
+        stop_result = _timelapse_stop_internal(reason="settings_reload")
+        if not bool(stop_result.get("ok")):
+            msg = str(stop_result.get("message", "Unable to stop timelapse before settings reload.")).strip()
+            console.add("warn", f"Settings reload blocked: {msg}")
+            raise RuntimeError(msg)
+        console.add("info", "Timelapse stopped because Settings were reloaded.")
+
     new_cfg = cfg_mgr.load()
     new_ray5 = Ray5Client(new_cfg)
     new_camera = CameraManager(new_cfg, BASE_DIR)
@@ -1714,10 +1725,20 @@ def api_camera_test() -> Any:
 @app.post("/api/camera/open-external")
 def api_camera_open_external() -> Any:
     cam = _camera_cfg()
-    if not cam["url"]:
+    raw_url = str(cam.get("url", "") or "").strip()
+    if not raw_url:
         return jsonify({"ok": False, "error": "camera URL not configured"})
+    scheme = urlsplit(raw_url).scheme.strip().lower()
+    allowed_schemes = {"http", "https", "rtsp", "rtsps"}
+    if scheme not in allowed_schemes:
+        console.add(
+            "warn",
+            f"Camera external open blocked: unsupported URL scheme '{scheme or 'none'}' "
+            f"for {mask_camera_url(raw_url)}",
+        )
+        return jsonify({"ok": False, "error": f"unsupported camera URL scheme: {scheme or 'none'}"})
     try:
-        webbrowser.open(cam["url"])
+        webbrowser.open(raw_url)
         return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)})
@@ -1790,15 +1811,24 @@ def api_camera_config_status() -> Any:
 
 @app.post("/api/camera/calibration/run")
 def api_camera_calibration_run() -> Any:
+    global calibration_process
     latest_raw = camera.output_dir / "latest_raw.jpg"
     if not latest_raw.exists():
         return jsonify({"ok": False, "error": "Take a snapshot first, then run calibration."}), 400
     script = BASE_DIR / "calibrate_camera.py"
+    with calibration_lock:
+        if calibration_process is not None:
+            if calibration_process.poll() is None:
+                return jsonify({"ok": False, "error": "Camera calibration is already running."}), 409
+            calibration_process = None
     try:
-        subprocess.Popen([sys.executable, str(script)], cwd=str(BASE_DIR))
+        with calibration_lock:
+            calibration_process = subprocess.Popen([sys.executable, str(script)], cwd=str(BASE_DIR))
         console.add("info", "Camera calibration launched")
         return jsonify({"ok": True, "message": "Calibration window launched"})
     except Exception as exc:
+        with calibration_lock:
+            calibration_process = None
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
@@ -3105,7 +3135,11 @@ def api_config_post() -> Any:
             pre_save_notice = "Timelapse armed state canceled because timelapse was disabled in Settings."
 
     cfg_mgr.save(body)
-    reload_components()
+    try:
+        reload_components()
+    except Exception as exc:
+        console.add("error", f"Config reload failed after save: {exc}")
+        return jsonify({"ok": False, "error": f"Config saved, but runtime reload was blocked: {exc}"}), 409
     console.add("info", "Config saved")
     if pre_save_notice:
         return jsonify({"ok": True, "message": pre_save_notice})
@@ -3128,9 +3162,19 @@ if __name__ == "__main__":
     except Exception as exc:
         console.add("warn", f"Startup camera capture skipped: {exc}")
     start_runtime()
+    run_host = str(c.get("web_ui", {}).get("host", "127.0.0.1")).strip()
+    run_debug_requested = bool(c.get("web_ui", {}).get("debug", False))
+    run_host_norm = run_host.lower()
+    run_debug = run_debug_requested
+    if run_debug_requested and run_host_norm not in {"127.0.0.1", "localhost", "::1"}:
+        run_debug = False
+        console.add(
+            "warn",
+            f"web_ui.debug requested with non-local host '{run_host}'. For safety, debug mode has been forced off.",
+        )
     app.run(
-        host=str(c.get("web_ui", {}).get("host", "127.0.0.1")),
+        host=run_host,
         port=int(c.get("web_ui", {}).get("port", 5050)),
-        debug=bool(c.get("web_ui", {}).get("debug", False)),
+        debug=run_debug,
         use_reloader=False,
     )

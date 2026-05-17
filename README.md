@@ -199,7 +199,7 @@ CTRL + C
 ## Camera overlay notes
 - latest_raw.jpg is the raw camera snapshot.
 - latest.jpg is the processed laser software overlay.
-- Adjust scalling first
+- Adjust scaling first
 - Source X offset px moves the selected camera source area before deskew.
 - Positive Source X samples farther right in the raw image.
 - Negative Source X samples farther left.

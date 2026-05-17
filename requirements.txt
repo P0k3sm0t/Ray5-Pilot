@@ -1,6 +1,6 @@
-Flask
-requests
-opencv-python
-numpy
-pillow
-websocket-client
+Flask>=3.0,<4.0
+requests>=2.31,<3.0
+opencv-python>=4.8,<5.0
+numpy>=1.26,<3.0
+pillow>=10,<12
+websocket-client>=1.7,<2.0

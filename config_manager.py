@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
+
+
+def _is_local_web_host(host: str) -> bool:
+    h = str(host or "").strip().lower()
+    return h in {"127.0.0.1", "localhost", "::1"}
+
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "ray5": {
@@ -218,7 +225,21 @@ class ConfigManager:
             current_raw = {}
         merged_current = self._merged(DEFAULT_CONFIG, current_raw if isinstance(current_raw, dict) else {})
         merged_final = self._merged(merged_current, data)
-        self.config_path.write_text(json.dumps(merged_final, indent=2), encoding="utf-8")
+        temp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
+        payload = json.dumps(merged_final, indent=2)
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self.config_path)
+        except Exception:
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
+            raise
 
     def validate(self, data: dict[str, Any]) -> tuple[bool, str]:
         try:
@@ -234,6 +255,9 @@ class ConfigManager:
             web_host = str(data.get("web_ui", {}).get("host", "")).strip()
             if not web_host:
                 return False, "web_ui.host cannot be empty"
+            web_debug = bool(data.get("web_ui", {}).get("debug", False))
+            if web_debug and not _is_local_web_host(web_host):
+                return False, "web_ui.debug can only be enabled when web_ui.host is localhost or 127.0.0.1."
             timeout = float(data.get("ray5", {}).get("request_timeout_seconds", 4))
             if timeout <= 0:
                 return False, "ray5.request_timeout_seconds must be > 0"
@@ -268,6 +292,15 @@ class ConfigManager:
             tl_fps = float(timelapse.get("playback_fps", 10) or 10)
             if tl_fps < 1 or tl_fps > 60:
                 return False, "timelapse.playback_fps must be between 1 and 60"
+            machine = data.get("machine", {})
+            min_x = float(machine.get("min_x", 0))
+            max_x = float(machine.get("max_x", 390))
+            min_y = float(machine.get("min_y", 0))
+            max_y = float(machine.get("max_y", 360))
+            if min_x >= max_x:
+                return False, "Machine min X must be less than machine max X."
+            if min_y >= max_y:
+                return False, "Machine min Y must be less than machine max Y."
             return True, "ok"
         except Exception as exc:
             return False, str(exc)

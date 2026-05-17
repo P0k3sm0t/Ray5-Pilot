@@ -107,6 +107,31 @@ def _write_update_status(
     status_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _remove_path_safe(path: Path, log) -> None:
+    try:
+        if not path.exists():
+            return
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    except Exception as exc:
+        log(f"WARN: cleanup failed for {path}: {exc}")
+
+
+def _rotate_old_entries(root: Path, keep: int, is_candidate, log) -> None:
+    try:
+        candidates = [p for p in root.iterdir() if is_candidate(p)]
+    except Exception as exc:
+        log(f"WARN: cleanup scan failed for {root}: {exc}")
+        return
+    if len(candidates) <= keep:
+        return
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in candidates[keep:]:
+        _remove_path_safe(old, log)
+
+
 def _run(argv: argparse.Namespace) -> int:
     project_root = Path(argv.project_root).resolve()
     python_exe = str(Path(argv.python_exe).resolve())
@@ -178,6 +203,13 @@ def _run(argv: argparse.Namespace) -> int:
 
             pip_ok = True
             try:
+                py_exe_path = Path(python_exe)
+                py_exe_text = str(py_exe_path).replace("\\", "/").lower()
+                looks_like_venv = any(token in py_exe_text for token in ("/.venv/", "/venv/", "/env/"))
+                log(f"Python executable for pip install: {python_exe}")
+                log(f"Python virtual environment detected by path: {'yes' if looks_like_venv else 'no'}")
+                if not looks_like_venv:
+                    log("WARN: Python executable path does not look like .venv/venv/env; requirements will install into the current Python environment.")
                 log("Running pip install for requirements.txt")
                 result = subprocess.run(
                     [python_exe, "-m", "pip", "install", "-r", "requirements.txt"],
@@ -222,6 +254,20 @@ def _run(argv: argparse.Namespace) -> int:
             log_path=log_path,
         )
         log(f"Update status written: update_logs/update_status.json")
+        # Conservative cleanup/rotation after status is written.
+        _remove_path_safe(work_dir, log)
+        _rotate_old_entries(
+            backups_root,
+            keep=5,
+            is_candidate=lambda p: p.is_dir() and p.name.startswith("update_"),
+            log=log,
+        )
+        _rotate_old_entries(
+            logs_root,
+            keep=10,
+            is_candidate=lambda p: p.is_file() and p.suffix.lower() == ".log" and p.name.startswith("update_"),
+            log=log,
+        )
 
         restart_cmd = [python_exe, "app.py"]
         if os.name == "nt":
