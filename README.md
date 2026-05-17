@@ -295,7 +295,7 @@ Always supervise laser operation, verify all files and settings before running a
 
 ## v1.0.8
 ### Added
-- Added a **GitHub / Support** card to the Settings page.
+- Added a **Support** card to the Settings page.
 - Added quick links for:
   - GitHub Repository
   - Open an Issue
