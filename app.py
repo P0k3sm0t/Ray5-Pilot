@@ -2241,14 +2241,41 @@ def api_timelapse_start() -> Any:
     body = request.get_json(silent=True) or {}
     job_name = str(body.get("job_name", "")).strip()
     job_source = str(body.get("job_source", "manual")).strip() or "manual"
-    result = _timelapse_start_internal(reason="manual", job_name=job_name, job_source=job_source)
+    comm_safety = _snapshot_comm_safety_state()
+    if bool(comm_safety.get("comm_lost_during_job", False)):
+        result = {"ok": False, "message": str(comm_safety.get("message") or "Timelapse start blocked by communication-loss safety lockout.")}
+        return jsonify(result | {"state": _timelapse_snapshot_state()}), 409
+
+    with app_state_lock:
+        active_monitor = status_monitor
+    latest_status = active_monitor.get_latest_status() if active_monitor is not None else None
+    machine_state = ""
+    online = False
+    if isinstance(latest_status, dict):
+        machine_state = str(latest_status.get("state") or "").strip()
+        online = bool(latest_status.get("websocket_connected", False))
+    normalized_state = _timelapse_normalize_state(machine_state)
+    if not online or normalized_state != "Run":
+        result = {"ok": False, "message": "Timelapse can only be manually started while the Ray5 is running."}
+        return jsonify(result | {"state": _timelapse_snapshot_state()}), 409
+
+    effective_job_name = job_name or "manual_run_timelapse"
+    # Manual Start is now constrained to active Run state and uses job-mode behavior.
+    result = _timelapse_start_internal(reason="auto", job_name=effective_job_name, job_source=job_source)
     status_code = 200 if result.get("ok") else 400
     return jsonify(result | {"state": _timelapse_snapshot_state()}), status_code
 
 
 @app.post("/api/timelapse/stop")
 def api_timelapse_stop() -> Any:
+    state = _timelapse_snapshot_state()
+    if bool(state.get("stop_pending", False)) or bool(state.get("build_in_progress", False)) or bool(state.get("stopping", False)):
+        return jsonify({"ok": True, "message": "Timelapse stop already in progress.", "state": state})
+    if not (bool(state.get("active", False)) or bool(state.get("armed", False)) or bool(state.get("paused", False))):
+        return jsonify({"ok": True, "message": "No active timelapse to stop.", "state": state})
     result = _timelapse_stop_internal(reason="manual")
+    if result.get("ok"):
+        result["message"] = "Timelapse stopped and saving/building output."
     return jsonify(result | {"state": _timelapse_snapshot_state()})
 
 

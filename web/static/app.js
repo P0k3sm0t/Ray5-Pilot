@@ -520,6 +520,10 @@ async function startTimelapseManual(){
 }
 
 async function stopTimelapseManual(){
+  if(!confirm('Stop the active timelapse and save/build the output?')){
+    setTimelapseMessage('Timelapse stop canceled.');
+    return;
+  }
   const stopBtn = document.getElementById('timelapseStop');
   setTimelapseMessage('Stopping timelapse...');
   if(stopBtn) stopBtn.disabled = true;
