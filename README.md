@@ -297,6 +297,7 @@ Always supervise laser operation, verify all files and settings before running a
 ### Highlights
 - Final tagged-release updater verification release for in-app update packaging flow.
 - Confirmed in-app update install uses GitHub release ZIP assets with SHA-256 digest verification.
+- Added support for `*.sha256.txt` release checksum sidecar assets, with fallback to GitHub release asset digest metadata.
 - Confirmed in-app update install rejects main-branch archives such as `refs/heads/main` / `main.zip`.
 - Confirmed missing release ZIP/checksum metadata shows a clear blocked-install message instead of a false internet-check failure when GitHub release metadata is reachable.
 - Confirmed Settings Support card only shows **Update Ray5 Pilot** when `update_installable` is true.

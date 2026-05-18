@@ -434,6 +434,56 @@ def check_safety_feature_presence(r: Result) -> None:
         r.ok("Safety feature static checks")
 
 
+def check_updater_parser_hardening(r: Result) -> None:
+    app_path = ROOT / "app.py"
+    updater_path = ROOT / "updater.py"
+    job_path = ROOT / "job_manager.py"
+    gi_path = ROOT / ".gitignore"
+
+    app_markers = [
+        ("sidecar checksum support", ".sha256.txt"),
+        ("digest fallback support", "github_asset_digest"),
+        ("checksum source field", "checksum_source"),
+        ("checksum url field", "checksum_url"),
+        ("installability flag", "update_installable"),
+        ("checksum flag", "checksum_available"),
+        ("main-branch install block", "install_source_is_main_branch"),
+        ("main.zip/main ref block token", "refs/heads/main"),
+        ("rate-limit http handling", "code == 403"),
+        ("rate-limit header logging", "X-RateLimit-Limit"),
+        ("rate-limit user message", "rate-limited"),
+    ]
+    updater_markers = [
+        ("expected-sha256 argument", "--expected-sha256"),
+        ("missing checksum refusal", "Missing expected SHA-256"),
+        ("mismatched checksum refusal", "checksum mismatch"),
+    ]
+    parser_markers = [
+        ("G92 handling", "g92_set"),
+        ("G92.1 handling", "g92_clear"),
+        ("G92 offset tracking", "g92_offset_x"),
+        ("segment start captured", "start_x, start_y = x, y"),
+        ("segment start included in bounds", "_include_point(min_x, min_y, max_x, max_y, start_x, start_y)"),
+        ("segment destination included in bounds", "_include_point(min_x, min_y, max_x, max_y, nx, ny)"),
+    ]
+
+    missing = []
+    missing += [f"app.py: {x}" for x in _check_markers(app_path, app_markers)]
+    missing += [f"updater.py: {x}" for x in _check_markers(updater_path, updater_markers)]
+    missing += [f"job_manager.py: {x}" for x in _check_markers(job_path, parser_markers)]
+
+    gi_txt = _read_text(gi_path)
+    if "tools/secret_terms.local.txt" not in gi_txt:
+        missing.append(".gitignore: missing tools/secret_terms.local.txt ignore")
+
+    if missing:
+        r.fail("Updater/parser hardening checks")
+        for m in missing:
+            print(f"  - missing indicator: {m}")
+    else:
+        r.ok("Updater/parser hardening checks")
+
+
 def check_requirements_ranges(r: Result) -> None:
     txt = _read_text(ROOT / "requirements.txt").lower()
     checks = ["flask>=", "requests>=", "opencv-python>=", "numpy>=", "pillow>=", "websocket-client>="]
@@ -504,6 +554,7 @@ def main() -> int:
     check_secret_scan(r)
     check_firmware_rename(r)
     check_safety_feature_presence(r)
+    check_updater_parser_hardening(r)
     check_requirements_ranges(r)
     check_launcher(r)
     check_git_status(r, args.require_clean)

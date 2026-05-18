@@ -12,6 +12,7 @@ import webbrowser
 from pathlib import Path
 from threading import RLock
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib import request as urlrequest
 from urllib.parse import urlsplit
 
@@ -109,6 +110,8 @@ github_update_status: dict[str, Any] = {
     "release_url": GITHUB_REPO_URL if "GITHUB_REPO_URL" in globals() else "",
     "source_zip_url": "",
     "source_zip_sha256": "",
+    "checksum_source": "",
+    "checksum_url": "",
     "checksum_available": False,
     "update_installable": False,
 }
@@ -278,6 +281,43 @@ def _fetch_remote_main_version(timeout_seconds: float = 5.0) -> str:
     return _normalize_version_text(raw)
 
 
+def _extract_sha256_from_text(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    patterns = [
+        r"\bsha256\s*[:=]\s*([0-9a-f]{64})\b",
+        r"\bSHA256\s*[:=]\s*([0-9A-F]{64})\b",
+        r"\b([0-9a-f]{64})\b",
+    ]
+    for pat in patterns:
+        m = re.search(pat, raw, flags=re.IGNORECASE)
+        if m:
+            return str(m.group(1)).strip().lower()
+    return ""
+
+
+def _log_github_http_diagnostics(err: HTTPError) -> None:
+    code = int(getattr(err, "code", 0) or 0)
+    if code == 403:
+        headers = getattr(err, "headers", None)
+        limit = headers.get("X-RateLimit-Limit") if headers else None
+        remaining = headers.get("X-RateLimit-Remaining") if headers else None
+        reset = headers.get("X-RateLimit-Reset") if headers else None
+        console.add(
+            "warn",
+            f"GitHub update check 403 (rate-limited or forbidden). "
+            f"X-RateLimit-Limit={limit or 'n/a'} "
+            f"X-RateLimit-Remaining={remaining or 'n/a'} "
+            f"X-RateLimit-Reset={reset or 'n/a'}",
+        )
+        return
+    if code == 404:
+        console.add("warn", "GitHub update check 404: no release found for this repository.")
+        return
+    console.add("warn", f"GitHub update check HTTP error: {code} {err.reason}")
+
+
 def _fetch_latest_release_update_info(timeout_seconds: float = 8.0) -> dict[str, Any]:
     req = urlrequest.Request(
         GITHUB_LATEST_RELEASE_API_URL,
@@ -293,7 +333,7 @@ def _fetch_latest_release_update_info(timeout_seconds: float = 8.0) -> dict[str,
         raise RuntimeError("Latest release tag is missing.")
     release_url = str(payload.get("html_url") or GITHUB_REPO_URL).strip() or GITHUB_REPO_URL
     assets = payload.get("assets") if isinstance(payload.get("assets"), list) else []
-    zip_asset: dict[str, Any] | None = None
+    zip_candidates: list[dict[str, Any]] = []
     for asset in assets:
         if not isinstance(asset, dict):
             continue
@@ -301,16 +341,81 @@ def _fetch_latest_release_update_info(timeout_seconds: float = 8.0) -> dict[str,
         url = str(asset.get("browser_download_url") or "").strip()
         if not url or not name.endswith(".zip"):
             continue
-        zip_asset = asset
-        break
+        zip_candidates.append(asset)
+    latest_lower = latest = str(tag).strip().lower()
+    preferred_names = {
+        f"ray5-pilot-v{latest_lower}.zip",
+        f"ray5-pilot-{latest_lower}.zip",
+    }
+    zip_asset: dict[str, Any] | None = None
+    for asset in zip_candidates:
+        name = str(asset.get("name") or "").strip().lower()
+        if name in preferred_names:
+            zip_asset = asset
+            break
+    if zip_asset is None:
+        for asset in zip_candidates:
+            name = str(asset.get("name") or "").strip().lower()
+            if name.startswith("ray5-pilot") and name.endswith(".zip"):
+                zip_asset = asset
+                break
+    if zip_asset is None and zip_candidates:
+        zip_asset = zip_candidates[0]
     source_zip_url = ""
     source_zip_sha256 = ""
     install_metadata_missing = False
+    checksum_source = ""
+    checksum_url = ""
     if zip_asset:
+        zip_name = str(zip_asset.get("name") or "").strip()
         source_zip_url = str(zip_asset.get("browser_download_url") or "").strip()
-        digest_raw = str(zip_asset.get("digest") or "").strip().lower()
-        if digest_raw.startswith("sha256:"):
-            source_zip_sha256 = digest_raw.split(":", 1)[1].strip()
+        sidecar_names = [
+            f"{zip_name}.sha256.txt",
+            f"{zip_name}.sha256",
+            f"Ray5-Pilot-v{tag}.sha256.txt",
+            f"ray5-pilot-v{tag}.sha256.txt",
+        ]
+        sidecar_asset: dict[str, Any] | None = None
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            aname = str(asset.get("name") or "").strip()
+            if not aname:
+                continue
+            if any(aname.lower() == s.lower() for s in sidecar_names):
+                sidecar_asset = asset
+                break
+        if sidecar_asset is None:
+            for asset in assets:
+                if not isinstance(asset, dict):
+                    continue
+                aname = str(asset.get("name") or "").strip().lower()
+                if aname.endswith(".sha256.txt") or aname.endswith(".sha256"):
+                    if zip_name.lower() in aname or f"v{tag}".lower() in aname:
+                        sidecar_asset = asset
+                        break
+        if sidecar_asset is not None:
+            checksum_url = str(sidecar_asset.get("browser_download_url") or "").strip()
+            try:
+                req = urlrequest.Request(
+                    checksum_url,
+                    headers={"User-Agent": "Ray5-Pilot-UpdateCheck"},
+                    method="GET",
+                )
+                with urlrequest.urlopen(req, timeout=timeout_seconds) as resp:
+                    sidecar_text = resp.read().decode("utf-8", errors="replace")
+                parsed = _extract_sha256_from_text(sidecar_text)
+                if parsed:
+                    source_zip_sha256 = parsed
+                    checksum_source = "sidecar"
+            except Exception as exc:
+                console.add("warn", f"Release checksum sidecar read failed: {exc}")
+        if not source_zip_sha256:
+            digest_raw = str(zip_asset.get("digest") or "").strip()
+            parsed = _extract_sha256_from_text(digest_raw)
+            if parsed:
+                source_zip_sha256 = parsed
+                checksum_source = "github_asset_digest"
         if not source_zip_sha256:
             install_metadata_missing = True
     else:
@@ -320,6 +425,8 @@ def _fetch_latest_release_update_info(timeout_seconds: float = 8.0) -> dict[str,
         "release_url": release_url,
         "source_zip_url": source_zip_url,
         "source_zip_sha256": source_zip_sha256,
+        "checksum_source": checksum_source,
+        "checksum_url": checksum_url,
         "install_metadata_missing": bool(install_metadata_missing),
     }
 
@@ -360,6 +467,43 @@ def _check_source_update() -> dict[str, Any]:
             "install_metadata_missing": install_metadata_missing,
             "message": message,
         }
+    except HTTPError as exc:
+        _log_github_http_diagnostics(exc)
+        message = "Unable to check for updates right now."
+        if int(getattr(exc, "code", 0) or 0) == 403:
+            message = "GitHub update check was rate-limited. Try again later."
+        elif int(getattr(exc, "code", 0) or 0) == 404:
+            message = "No GitHub release was found for update checking."
+        return {
+            "ok": False,
+            "current_version": current_version,
+            "latest_version": latest_version,
+            "latest_tag": "",
+            "update_available": False,
+            "release_url": GITHUB_REPO_URL,
+            "source_zip_url": "",
+            "source_zip_url_fallback": GITHUB_SOURCE_ZIP_FALLBACK_URL,
+            "source_zip_sha256": "",
+            "checksum_source": "",
+            "checksum_url": "",
+            "message": message,
+        }
+    except URLError as exc:
+        console.add("warn", f"GitHub update check network failure: {exc}")
+        return {
+            "ok": False,
+            "current_version": current_version,
+            "latest_version": latest_version,
+            "latest_tag": "",
+            "update_available": False,
+            "release_url": GITHUB_REPO_URL,
+            "source_zip_url": "",
+            "source_zip_url_fallback": GITHUB_SOURCE_ZIP_FALLBACK_URL,
+            "source_zip_sha256": "",
+            "checksum_source": "",
+            "checksum_url": "",
+            "message": "Unable to check for updates right now.",
+        }
     except Exception as exc:
         console.add("warn", f"GitHub update check failed: {exc}")
         return {
@@ -372,6 +516,8 @@ def _check_source_update() -> dict[str, Any]:
             "source_zip_url": "",
             "source_zip_url_fallback": GITHUB_SOURCE_ZIP_FALLBACK_URL,
             "source_zip_sha256": "",
+            "checksum_source": "",
+            "checksum_url": "",
             "message": "Unable to check for updates right now.",
         }
 
@@ -396,6 +542,8 @@ def _update_github_check_cache_from_result(result: dict[str, Any], checking: boo
     release_url = str(result.get("release_url") or GITHUB_REPO_URL)
     source_zip_url = str(result.get("source_zip_url") or "")
     source_zip_sha256 = str(result.get("source_zip_sha256") or "").strip().lower()
+    checksum_source = str(result.get("checksum_source") or "").strip()
+    checksum_url = str(result.get("checksum_url") or "").strip()
     checksum_available = bool(result.get("checksum_available")) if ("checksum_available" in result) else bool(re.fullmatch(r"[0-9a-f]{64}", source_zip_sha256))
     update_installable = bool(result.get("update_installable")) if ("update_installable" in result) else bool(update_available and checksum_available and source_zip_url)
     install_metadata_missing = bool(result.get("install_metadata_missing", False))
@@ -413,6 +561,8 @@ def _update_github_check_cache_from_result(result: dict[str, Any], checking: boo
         "source_zip_url": source_zip_url,
         "source_zip_url_fallback": GITHUB_SOURCE_ZIP_FALLBACK_URL,
         "source_zip_sha256": source_zip_sha256,
+        "checksum_source": checksum_source,
+        "checksum_url": checksum_url,
         "checksum_available": checksum_available,
         "update_installable": update_installable,
         "install_metadata_missing": install_metadata_missing,

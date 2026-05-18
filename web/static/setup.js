@@ -383,7 +383,7 @@ async function init(){
     }
     if(!ok){
       updateAvailEl.textContent = 'Unknown';
-      updateStatus.textContent = 'Could not check for updates. Check your internet connection or try again later.';
+      updateStatus.textContent = backendMessage || 'Could not check for updates. Check your internet connection or try again later.';
       setUpdateButtonVisible(false);
       return;
     }

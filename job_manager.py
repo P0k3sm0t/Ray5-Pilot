@@ -296,7 +296,8 @@ class JobManager:
         absolute = True
         motion = re.compile(r"([A-Z])\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))", re.IGNORECASE)
         finish_marker_seen = False
-        laser_off_mode = False
+        # Start in laser-off mode; bounds should not include travel until laser-on is explicit.
+        laser_off_mode = True
         warnings: list[str] = []
         for line in text.splitlines():
             raw = line.strip()
@@ -346,14 +347,26 @@ class JobManager:
             if "G91" in clean:
                 absolute = False
             tokens = {m.group(1).upper(): float(m.group(2)) for m in motion.finditer(clean)}
-            g92_match = re.search(r"\bG\s*92(?:\.\d+)?\b", clean)
-            if g92_match:
+            g92_clear = re.search(r"\bG\s*92(?:\.1)\b", clean)
+            if g92_clear:
+                # GRBL-style G92.1 clears temporary G92 offsets.
+                g92_offset_x = 0.0
+                g92_offset_y = 0.0
+                continue
+            g92_set = re.search(r"\bG\s*92\b(?!\.)", clean)
+            if g92_set:
                 # G92 remaps the current work coordinate without motion. Keep machine-space
                 # tracking stable by updating offsets used for future absolute moves.
                 if "X" in tokens:
                     g92_offset_x = x - tokens["X"]
+                else:
+                    # Bare G92 on Ray5/GRBL is treated here as setting current work X to 0.
+                    g92_offset_x = x
                 if "Y" in tokens:
                     g92_offset_y = y - tokens["Y"]
+                else:
+                    # Bare G92 on Ray5/GRBL is treated here as setting current work Y to 0.
+                    g92_offset_y = y
                 continue
             if "X" not in tokens and "Y" not in tokens:
                 continue
@@ -392,6 +405,7 @@ class JobManager:
                         min_x, min_y, max_x, max_y = self._include_point(min_x, min_y, max_x, max_y, nx, ny)
             else:
                 if not laser_off_mode:
+                    min_x, min_y, max_x, max_y = self._include_point(min_x, min_y, max_x, max_y, start_x, start_y)
                     min_x, min_y, max_x, max_y = self._include_point(min_x, min_y, max_x, max_y, nx, ny)
             x, y = nx, ny
 
