@@ -61,7 +61,7 @@ function renderTable() {
   const body = document.getElementById("msBody");
   if (!body) return;
   if (!settingsRows.length) {
-    body.innerHTML = '<tr><td colspan="6" class="muted">No machine settings found.</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="muted">No firmware settings found.</td></tr>';
     updateButtons();
     return;
   }
@@ -87,11 +87,11 @@ async function loadSettings(options = {}) {
   const opts = typeof options === "boolean" ? { showMsg: options } : (options || {});
   const showMsg = opts.showMsg !== false;
   const preserveMessage = opts.preserveMessage === true;
-  if (showMsg && !preserveMessage) setMsg("Loading machine settings...", "muted");
+  if (showMsg && !preserveMessage) setMsg("Loading firmware settings...", "muted");
   const r = await api("/api/machine-settings");
   setRawOutput(r.raw || "");
   if (!r.ok) {
-    if (!preserveMessage) setMsg(r.error || "Failed to load machine settings.", "error");
+    if (!preserveMessage) setMsg(r.error || "Failed to load firmware settings.", "error");
     settingsRows = [];
     renderTable();
     return;
@@ -109,7 +109,7 @@ async function loadSettings(options = {}) {
 function buildBackupContent() {
   const now = new Date();
   const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
-  return `Ray5 Machine Settings Backup\nGenerated: ${ts}\n\n${rawBackupText || ""}\n`;
+  return `Ray5 Firmware Settings Backup\nGenerated: ${ts}\n\n${rawBackupText || ""}\n`;
 }
 
 function downloadBackup() {
@@ -137,7 +137,7 @@ async function saveChanges() {
   const changes = changedRows().map((r) => ({ key: r.key, value: String(r.new_value).trim() }));
   if (!changes.length) return;
   const commands = changes.map((c) => `$${c.key}=${c.value}`);
-  const confirmText = `Apply ${changes.length} machine setting change(s)?\n\n${commands.join("\n")}\n\nChanging controller settings can affect motion, limits, homing, and laser behavior. Continue?`;
+  const confirmText = `Apply ${changes.length} firmware setting change(s)?\n\n${commands.join("\n")}\n\nChanging controller settings can affect motion, limits, homing, and laser behavior. Continue?`;
   if (!confirm(confirmText)) return;
   setMsg("Saving changed settings...", "muted");
   const res = await api("/api/machine-settings", "POST", { changes });

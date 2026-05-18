@@ -11,10 +11,10 @@
   <img src="https://github.com/user-attachments/assets/d5e1bc64-a3af-42f4-b7d1-dc81d31deb76" width="420" alt="Ray5 Pilot settings screenshot">
 </a>
 
-### Machine Settings
+### Firmware Settings
 
 <a href="https://github.com/user-attachments/assets/758234ab-6f16-41f5-8d09-a1403b6bb6fb">
-  <img src="https://github.com/user-attachments/assets/758234ab-6f16-41f5-8d09-a1403b6bb6fb" width="420" alt="Ray5 Pilot machine settings screenshot">
+  <img src="https://github.com/user-attachments/assets/758234ab-6f16-41f5-8d09-a1403b6bb6fb" width="420" alt="Ray5 Pilot firmware settings screenshot">
 </a>
 
 ### Overlay Accuracy Preview
@@ -35,7 +35,7 @@ Make sure **Output** is not selected so the reference image is not included in t
 A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-style HTTP/WebSocket interface.
 
 ## Features
-- Dashboard, Settings, and Machine Settings web UI
+- Dashboard, Settings, and Firmware Settings web UI
 - Live Ray5 status via ESP3D WebSocket port 8849
 - Back up, edit, and save firmware settings
 - System check / health status
@@ -72,6 +72,8 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Optional sanitized Ray5 diagnostic endpoints
 - Portable Windows BAT and EXE launcher options
 - Wiki pages for setup, usage, troubleshooting, and feature help
+
+Firmware Settings was previously labeled Machine Settings.
 
 ## Setup
 1. Download/clone Ray5-Pilot.
@@ -297,6 +299,7 @@ Always supervise laser operation, verify all files and settings before running a
 - Added a configurable Timelapse final frame delay after normal job completion.
 - Added Timelapse setting **Final frame delay after job ends (seconds)** so Ray5 Pilot can wait briefly for the laser head to park before capturing the final timelapse frame.
 - Manual Start Timelapse is blocked if a timelapse is already armed, running, paused, stopping, or building.
+- Renamed user-facing **Machine Settings** wording to **Firmware Settings** for clarity while preserving the existing route/API/file names for compatibility.
 
 ### Changed
 - Improved live camera stream lifecycle handling to prevent duplicate or stale `/camera/stream` requests.
@@ -701,4 +704,3 @@ Always supervise laser operation, verify all files and settings before running a
 - Set Stop Job default behavior to true abort using M5 + Ctrl-X soft reset.
 - Added Ray5 Pilot favicon/logo branding.
 - Improved release safety around local-only config and private runtime files.
-
