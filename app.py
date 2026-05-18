@@ -2246,6 +2246,25 @@ def api_timelapse_start() -> Any:
         result = {"ok": False, "message": str(comm_safety.get("message") or "Timelapse start blocked by communication-loss safety lockout.")}
         return jsonify(result | {"state": _timelapse_snapshot_state()}), 409
 
+    state_now = _timelapse_snapshot_state()
+    with timelapse_lock:
+        worker_alive = bool(timelapse_stop_worker is not None and timelapse_stop_worker.is_alive())
+    status_text = str(state_now.get("status", "")).strip().lower()
+    session_id = str(state_now.get("session_id", "")).strip()
+    timelapse_busy = (
+        bool(state_now.get("armed", False))
+        or bool(state_now.get("active", False))
+        or bool(state_now.get("paused", False))
+        or bool(state_now.get("stopping", False))
+        or bool(state_now.get("stop_pending", False))
+        or bool(state_now.get("build_in_progress", False))
+        or worker_alive
+        or (bool(session_id) and status_text not in {"stopped", "disabled"})
+    )
+    if timelapse_busy:
+        result = {"ok": False, "message": "Timelapse is already active."}
+        return jsonify(result | {"state": state_now}), 409
+
     with app_state_lock:
         active_monitor = status_monitor
     latest_status = active_monitor.get_latest_status() if active_monitor is not None else None

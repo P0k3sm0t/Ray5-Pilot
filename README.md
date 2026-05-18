@@ -296,6 +296,7 @@ Always supervise laser operation, verify all files and settings before running a
 - Added duplicate-prevention flags for background timelapse stop/build tasks.
 - Added a configurable Timelapse final frame delay after normal job completion.
 - Added Timelapse setting **Final frame delay after job ends (seconds)** so Ray5 Pilot can wait briefly for the laser head to park before capturing the final timelapse frame.
+- Manual Start Timelapse is blocked if a timelapse is already armed, running, paused, stopping, or building.
 
 ### Changed
 - Improved live camera stream lifecycle handling to prevent duplicate or stale `/camera/stream` requests.
