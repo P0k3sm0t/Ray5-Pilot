@@ -293,7 +293,7 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
-## Ray5 Pilot v1.1.3
+## v1.1.3
 ### Highlights
 - Improved communication-loss safety lockout for active/recent jobs.
 - Added Clear Safety Lockout support.
@@ -328,6 +328,7 @@ node --check web/static/setup.js
 node --check web/static/machine_settings.js
 python -m json.tool config.example.json
 python tools/safety_check.py
+```
 
 ## v1.1.2
 ### Added
