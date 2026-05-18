@@ -184,6 +184,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "timelapse": {
         "enabled": False,
         "interval_seconds": 30,
+        "final_capture_delay_seconds": 3,
         "output_dir": "timelapse",
         "frame_source": "processed",
         "playback_fps": 10,
@@ -292,6 +293,9 @@ class ConfigManager:
             tl_fps = float(timelapse.get("playback_fps", 10) or 10)
             if tl_fps < 1 or tl_fps > 60:
                 return False, "timelapse.playback_fps must be between 1 and 60"
+            tl_final_delay = float(timelapse.get("final_capture_delay_seconds", 3) or 0)
+            if tl_final_delay < 0 or tl_final_delay > 30:
+                return False, "timelapse.final_capture_delay_seconds must be between 0 and 30"
             machine = data.get("machine", {})
             min_x = float(machine.get("min_x", 0))
             max_x = float(machine.get("max_x", 390))

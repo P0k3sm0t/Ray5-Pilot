@@ -45,9 +45,11 @@ _placeholder_api_warned = False
 app_state_lock = RLock()
 runtime_started = False
 timelapse_lock = RLock()
+timelapse_capture_lock = RLock()
 timelapse_stop_event = threading.Event()
 timelapse_thread: threading.Thread | None = None
 timelapse_stop_worker: threading.Thread | None = None
+timelapse_duplicate_log_at: dict[str, float] = {}
 timelapse_state: dict[str, Any] = {
     "enabled": False,
     "armed": False,
@@ -61,6 +63,7 @@ timelapse_state: dict[str, Any] = {
     "started_at": None,
     "last_snapshot_at": None,
     "interval_seconds": 30,
+    "final_capture_delay_seconds": 3.0,
     "playback_fps": 10.0,
     "output_dir": "timelapse",
     "snapshot_count": 0,
@@ -823,9 +826,15 @@ def _timelapse_cfg(config: dict[str, Any] | None = None) -> dict[str, Any]:
         playback_fps = 1.0
     if playback_fps > 60:
         playback_fps = 60.0
+    final_capture_delay_seconds = float(tl.get("final_capture_delay_seconds", 3) or 0)
+    if final_capture_delay_seconds < 0:
+        final_capture_delay_seconds = 0.0
+    if final_capture_delay_seconds > 30:
+        final_capture_delay_seconds = 30.0
     return {
         "enabled": bool(tl.get("enabled", False)),
         "interval_seconds": max(1, int(tl.get("interval_seconds", 30) or 30)),
+        "final_capture_delay_seconds": final_capture_delay_seconds,
         "output_dir": str(tl.get("output_dir", "timelapse") or "timelapse").strip() or "timelapse",
         "frame_source": source,
         "playback_fps": playback_fps,
@@ -864,6 +873,7 @@ def _timelapse_refresh_enabled() -> None:
     with timelapse_lock:
         timelapse_state["enabled"] = bool(tl["enabled"])
         timelapse_state["interval_seconds"] = int(tl["interval_seconds"])
+        timelapse_state["final_capture_delay_seconds"] = float(tl["final_capture_delay_seconds"])
         timelapse_state["playback_fps"] = float(tl["playback_fps"])
         timelapse_state["output_dir"] = str(tl["output_dir"])
         timelapse_state["frame_source"] = str(tl["frame_source"])
@@ -943,11 +953,16 @@ def _timelapse_worker() -> None:
         with timelapse_lock:
             active = bool(timelapse_state.get("active", False))
             paused = bool(timelapse_state.get("paused", False))
+            stop_pending = bool(timelapse_state.get("stop_pending", False))
+            build_in_progress = bool(timelapse_state.get("build_in_progress", False))
+            stopping = bool(timelapse_state.get("stopping", False))
             interval = max(1, int(timelapse_state.get("interval_seconds", 30) or 30))
             session_dir_str = str(timelapse_state.get("session_dir", ""))
-            snap_count = int(timelapse_state.get("snapshot_count", 0))
             frame_source = str(timelapse_state.get("frame_source", "processed") or "processed").strip().lower()
         if not active:
+            break
+        if stop_pending or build_in_progress or stopping:
+            # Stop/build flow owns final capture and output sequencing.
             break
         if paused:
             if timelapse_stop_event.wait(0.25):
@@ -963,9 +978,15 @@ def _timelapse_worker() -> None:
             out_dir_resolved = _timelapse_output_dir().resolve()
             if out_dir_resolved not in session_dir_resolved.parents and session_dir_resolved != out_dir_resolved:
                 raise RuntimeError("timelapse session directory is outside configured timelapse output directory")
-            snap_count += 1
-            frame_target = session_dir / f"frame_{snap_count:06d}.jpg"
-            camera.capture_timelapse_frame_to(frame_target, source=frame_source)
+            with timelapse_capture_lock:
+                with timelapse_lock:
+                    snap_count = int(timelapse_state.get("snapshot_count", 0))
+                    snap_count += 1
+                    frame_target = session_dir / f"frame_{snap_count:06d}.jpg"
+                    while frame_target.exists():
+                        snap_count += 1
+                        frame_target = session_dir / f"frame_{snap_count:06d}.jpg"
+                camera.capture_timelapse_frame_to(frame_target, source=frame_source)
             _set_camera_check_result(True, "timelapse frame capture succeeded")
             with timelapse_lock:
                 timelapse_state["snapshot_count"] = snap_count
@@ -1016,6 +1037,7 @@ def _timelapse_start_internal(reason: str, job_name: str = "", job_source: str =
             current_mode = str(timelapse_state.get("control_mode", "")).strip().lower()
             timelapse_state["control_mode"] = "job" if current_mode != "manual" else "manual"
         timelapse_state["interval_seconds"] = int(tl["interval_seconds"])
+        timelapse_state["final_capture_delay_seconds"] = float(tl["final_capture_delay_seconds"])
         timelapse_state["playback_fps"] = float(tl["playback_fps"])
         timelapse_state["output_dir"] = str(tl["output_dir"])
         timelapse_state["started_at"] = time.time()
@@ -1155,6 +1177,7 @@ def _timelapse_arm(job_name: str, job_source: str) -> dict[str, Any]:
         timelapse_state["job_source"] = str(job_source or "")
         timelapse_state["control_mode"] = "job"
         timelapse_state["interval_seconds"] = int(tl["interval_seconds"])
+        timelapse_state["final_capture_delay_seconds"] = float(tl["final_capture_delay_seconds"])
         timelapse_state["playback_fps"] = float(tl["playback_fps"])
         timelapse_state["output_dir"] = str(tl["output_dir"])
         timelapse_state["status"] = _timelapse_status_label(timelapse_state)
@@ -1192,10 +1215,103 @@ def _timelapse_observe_machine_state(machine_state: str, online: bool) -> None:
                     timelapse_state["status"] = _timelapse_status_label(timelapse_state)
             return
     if control_mode == "job" and state_now.get("active", False) and _timelapse_is_terminal_state(normalized_state, online):
-        _queue_timelapse_stop_from_status(reason=f"state={machine_state or 'unknown'}", machine_state=machine_state)
+        _queue_timelapse_stop_from_status(
+            reason=f"state={machine_state or 'unknown'}",
+            machine_state=machine_state,
+            online=bool(online),
+        )
 
 
-def _timelapse_stop_worker_run(reason: str, session_id: str, machine_state: str) -> None:
+def _timelapse_should_capture_final_frame(reason: str, machine_state: str, online: bool) -> bool:
+    reason_l = str(reason or "").strip().lower()
+    state_norm = _timelapse_normalize_state(machine_state).strip().lower()
+    if not online:
+        return False
+    if state_norm != "idle":
+        return False
+    if "offline" in reason_l or "alarm" in reason_l or "door" in reason_l or "sleep" in reason_l or "not_configured" in reason_l:
+        return False
+    with app_state_lock:
+        if bool(ray5_comm_safety_state.get("comm_lost_during_job", False)):
+            return False
+    return True
+
+
+def _timelapse_capture_final_frame_after_delay(
+    session_id: str,
+    session_dir_str: str,
+    frame_source: str,
+    delay_seconds: float,
+) -> None:
+    max_attempts = 3
+    retry_delay_seconds = 1.5
+    delay = max(0.0, min(30.0, float(delay_seconds or 0.0)))
+    if delay <= 0:
+        return
+    console.add("info", f"Timelapse final frame delay: {delay:g}s")
+    time.sleep(delay)
+    if timelapse_stop_event.is_set():
+        return
+    with timelapse_lock:
+        current_session_id = str(timelapse_state.get("session_id", "")).strip()
+        current_session_dir = str(timelapse_state.get("session_dir", "")).strip()
+        current_active = bool(timelapse_state.get("active", False))
+    if not current_active or not current_session_id or current_session_id != str(session_id or "").strip():
+        return
+    if current_session_dir != str(session_dir_str or "").strip():
+        return
+    source = str(frame_source or "processed").strip().lower()
+    if source not in {"processed", "raw"}:
+        source = "processed"
+    session_dir = Path(session_dir_str)
+    out_dir_resolved = _timelapse_output_dir().resolve()
+    session_dir_resolved = session_dir.resolve()
+    if out_dir_resolved not in session_dir_resolved.parents and session_dir_resolved != out_dir_resolved:
+        console.add("warn", "Timelapse final frame capture skipped: session directory is outside configured output directory")
+        return
+
+    last_error = ""
+    for attempt in range(1, max_attempts + 1):
+        if timelapse_stop_event.is_set():
+            return
+        try:
+            with timelapse_lock:
+                current_session_id = str(timelapse_state.get("session_id", "")).strip()
+                current_active = bool(timelapse_state.get("active", False))
+            if current_session_id != str(session_id or "").strip() or not current_active:
+                return
+            with timelapse_capture_lock:
+                with timelapse_lock:
+                    snap_count = int(timelapse_state.get("snapshot_count", 0))
+                    frame_target = session_dir / f"frame_{snap_count+1:06d}.jpg"
+                    while frame_target.exists():
+                        snap_count += 1
+                        frame_target = session_dir / f"frame_{snap_count+1:06d}.jpg"
+                console.add("info", f"Timelapse final frame target: {frame_target.name}")
+                console.add("info", f"Timelapse final frame capture attempt {attempt}/{max_attempts}")
+                camera.capture_timelapse_frame_to(frame_target, source=source)
+            _set_camera_check_result(True, "timelapse final frame capture succeeded")
+            with timelapse_lock:
+                timelapse_state["snapshot_count"] = max(int(timelapse_state.get("snapshot_count", 0)), snap_count + 1)
+                timelapse_state["last_snapshot_at"] = time.time()
+            console.add("info", f"Timelapse final frame captured: {frame_target.name}")
+            return
+        except Exception as exc:
+            last_error = str(exc)
+            _set_camera_check_result(False, "timelapse final frame capture failed")
+            try:
+                if 'frame_target' in locals() and isinstance(frame_target, Path) and frame_target.exists():
+                    frame_target.unlink(missing_ok=True)
+            except Exception:
+                pass
+            if attempt < max_attempts:
+                console.add("warn", f"Timelapse final frame capture retry after failure: {last_error}")
+                time.sleep(retry_delay_seconds)
+            else:
+                console.add("warn", f"Timelapse final frame capture failed after retries: {last_error}")
+
+
+def _timelapse_stop_worker_run(reason: str, session_id: str, machine_state: str, online: bool) -> None:
     global timelapse_stop_worker
     console.add(
         "info",
@@ -1205,6 +1321,21 @@ def _timelapse_stop_worker_run(reason: str, session_id: str, machine_state: str)
         timelapse_state["build_in_progress"] = True
         timelapse_state["status"] = _timelapse_status_label(timelapse_state)
     try:
+        with timelapse_lock:
+            control_mode = str(timelapse_state.get("control_mode", "")).strip().lower()
+            session_dir_str = str(timelapse_state.get("session_dir", "")).strip()
+            frame_source = str(timelapse_state.get("frame_source", "processed")).strip().lower()
+            final_delay_seconds = float(timelapse_state.get("final_capture_delay_seconds", 3.0) or 0.0)
+        if (
+            control_mode == "job"
+            and _timelapse_should_capture_final_frame(reason=reason, machine_state=machine_state, online=bool(online))
+        ):
+            _timelapse_capture_final_frame_after_delay(
+                session_id=session_id,
+                session_dir_str=session_dir_str,
+                frame_source=frame_source,
+                delay_seconds=final_delay_seconds,
+            )
         result = _timelapse_stop_internal(reason=reason)
         if result.get("ok"):
             console.add("info", f"Timelapse stop/build worker complete: session={session_id or 'none'}")
@@ -1227,36 +1358,37 @@ def _timelapse_stop_worker_run(reason: str, session_id: str, machine_state: str)
             timelapse_state["stop_pending"] = False
             timelapse_state["stop_pending_session_id"] = ""
             timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+        timelapse_duplicate_log_at.pop(str(session_id or "none"), None)
         timelapse_stop_worker = None
 
 
-def _queue_timelapse_stop_from_status(reason: str, machine_state: str) -> bool:
+def _queue_timelapse_stop_from_status(reason: str, machine_state: str, online: bool) -> bool:
     global timelapse_stop_worker
+    now = time.time()
+    duplicate_log_window_seconds = 12.0
     with timelapse_lock:
         session_id = str(timelapse_state.get("session_id", "")).strip()
         control_mode = str(timelapse_state.get("control_mode", "")).strip().lower()
         active = bool(timelapse_state.get("active", False))
+        session_key = session_id or "none"
+        def _log_duplicate(msg: str) -> None:
+            last = float(timelapse_duplicate_log_at.get(session_key, 0) or 0)
+            if (now - last) >= duplicate_log_window_seconds:
+                timelapse_duplicate_log_at[session_key] = now
+                console.add("info", msg)
         if control_mode != "job" or not active:
             return False
         if bool(timelapse_state.get("build_in_progress", False)):
-            console.add(
-                "info",
-                f"Timelapse stop/build already running; duplicate request ignored for session={session_id or 'none'}",
-            )
+            _log_duplicate(f"Timelapse stop/build already running; duplicate request ignored for session={session_id or 'none'}")
             return False
         pending_session = str(timelapse_state.get("stop_pending_session_id", "")).strip()
         if bool(timelapse_state.get("stop_pending", False)) and pending_session == session_id and session_id:
-            console.add(
-                "info",
-                f"Timelapse stop/build already queued; duplicate request ignored for session={session_id}",
-            )
+            _log_duplicate(f"Timelapse stop/build already queued; duplicate request ignored for session={session_id}")
             return False
         if timelapse_stop_worker is not None and timelapse_stop_worker.is_alive():
-            console.add(
-                "info",
-                f"Timelapse stop/build worker alive; duplicate request ignored for session={session_id or 'none'}",
-            )
+            _log_duplicate(f"Timelapse stop/build worker alive; duplicate request ignored for session={session_id or 'none'}")
             return False
+        timelapse_duplicate_log_at.pop(session_key, None)
         timelapse_state["stop_pending"] = True
         timelapse_state["stop_pending_session_id"] = session_id
         timelapse_state["stop_reason"] = str(reason or "")
@@ -1268,7 +1400,7 @@ def _queue_timelapse_stop_from_status(reason: str, machine_state: str) -> bool:
     worker = threading.Thread(
         target=_timelapse_stop_worker_run,
         name=f"timelapse-stop-{session_id or int(time.time())}",
-        args=(str(reason or ""), str(session_id or ""), str(machine_state or "")),
+        args=(str(reason or ""), str(session_id or ""), str(machine_state or ""), bool(online)),
         daemon=True,
     )
     timelapse_stop_worker = worker
@@ -1828,6 +1960,7 @@ def api_camera_video_enabled_get() -> Any:
 
 @app.post("/api/camera/video-enabled")
 def api_camera_video_enabled_post() -> Any:
+    global cfg
     body = request.get_json(silent=True) or {}
     enabled = bool(body.get("enabled", True))
     current = cfg_mgr.load()
@@ -1835,7 +1968,9 @@ def api_camera_video_enabled_post() -> Any:
     cam["video_enabled"] = enabled
     current["camera"] = cam
     cfg_mgr.save(current)
-    reload_components()
+    # Keep runtime services alive; this toggle should not restart watchers/status monitor.
+    with app_state_lock:
+        cfg = current
     msg = "Camera video enabled." if enabled else "Camera video disabled."
     console.add("info", msg)
     return jsonify({"ok": True, "enabled": enabled, "message": msg})

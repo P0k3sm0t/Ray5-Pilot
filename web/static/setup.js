@@ -130,6 +130,7 @@ function load(cfg){
   setChecked('sd_enable_preview', !!sd.enable_preview, false);
   setChecked('timelapse_enabled', !!timelapse.enabled, false);
   setVal('timelapse_interval', Number(timelapse.interval_seconds ?? 30), 30);
+  setVal('timelapse_final_delay', Number(timelapse.final_capture_delay_seconds ?? 3), 3);
   setVal('timelapse_playback_fps', Number(timelapse.playback_fps ?? 10), 10);
   setVal('timelapse_frame_source', String(timelapse.frame_source || 'processed'), 'processed');
 
@@ -285,6 +286,7 @@ function collect(){
     timelapse:{
       enabled:v('timelapse_enabled').checked,
       interval_seconds:Math.max(1, Number(v('timelapse_interval').value)||30),
+      final_capture_delay_seconds: Math.max(0, Math.min(30, Number(v('timelapse_final_delay').value)||3)),
       output_dir:String((loadedConfig.timelapse && loadedConfig.timelapse.output_dir) || 'timelapse'),
       frame_source: ((String(v('timelapse_frame_source').value || 'processed').toLowerCase() === 'raw') ? 'raw' : 'processed'),
       playback_fps: Math.max(1, Math.min(60, Number(v('timelapse_playback_fps').value)||10))
@@ -506,6 +508,7 @@ async function init(){
     const camSnapshot = v('cam_snapshot').value.trim();
     const testDur = Number(v('safe_dur').value);
     const timelapseInterval = Number(v('timelapse_interval').value);
+    const timelapseFinalDelay = Number(v('timelapse_final_delay').value);
     const timelapsePlaybackFps = Number(v('timelapse_playback_fps').value);
     const hiddenDurMax = Number(loadedSafetyConfig.test_fire_max_duration_ms ?? 5000) || 5000;
     const testS = Number(v('safe_s_value').value)||50;
@@ -528,6 +531,7 @@ async function init(){
     if(testDur > hiddenDurMax){ v('saveOut').textContent='Save failed: test fire duration exceeds max duration'; return; }
     if(testS > hiddenSMax){ v('saveOut').textContent='Save failed: test fire S value exceeds max S value'; return; }
     if(!(timelapseInterval >= 1)){ v('saveOut').textContent='Save failed: timelapse interval must be >= 1 second'; return; }
+    if(!(timelapseFinalDelay >= 0 && timelapseFinalDelay <= 30)){ v('saveOut').textContent='Save failed: timelapse final frame delay must be 0 to 30 seconds'; return; }
     if(!(timelapsePlaybackFps >= 1 && timelapsePlaybackFps <= 60)){ v('saveOut').textContent='Save failed: timelapse playback FPS must be 1 to 60'; return; }
 
     const payload = collect();

@@ -46,6 +46,7 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Status card safety warning when Ray5 communication is lost during a possible active job
 - SD Card Files auto-refresh pauses during active/busy machine states
 - Background timelapse stop/save/build handling to keep status polling responsive
+- Timelapse final frame delay after normal job completion for parked-head final images
 - Improved live camera stream lifecycle handling to reduce duplicate/stale stream requests
 - Improved Pause/Resume handling for GRBL real-time commands
 - Stop Job defaults to M5 + Ctrl-X soft reset
@@ -253,6 +254,13 @@ Example:
 `test_grid_390x360.gcode`  
 `large_alignment_grid_390x360_final.gcode` may upload successfully, but may not display clearly on the Ray5 screen.
 
+## Timelapse final frame delay note
+Ray5 Pilot includes a Timelapse setting called **Final frame delay after job ends (seconds)**. This setting waits briefly after a normal job completion before capturing one final timelapse frame.
+
+This is useful when your G-code parks the laser head away from the material at the end of the job, because the final timelapse frame can show the completed work area instead of the head still over the material.
+
+Set this value to `0` to keep immediate stop/build behavior.
+
 ## Safety warning
 - Ray5 Pilot controls a laser engraver.
 - Always supervise laser operation.
@@ -276,6 +284,7 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
 ## v1.1.2
+
 ### Added
 - Added a communication-loss safety lockout for active or recently started Ray5 jobs.
 - Added tracking for recent job activity from Imported Jobs Start and SD Start.
@@ -285,6 +294,8 @@ Always supervise laser operation, verify all files and settings before running a
 - Added camera stream client connect/disconnect logging with active client counts.
 - Added guarded background handling for job-mode timelapse stop/save/build work.
 - Added duplicate-prevention flags for background timelapse stop/build tasks.
+- Added a configurable Timelapse final frame delay after normal job completion.
+- Added Timelapse setting **Final frame delay after job ends (seconds)** so Ray5 Pilot can wait briefly for the laser head to park before capturing the final timelapse frame.
 
 ### Changed
 - Improved live camera stream lifecycle handling to prevent duplicate or stale `/camera/stream` requests.
@@ -298,6 +309,7 @@ Always supervise laser operation, verify all files and settings before running a
 - Moved long job-mode timelapse stop/save/build work out of `/api/status` and into a guarded background worker.
 - `/api/status` now stays responsive while timelapse output is being stopped, saved, or built.
 - Preserved existing job-mode timelapse behavior for `Run`, `Hold`, resume, and terminal/Idle stop states.
+- Job-mode timelapse can now capture one final frame after the Ray5 reports `Idle`, allowing end-of-job park moves to finish before the final image is saved.
 - Improved Pause and Resume handling for GRBL real-time commands.
 - Pause `!` and Resume `~` are now treated as successful when the command is successfully sent, even if the Ray5/ESP3D endpoint does not return a normal `ok` response.
 - Improved Manual Controls messaging so successful Pause/Resume actions no longer show misleading `Error:` messages.
@@ -311,6 +323,7 @@ Always supervise laser operation, verify all files and settings before running a
 - SD refresh failures now clear loading/in-progress state cleanly so the SD Card Files card does not stay stuck on busy.
 - Timelapse stop/build queueing prevents duplicate background workers for the same timelapse session.
 - `/api/status` no longer blocks on long timelapse output processing.
+- Final timelapse frame delay is skipped for unsafe or uncertain stop reasons such as offline, alarm, door, sleep, not configured, or communication-loss lockout.
 
 ### Fixed
 - Fixed repeated/stale Dashboard camera stream starts that could happen around video toggle, pop-out, refresh, error, and timelapse playback transitions.
@@ -327,6 +340,7 @@ Always supervise laser operation, verify all files and settings before running a
 - Manual SD Refresh is still available when needed, but automatic refresh behavior is now more cautious.
 - Timelapse output still builds as before, but long stop/save/build work now runs outside the status request path.
 - Pause and Resume use GRBL real-time commands, which may not return a normal `ok` response from the Ray5/ESP3D HTTP endpoint even when they work correctly.
+- Set Timelapse final frame delay to `0` to keep immediate stop/build behavior.
 
 ## v1.1.1
 ### Added

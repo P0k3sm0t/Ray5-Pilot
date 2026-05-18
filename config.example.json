@@ -171,6 +171,7 @@
     "timelapse":  {
                       "enabled":  false,
                       "interval_seconds":  30,
+                      "final_capture_delay_seconds":  3,
                       "output_dir":  "timelapse",
                       "frame_source":  "processed",
                       "playback_fps":  10
