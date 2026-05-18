@@ -346,6 +346,7 @@ async function init(){
   let updateRefreshTimer = null;
   let updateRefreshInProgress = false;
   const UPDATE_REFRESH_INTERVAL_MS = 45 * 60 * 1000;
+  const UPDATE_FLOW_FLAG_KEY = 'ray5_update_in_progress';
 
   function setUpdateButtonVisible(visible){
     updateAvailableNow = !!visible;
@@ -401,30 +402,14 @@ async function init(){
     versionEl.textContent = 'unknown';
     updateAvailEl.textContent = 'Unknown';
     updateStatus.textContent = 'Checking update status...';
-
-    // 1) Prefer post-update status message if available.
+    // Use the same cached GitHub update-check state used by the Status card.
     try{
-      const res = await api('/api/github/update-status');
-      const status = String((res && res.status) || 'none');
-      if(status === 'success' || status === 'failed'){
-        if(res && res.to_version){
-          versionEl.textContent = String(res.to_version);
-        }
-        updateAvailEl.textContent = (status === 'success') ? 'No' : 'Unknown';
-        updateStatus.textContent = String(res.message || 'Update status available.');
-        setUpdateButtonVisible(false);
-        return;
-      }
-    }catch(_err){
-      // Fall through to cached startup status.
-    }
-
-    // 2) Use cached startup update status from /api/status.
-    try{
-      const statusRes = await api('/api/status');
-      const appVersion = String((statusRes && statusRes.app_version) || 'unknown');
+      const us = await api('/api/github/check-updates');
+      const appVersion = String(
+        (us && (us.current_version || us.local_version))
+        || 'unknown'
+      );
       versionEl.textContent = appVersion;
-      const us = (statusRes && statusRes.update_status) ? statusRes.update_status : null;
       if(downloadLatestSource && us && us.source_zip_url){
         downloadLatestSource.href = String(us.source_zip_url);
       }
@@ -441,15 +426,37 @@ async function init(){
         return;
       }
       const available = !!us.update_available;
-      updateAvailEl.textContent = available ? 'Yes' : 'No';
+      updateAvailEl.textContent = available
+        ? `Yes — ${String(us.latest_version || 'latest')}`
+        : 'No';
       updateStatus.textContent = available
-        ? `Source update available: ${String(us.latest_version || 'latest')}`
+        ? `Update available: v${String(us.latest_version || 'latest')}`
         : 'Ray5 Pilot is up to date.';
       setUpdateButtonVisible(available);
     }catch(_err){
       updateAvailEl.textContent = 'Unknown';
-      updateStatus.textContent = 'Update status not available yet.';
+      updateStatus.textContent = 'Could not check for updates. Check your internet connection or try again later.';
       setUpdateButtonVisible(false);
+    }
+  }
+
+  async function maybeShowPostUpdateStatus(){
+    if(!updateStatus || !versionEl || !updateAvailEl) return;
+    if(window.sessionStorage.getItem(UPDATE_FLOW_FLAG_KEY) !== '1') return;
+    try{
+      const res = await api('/api/github/update-status');
+      const status = String((res && res.status) || 'none');
+      if(status === 'success' || status === 'failed'){
+        if(res && res.to_version){
+          versionEl.textContent = String(res.to_version);
+        }
+        updateAvailEl.textContent = (status === 'success') ? 'No' : 'Unknown';
+        updateStatus.textContent = String(res.message || 'Update status available.');
+        setUpdateButtonVisible(false);
+        window.sessionStorage.removeItem(UPDATE_FLOW_FLAG_KEY);
+      }
+    }catch(_err){
+      // Keep normal update-check messaging.
     }
   }
 
@@ -487,6 +494,7 @@ async function init(){
   }
 
   await loadUpdateStatus();
+  await maybeShowPostUpdateStatus();
   // Trigger refresh on Settings page open so running app can detect updates without restart.
   await triggerUpdateRefresh({force:false});
   if(updateRefreshTimer) clearInterval(updateRefreshTimer);
@@ -500,6 +508,7 @@ async function init(){
       }
       const confirmed = window.confirm('Ray5 Pilot will shut down, back up the current files, download the latest source, update the app files, and restart. Do not update while a laser job is running. Continue?');
       if(!confirmed) return;
+      window.sessionStorage.setItem(UPDATE_FLOW_FLAG_KEY, '1');
       if(updateStatus) updateStatus.textContent = 'Starting update...';
       applyUpdateBtn.disabled = true;
       try{

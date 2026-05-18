@@ -312,6 +312,7 @@ Always supervise laser operation, verify all files and settings before running a
 - Renamed user-facing “Machine Settings” wording to “Firmware Settings” while keeping internal routes/API/files unchanged.
 - Reworked Settings Support card into Support and Update columns.
 - Removed manual Check for Updates button and reused startup/cached update status.
+- Settings Support card now reads the same cached GitHub update-check state as the Status card and no longer uses stale updater/apply-update status for normal availability display.
 - GitHub update status now refreshes at startup and when Settings opens, with stale-safe background refresh while Ray5 Pilot is running.
 - Updated Longer support link to `https://eu.longer.net/pages/download-firmware`.
 - Added/updated `tools/safety_check.py` for no-hardware release validation.
