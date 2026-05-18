@@ -293,6 +293,16 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
+## v1.1.4
+### Highlights
+- Final tagged-release updater verification release for in-app update packaging flow.
+- Confirmed in-app update install uses GitHub release ZIP assets with SHA-256 digest verification.
+- Confirmed in-app update install rejects main-branch archives such as `refs/heads/main` / `main.zip`.
+- Confirmed missing release ZIP/checksum metadata shows a clear blocked-install message instead of a false internet-check failure when GitHub release metadata is reachable.
+- Confirmed Settings Support card only shows **Update Ray5 Pilot** when `update_installable` is true.
+- Confirmed `Ray5 Pilot.exe` remains excluded from git source tracking expectations while still allowed for packaged release ZIP assets.
+- Confirmed no-hardware release validation via `tools/safety_check.py`, including local secret denylist support through `tools/secret_terms.local.txt` (git-ignored) and `tools/secret_terms.local.example.txt`.
+
 ## v1.1.3
 ### Highlights
 - Improved communication-loss safety lockout for active/recent jobs.
