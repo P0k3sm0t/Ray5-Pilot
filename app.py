@@ -97,14 +97,22 @@ ray5_comm_safety_state: dict[str, Any] = {
 }
 github_update_status: dict[str, Any] = {
     "checked": False,
+    "checking": False,
     "ok": None,
     "current_version": "unknown",
     "latest_version": "",
     "update_available": False,
     "message": "Checking...",
     "checked_at": None,
+    "last_checked": None,
+    "error": "",
+    "release_url": GITHUB_REPO_URL if "GITHUB_REPO_URL" in globals() else "",
+    "source_zip_url": GITHUB_SOURCE_ZIP_URL if "GITHUB_SOURCE_ZIP_URL" in globals() else "",
 }
 github_update_check_started = False
+github_update_lock = RLock()
+github_update_check_thread: threading.Thread | None = None
+GITHUB_UPDATE_CACHE_TTL_SECONDS = 1800.0
 camera_stream_clients = 0
 camera_stream_clients_lock = RLock()
 console.add("info", f"CONFIG PATH: {cfg_mgr.config_path}")
@@ -306,39 +314,75 @@ def _snapshot_startup_update_status() -> dict[str, Any]:
         return dict(github_update_status)
 
 
-def _run_startup_update_check() -> None:
+def _github_update_cache_snapshot() -> dict[str, Any]:
+    with app_state_lock:
+        return dict(github_update_status)
+
+
+def _github_update_refresh_needed(snapshot: dict[str, Any] | None = None, ttl_seconds: float = GITHUB_UPDATE_CACHE_TTL_SECONDS) -> bool:
+    s = snapshot if isinstance(snapshot, dict) else _github_update_cache_snapshot()
+    if bool(s.get("checking", False)):
+        return False
+    if not bool(s.get("checked", False)):
+        return True
+    last_checked_raw = s.get("last_checked")
+    try:
+        last_checked = float(last_checked_raw)
+    except Exception:
+        return True
+    return (time.time() - last_checked) > max(30.0, float(ttl_seconds))
+
+
+def _run_github_update_check_worker() -> None:
+    global github_update_check_thread
     result = _check_source_update()
-    checked_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
-    if bool(result.get("ok")):
-        latest = str(result.get("latest_version") or "").strip()
-        message = "Up to date"
-        if bool(result.get("update_available")):
-            message = f"Update available: {latest or 'latest'}"
-        with app_state_lock:
-            github_update_status.update(
-                {
-                    "checked": True,
-                    "ok": True,
-                    "current_version": str(result.get("current_version") or "unknown"),
-                    "latest_version": latest,
-                    "update_available": bool(result.get("update_available")),
-                    "message": message,
-                    "checked_at": checked_at,
-                }
-            )
+    checked_at_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+    checked_at_epoch = time.time()
+    current_version = str(result.get("current_version") or _read_local_version() or "unknown")
+    latest_version = str(result.get("latest_version") or "").strip()
+    release_url = str(result.get("release_url") or GITHUB_REPO_URL)
+    source_zip_url = str(result.get("source_zip_url") or GITHUB_SOURCE_ZIP_URL)
+    payload: dict[str, Any] = {
+        "checked": True,
+        "checking": False,
+        "ok": bool(result.get("ok")),
+        "current_version": current_version,
+        "latest_version": latest_version,
+        "update_available": bool(result.get("update_available")),
+        "checked_at": checked_at_iso,
+        "last_checked": checked_at_epoch,
+        "release_url": release_url,
+        "source_zip_url": source_zip_url,
+        "error": "",
+    }
+    if payload["ok"]:
+        payload["message"] = f"Update available: {latest_version or 'latest'}" if payload["update_available"] else "Up to date"
     else:
+        payload["update_available"] = False
+        payload["message"] = "Unable to check"
+        payload["error"] = str(result.get("message") or "Unable to check for updates right now.")
+    with app_state_lock:
+        github_update_status.update(payload)
+    with github_update_lock:
+        github_update_check_thread = None
+
+
+def _start_github_update_check(force: bool = False, ttl_seconds: float = GITHUB_UPDATE_CACHE_TTL_SECONDS) -> dict[str, Any]:
+    global github_update_check_thread
+    with github_update_lock:
+        snapshot = _github_update_cache_snapshot()
+        thread_alive = bool(github_update_check_thread is not None and github_update_check_thread.is_alive())
+        if thread_alive:
+            return snapshot
+        if not force and not _github_update_refresh_needed(snapshot, ttl_seconds=ttl_seconds):
+            return snapshot
         with app_state_lock:
-            github_update_status.update(
-                {
-                    "checked": True,
-                    "ok": False,
-                    "current_version": str(result.get("current_version") or "unknown"),
-                    "latest_version": str(result.get("latest_version") or ""),
-                    "update_available": False,
-                    "message": "Unable to check",
-                    "checked_at": checked_at,
-                }
-            )
+            github_update_status["checking"] = True
+            github_update_status["message"] = "Checking..."
+        t = threading.Thread(target=_run_github_update_check_worker, daemon=True, name="github-update-check")
+        github_update_check_thread = t
+        t.start()
+        return _github_update_cache_snapshot()
 
 
 def _start_startup_update_check() -> None:
@@ -347,8 +391,7 @@ def _start_startup_update_check() -> None:
         if github_update_check_started:
             return
         github_update_check_started = True
-    t = threading.Thread(target=_run_startup_update_check, daemon=True, name="github-startup-update-check")
-    t.start()
+    _start_github_update_check(force=True)
 
 
 def _get_machine_state_for_update_guard() -> str:
@@ -3432,7 +3475,17 @@ def api_config_debug() -> Any:
 
 @app.get("/api/github/check-updates")
 def api_github_check_updates() -> Any:
-    return jsonify(_check_source_update())
+    mode = str(request.args.get("mode", "")).strip().lower()
+    force = str(request.args.get("force", "")).strip().lower() in {"1", "true", "yes", "on"}
+    if mode == "refresh":
+        snap = _start_github_update_check(force=force)
+        return jsonify(snap)
+    if force:
+        snap = _start_github_update_check(force=True)
+        return jsonify(snap)
+    # Backward-compatible behavior: return cached status and trigger refresh if stale.
+    snap = _start_github_update_check(force=False)
+    return jsonify(snap)
 
 
 @app.get("/api/github/update-status")
@@ -3465,6 +3518,7 @@ def api_safety_clear_comm_loss() -> Any:
 
 @app.post("/api/github/apply-update")
 def api_github_apply_update() -> Any:
+    # Use a fresh check before apply-update safety decisions.
     update_info = _check_source_update()
     if not bool(update_info.get("ok")):
         return jsonify({"ok": False, "message": "Unable to check for updates right now."}), 503

@@ -343,6 +343,9 @@ async function init(){
   const updateAvailEl = v('githubUpdateAvailable');
   const downloadLatestSource = v('githubDownloadLatestSource');
   let updateAvailableNow = false;
+  let updateRefreshTimer = null;
+  let updateRefreshInProgress = false;
+  const UPDATE_REFRESH_INTERVAL_MS = 45 * 60 * 1000;
 
   function setUpdateButtonVisible(visible){
     updateAvailableNow = !!visible;
@@ -422,7 +425,10 @@ async function init(){
       const appVersion = String((statusRes && statusRes.app_version) || 'unknown');
       versionEl.textContent = appVersion;
       const us = (statusRes && statusRes.update_status) ? statusRes.update_status : null;
-      if(!us || us.checked === false){
+      if(downloadLatestSource && us && us.source_zip_url){
+        downloadLatestSource.href = String(us.source_zip_url);
+      }
+      if(!us || us.checked === false || us.checking === true){
         updateAvailEl.textContent = 'Unknown';
         updateStatus.textContent = 'Checking update status...';
         setUpdateButtonVisible(false);
@@ -430,7 +436,7 @@ async function init(){
       }
       if(us.ok === false){
         updateAvailEl.textContent = 'Unknown';
-        updateStatus.textContent = String(us.message || 'Unable to check update status right now.');
+        updateStatus.textContent = 'Could not check for updates. Check your internet connection or try again later.';
         setUpdateButtonVisible(false);
         return;
       }
@@ -447,7 +453,44 @@ async function init(){
     }
   }
 
+  async function triggerUpdateRefresh(opts={}){
+    if(updateRefreshInProgress) return;
+    updateRefreshInProgress = true;
+    const force = !!opts.force;
+    try{
+      if(updateStatus) updateStatus.textContent = 'Checking for updates...';
+      // Trigger refresh/check using backend cached-refresh mode.
+      await fetch(`/api/github/check-updates?mode=refresh${force ? '&force=true' : ''}&ts=${Date.now()}`, {
+        method: 'GET',
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' }
+      });
+    }catch(_err){
+      // Ignore refresh trigger errors here; UI pulls current cached status below.
+    }
+
+    // Briefly poll cached status to pick up completion without hammering.
+    for(let i=0;i<8;i++){
+      await loadUpdateStatus();
+      try{
+        const statusRes = await api('/api/status');
+        const us = (statusRes && statusRes.update_status) ? statusRes.update_status : null;
+        if(us && us.checked === true && us.checking !== true){
+          break;
+        }
+      }catch(_err){
+        // keep polling
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    updateRefreshInProgress = false;
+  }
+
   await loadUpdateStatus();
+  // Trigger refresh on Settings page open so running app can detect updates without restart.
+  await triggerUpdateRefresh({force:false});
+  if(updateRefreshTimer) clearInterval(updateRefreshTimer);
+  updateRefreshTimer = setInterval(()=>{ triggerUpdateRefresh({force:false}); }, UPDATE_REFRESH_INTERVAL_MS);
 
   if(applyUpdateBtn){
     applyUpdateBtn.onclick = async () => {
