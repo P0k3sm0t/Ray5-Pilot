@@ -164,6 +164,14 @@ From inside the Ray5 Pilot folder, run:
 python -m pip install -r requirements.txt
 ```
 
+### Release Validation
+
+Run before release:
+
+```cmd
+python tools/safety_check.py
+```
+
 ### 4. Start Ray5 Pilot
 
 Run:
@@ -285,8 +293,41 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
-## v1.1.2
+## Ray5 Pilot v1.1.3
+### Highlights
+- Improved communication-loss safety lockout for active/recent jobs.
+- Added Clear Safety Lockout support.
+- Paused SD auto-refresh and SD system-check probing during unsafe/locked-out machine states.
+- Cleaned up camera/video stream lifecycle handling.
+- Improved video pop-out behavior.
+- Prevented video enable/disable from restarting unrelated watcher/WebSocket/runtime services.
+- Consolidated Video / Camera messages into the correct message area.
+- Added setup guards and clean messages for Enable Video, Pop Out Video, Calibrate Overlay, Take Snapshot, Open Latest, and Open Raw.
+- Moved timelapse stop/save/build work into a background worker.
+- Added `timelapse.final_capture_delay_seconds` with default/range handling.
+- Improved final timelapse frame reliability with capture locking, unique filenames, and retry logic.
+- Made Manual Start Timelapse safer by requiring live Ray5 `Run` state.
+- Added confirmation for Manual Stop Timelapse.
+- Fixed real-time GRBL pause/resume command handling for `!` and `~`.
+- Renamed user-facing “Machine Settings” wording to “Firmware Settings” while keeping internal routes/API/files unchanged.
+- Reworked Settings Support card into Support and Update columns.
+- Removed manual Check for Updates button and reused startup/cached update status.
+- Updated Longer support link to `https://eu.longer.net/pages/download-firmware`.
+- Added/updated `tools/safety_check.py` for no-hardware release validation.
+- Updated wiki/release documentation package for v1.1.3 wording and support changes.
 
+### Validation
+This release should be validated with:
+
+```powershell
+python -m py_compile app.py updater.py ray5_client.py config_manager.py job_manager.py camera_manager.py console_log.py calibrate_camera.py ray5_status_monitor.py gcode_safety.py tools/safety_check.py
+node --check web/static/app.js
+node --check web/static/setup.js
+node --check web/static/machine_settings.js
+python -m json.tool config.example.json
+python tools/safety_check.py
+
+## v1.1.2
 ### Added
 - Added a communication-loss safety lockout for active or recently started Ray5 jobs.
 - Added tracking for recent job activity from Imported Jobs Start and SD Start.

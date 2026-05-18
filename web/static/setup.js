@@ -336,10 +336,11 @@ function collect(){
 
 async function init(){
   const saveBtn = v('saveCfg');
-  const updatesBtn = v('githubCheckUpdates');
   const applyUpdateBtn = v('githubApplyUpdate');
   const applyUpdateWrap = v('githubApplyUpdateWrap');
   const updateStatus = v('githubUpdateStatus');
+  const versionEl = v('githubCurrentVersion');
+  const updateAvailEl = v('githubUpdateAvailable');
   const downloadLatestSource = v('githubDownloadLatestSource');
   let updateAvailableNow = false;
 
@@ -393,61 +394,76 @@ async function init(){
   setUpdateButtonVisible(false);
 
   async function loadUpdateStatus(){
-    if(!updateStatus) return;
+    if(!updateStatus || !versionEl || !updateAvailEl) return;
+    versionEl.textContent = 'unknown';
+    updateAvailEl.textContent = 'Unknown';
+    updateStatus.textContent = 'Checking update status...';
+
+    // 1) Prefer post-update status message if available.
     try{
       const res = await api('/api/github/update-status');
       const status = String((res && res.status) || 'none');
       if(status === 'success' || status === 'failed'){
+        if(res && res.to_version){
+          versionEl.textContent = String(res.to_version);
+        }
+        updateAvailEl.textContent = (status === 'success') ? 'No' : 'Unknown';
         updateStatus.textContent = String(res.message || 'Update status available.');
-      }else{
-        updateStatus.textContent = 'Update status will appear here.';
+        setUpdateButtonVisible(false);
+        return;
       }
     }catch(_err){
-      updateStatus.textContent = 'Update status will appear here.';
+      // Fall through to cached startup status.
+    }
+
+    // 2) Use cached startup update status from /api/status.
+    try{
+      const statusRes = await api('/api/status');
+      const appVersion = String((statusRes && statusRes.app_version) || 'unknown');
+      versionEl.textContent = appVersion;
+      const us = (statusRes && statusRes.update_status) ? statusRes.update_status : null;
+      if(!us || us.checked === false){
+        updateAvailEl.textContent = 'Unknown';
+        updateStatus.textContent = 'Checking update status...';
+        setUpdateButtonVisible(false);
+        return;
+      }
+      if(us.ok === false){
+        updateAvailEl.textContent = 'Unknown';
+        updateStatus.textContent = String(us.message || 'Unable to check update status right now.');
+        setUpdateButtonVisible(false);
+        return;
+      }
+      const available = !!us.update_available;
+      updateAvailEl.textContent = available ? 'Yes' : 'No';
+      updateStatus.textContent = available
+        ? `Source update available: ${String(us.latest_version || 'latest')}`
+        : 'Ray5 Pilot is up to date.';
+      setUpdateButtonVisible(available);
+    }catch(_err){
+      updateAvailEl.textContent = 'Unknown';
+      updateStatus.textContent = 'Update status not available yet.';
+      setUpdateButtonVisible(false);
     }
   }
 
   await loadUpdateStatus();
 
-  if(updatesBtn){
-    updatesBtn.onclick = async () => {
-      if(updateStatus) updateStatus.textContent = 'Checking for updates...';
-      updatesBtn.disabled = true;
-      setUpdateButtonVisible(false);
-      try{
-        const res = await api('/api/github/check-updates');
-        const msg = (res && res.message) ? String(res.message) : 'Unable to check for updates right now.';
-        if(updateStatus) updateStatus.textContent = msg;
-        if(downloadLatestSource && res && res.source_zip_url){
-          downloadLatestSource.href = String(res.source_zip_url);
-        }
-        setUpdateButtonVisible(!!(res && res.ok && res.update_available));
-      }catch(_err){
-        if(updateStatus) updateStatus.textContent = 'Unable to check for updates right now.';
-        setUpdateButtonVisible(false);
-      }finally{
-        updatesBtn.disabled = false;
-      }
-    };
-  }
-
   if(applyUpdateBtn){
     applyUpdateBtn.onclick = async () => {
       if(!updateAvailableNow){
-        if(updateStatus) updateStatus.textContent = 'Check for updates first.';
+        if(updateStatus) updateStatus.textContent = 'No update is currently available.';
         return;
       }
       const confirmed = window.confirm('Ray5 Pilot will shut down, back up the current files, download the latest source, update the app files, and restart. Do not update while a laser job is running. Continue?');
       if(!confirmed) return;
       if(updateStatus) updateStatus.textContent = 'Starting update...';
-      if(updatesBtn) updatesBtn.disabled = true;
       applyUpdateBtn.disabled = true;
       try{
         const res = await api('/api/github/apply-update', 'POST', {});
         const msg = 'Updating Ray5 Pilot. The app will restart. This page will refresh automatically when Ray5 Pilot is back online.';
         if(updateStatus) updateStatus.textContent = msg;
         if(res && res.ok){
-          if(updatesBtn) updatesBtn.disabled = true;
           applyUpdateBtn.disabled = true;
           waitForUpdateRestart();
         }else{
@@ -456,12 +472,10 @@ async function init(){
               ? String(res.message)
               : 'Unable to start update right now.';
           }
-          if(updatesBtn) updatesBtn.disabled = false;
           applyUpdateBtn.disabled = false;
         }
       }catch(_err){
         if(updateStatus) updateStatus.textContent = 'Unable to start update right now.';
-        if(updatesBtn) updatesBtn.disabled = false;
         applyUpdateBtn.disabled = false;
       }
     };

@@ -55,6 +55,7 @@ const consoleBottomThreshold = 40;
 let cameraActivePath = '';
 const cameraPlaceholderPath = '/static/camera_placeholder.svg';
 let cameraVideoEnabled = true;
+let cameraConfigured = false;
 let cameraDisplayMode = 'placeholder'; // live | placeholder | timelapse
 let dashboardVideoActive = false;
 let cameraPopoutWindow = null;
@@ -62,12 +63,32 @@ let cameraPopoutClosePoll = null;
 let cameraPopoutWasLiveEnabled = false;
 let cameraPopoutActive = false;
 let currentTimelapsePlaybackFile = '';
+let latestProcessedSnapshotAvailable = false;
+let latestRawSnapshotAvailable = false;
 const selectedImportedJobs = new Set();
 let lastImportedJobs = [];
 const selectedTimelapseFiles = new Set();
 let currentTimelapseItems = [];
 let timelapseRuntimeState = null;
 let lastTimelapseCompletionRefreshKey = '';
+
+function setVideoCardMessage(message='', kind='muted'){
+  const el = document.getElementById('camera-test-status');
+  if(!el) return;
+  el.textContent = String(message || '');
+  el.classList.remove('ok','warn','error','muted');
+  el.classList.add(kind || 'muted');
+}
+
+// Keep one place that derives the camera toggle label from actual dashboard display state.
+function updateVideoToggleButton(){
+  const toggle = document.getElementById('camVideoToggle');
+  if(!toggle) return;
+  // Button shows the action the user can take.
+  // Only show Disable when dashboard live video is actually active.
+  const liveDashboardActive = cameraDisplayMode === 'live' && dashboardVideoActive;
+  toggle.textContent = liveDashboardActive ? 'Disable Video' : 'Enable Video';
+}
 
 function setTimelapseMessage(message){
   const msg = document.getElementById('timelapseMsg');
@@ -217,12 +238,9 @@ async function refreshStatus(){
 
   const cam=document.getElementById('cam');
   const timelapsePlayer = document.getElementById('timelapsePlayer');
-  const msg=document.getElementById('camMsg');
   const off=document.getElementById('cameraOffline');
-  const statusLine=document.getElementById('cameraStatusLine');
-  const cameraStatus=document.getElementById('cameraStatus');
-  const videoToggleBtn = document.getElementById('camVideoToggle');
   cameraVideoEnabled = (d.camera_video_enabled !== false);
+  cameraConfigured = !!d.camera_configured;
   if(d.timelapse_state){
     timelapseRuntimeState = d.timelapse_state;
     updateTimelapseRuntimeUi();
@@ -242,7 +260,7 @@ async function refreshStatus(){
       }
     }
   }
-  if(videoToggleBtn) videoToggleBtn.textContent = cameraVideoEnabled ? 'Disable Video' : 'Enable Video';
+  updateVideoToggleButton();
 
   if(cameraDisplayMode === 'timelapse'){
     if(cam) cam.style.display='none';
@@ -263,9 +281,7 @@ async function refreshStatus(){
   } else if(d.camera_preview_supported){
     const nextPath = (d.camera_proxy_path||'/camera/stream');
     startDashboardLiveVideo(nextPath);
-    msg.textContent='Camera: '+(d.camera_url_masked||'configured');
-    if(cameraStatus) cameraStatus.textContent = msg.textContent;
-    if(statusLine) statusLine.textContent='Camera source: '+(d.camera_url_masked||'configured');
+    setVideoCardMessage('Camera: '+(d.camera_url_masked||'configured'), 'muted');
   } else {
     stopDashboardLiveVideo('Camera stream unavailable.');
   }
@@ -400,8 +416,7 @@ async function setCameraVideoEnabled(enabled){
   const r = await api('/api/camera/video-enabled','POST',{enabled: !!enabled});
   if(r && r.ok){
     cameraVideoEnabled = !!r.enabled;
-    const toggle = document.getElementById('camVideoToggle');
-    if(toggle) toggle.textContent = cameraVideoEnabled ? 'Disable Video' : 'Enable Video';
+    updateVideoToggleButton();
   }
   return r;
 }
@@ -419,9 +434,9 @@ function stopTimelapsePlayback(showPlaceholder=true){
   if(cam) cam.style.display='block';
   if(showPlaceholder){
     stopDashboardLiveVideo('Camera video disabled.');
-    const msg = document.getElementById('camMsg');
-    if(msg) msg.textContent = 'Camera video disabled.';
+    setVideoCardMessage('Camera video disabled.', 'muted');
   }
+  updateVideoToggleButton();
 }
 
 function clearDeletedTimelapsePlayback(message='Selected timelapse was deleted.'){
@@ -434,14 +449,13 @@ function clearDeletedTimelapsePlayback(message='Selected timelapse was deleted.'
   }
   currentTimelapsePlaybackFile = '';
   setDashboardCameraPlaceholder(message);
-  const msg = document.getElementById('camMsg');
-  if(msg) msg.textContent = message;
+  setVideoCardMessage(message, 'warn');
+  updateVideoToggleButton();
 }
 
 async function playTimelapse(item){
   const player = document.getElementById('timelapsePlayer');
   const cam = document.getElementById('cam');
-  const msg = document.getElementById('camMsg');
   if(!player || !cam) return;
   await setCameraVideoEnabled(false);
   cameraDisplayMode = 'timelapse';
@@ -452,14 +466,16 @@ async function playTimelapse(item){
   player.style.display='block';
   player.src = item.url;
   currentTimelapsePlaybackFile = normalizeName(item.name || '');
+  updateVideoToggleButton();
   player.onended = ()=>{
     // Keep the ended timelapse visible in the video card until user action replaces it.
     cameraDisplayMode = 'timelapse';
-    if(msg) msg.textContent = 'Timelapse playback ended. Re-enable live video to return to camera.';
+    setVideoCardMessage('Timelapse playback ended. Re-enable live video to return to camera.', 'muted');
+    updateVideoToggleButton();
   };
   player.onerror = ()=>{
     stopTimelapsePlayback(true);
-    if(msg) msg.textContent = 'Timelapse playback failed.';
+    setVideoCardMessage('Timelapse playback failed.', 'error');
   };
   try{
     await player.play();
@@ -674,6 +690,8 @@ async function loadSnapshots(){
   const dlLatest = document.getElementById('downloadLatestSnapshot');
   const openRaw = document.getElementById('openLatestRaw');
   const dlRaw = document.getElementById('downloadLatestRaw');
+  latestProcessedSnapshotAvailable = false;
+  latestRawSnapshotAvailable = false;
   if(!d.ok){
     info.textContent = 'Snapshots unavailable.';
     return;
@@ -682,6 +700,7 @@ async function loadSnapshots(){
   const processed = items.find(x=>x.type==='processed' && x.is_latest) || items.find(x=>x.type==='processed');
   const raw = items.find(x=>x.type==='raw' && x.is_latest) || items.find(x=>x.type==='raw');
   if(processed){
+    latestProcessedSnapshotAvailable = true;
     info.textContent = `${processed.name} (${processed.size_bytes||'---'} bytes)`;
     openLatest.href = processed.url;
     dlLatest.href = processed.download_url;
@@ -691,6 +710,7 @@ async function loadSnapshots(){
     dlLatest.removeAttribute('href');
   }
   if(raw){
+    latestRawSnapshotAvailable = true;
     openRaw.href = raw.url;
     dlRaw.href = raw.download_url;
   } else {
@@ -743,9 +763,6 @@ function startSdAutoRefreshTimer(){
 
 function setDashboardCameraPlaceholder(message=''){
   const cam = document.getElementById('cam');
-  const msg = document.getElementById('camMsg');
-  const statusLine = document.getElementById('cameraStatusLine');
-  const cameraStatus = document.getElementById('cameraStatus');
   const off = document.getElementById('cameraOffline');
   if(!cam) return;
   cam.removeAttribute('src');
@@ -757,10 +774,9 @@ function setDashboardCameraPlaceholder(message=''){
   cameraActivePath = '';
   cameraDisplayMode = 'placeholder';
   if(message){
-    if(msg) msg.textContent = message;
-    if(statusLine) statusLine.textContent = message;
-    if(cameraStatus) cameraStatus.textContent = message;
+    setVideoCardMessage(message, 'muted');
   }
+  updateVideoToggleButton();
 }
 
 function stopDashboardLiveVideo(message=''){
@@ -776,9 +792,6 @@ function startDashboardLiveVideo(path, opts={}){
   const cam = document.getElementById('cam');
   const timelapsePlayer = document.getElementById('timelapsePlayer');
   const off = document.getElementById('cameraOffline');
-  const msg = document.getElementById('camMsg');
-  const statusLine = document.getElementById('cameraStatusLine');
-  const cameraStatus = document.getElementById('cameraStatus');
   if(!cam) return;
   const livePath = String(path || '/camera/stream');
   const hasSrc = !!cam.getAttribute('src');
@@ -801,10 +814,9 @@ function startDashboardLiveVideo(path, opts={}){
   cameraDisplayMode = 'live';
   if(off) off.style.display='none';
   if(message){
-    if(msg) msg.textContent = message;
-    if(statusLine) statusLine.textContent = message;
-    if(cameraStatus) cameraStatus.textContent = message;
+    setVideoCardMessage(message, 'muted');
   }
+  updateVideoToggleButton();
 }
 
 function sdFileKey(file){
@@ -1217,19 +1229,19 @@ function bind(){
   let cameraTestStatusToken = 0;
   const setCameraTestStatus = (message, kind='muted', autoClearMs=0)=>{
     if(!cameraStatus) return;
-    cameraStatus.textContent = message || '';
-    cameraStatus.classList.remove('ok','warn','error','muted');
-    cameraStatus.classList.add(kind || 'muted');
+    setVideoCardMessage(message || '', kind || 'muted');
     if(autoClearMs > 0 && message){
       const token = ++cameraTestStatusToken;
       setTimeout(()=>{
         if(!cameraStatus) return;
         if(token !== cameraTestStatusToken) return;
-        cameraStatus.textContent = '';
-        cameraStatus.classList.remove('ok','warn','error');
-        cameraStatus.classList.add('muted');
+        setVideoCardMessage('', 'muted');
       }, autoClearMs);
     }
+  };
+  const showCameraNotConfiguredMessage = ()=>{
+    const message = 'Camera is not configured. Set up camera first in Settings.';
+    setCameraTestStatus(message, 'warn', 10000);
   };
   document.getElementById('camRefresh').onclick=()=>{
     if(!cameraVideoEnabled){
@@ -1262,9 +1274,8 @@ function bind(){
     if(!cameraVideoEnabled) return;
     const path = cameraActivePath || '/camera/stream';
     startDashboardLiveVideo(path, {force:true});
-    if(cameraStatus) cameraStatus.textContent = 'Live video restored after popout closed.';
-    const camMsg = document.getElementById('camMsg');
-    if(camMsg) camMsg.textContent = 'Live video restored after popout closed.';
+    setVideoCardMessage('Live video restored after popout closed.', 'muted');
+    updateVideoToggleButton();
   };
 
   const startCameraPopoutClosePoll = ()=>{
@@ -1278,6 +1289,7 @@ function bind(){
         stopCameraPopoutPoll();
         cameraPopoutWindow = null;
         cameraPopoutActive = false;
+        updateVideoToggleButton();
         restoreDashboardLiveAfterPopoutClose();
       }
     }, 1000);
@@ -1286,6 +1298,10 @@ function bind(){
   const camPopoutBtn = document.getElementById('camPopout');
   if(camPopoutBtn){
     camPopoutBtn.onclick = ()=>{
+      if(!cameraConfigured){
+        showCameraNotConfiguredMessage();
+        return;
+      }
       if(cameraPopoutWindow && !cameraPopoutWindow.closed){
         cameraPopoutWindow.focus();
         return;
@@ -1304,12 +1320,11 @@ function bind(){
       cameraPopoutActive = true;
       if(cameraDisplayMode !== 'timelapse'){
         stopDashboardLiveVideo('Live video is popped out. Close the popout window to return video here.');
-        const camMsg = document.getElementById('camMsg');
-        if(camMsg) camMsg.textContent = 'Live video is popped out. Close the popout window to return video here.';
       }
       setCameraTestStatus('Live video is popped out. Close the popout window to return video here.', 'muted', 12000);
       startCameraPopoutClosePoll();
       popout.focus();
+      updateVideoToggleButton();
     };
   }
   const camTestBtn = document.getElementById('camTest');
@@ -1331,8 +1346,55 @@ function bind(){
       camTestBtn.disabled = false;
     }
   };
-  document.getElementById('camCapture').onclick=()=>api('/api/camera/capture','POST').then((r)=>{refreshConsole();loadSnapshots();if(r.ok)document.getElementById('camMsg').textContent='Snapshot saved: '+r.filename;});
-  document.getElementById('snapOpenFolder').onclick=()=>api('/api/snapshots/open-folder','POST').then(refreshConsole);
+  document.getElementById('camCapture').onclick=async()=>{
+    if(!cameraConfigured){
+      setVideoCardMessage('Camera is not configured. Set up camera first in Settings.', 'warn');
+      return;
+    }
+    try{
+      const r = await api('/api/camera/capture','POST');
+      await refreshConsole();
+      await loadSnapshots();
+      if(r && r.ok){
+        setVideoCardMessage(`Snapshot saved: ${r.filename}`, 'ok');
+      }else{
+        setVideoCardMessage((r && (r.error || r.message)) ? String(r.error || r.message) : 'Snapshot failed.', 'error');
+      }
+    }catch(err){
+      setVideoCardMessage(`Snapshot failed: ${String(err)}`, 'error');
+    }
+  };
+  document.getElementById('snapOpenFolder').onclick=async()=>{
+    try{
+      const r = await api('/api/snapshots/open-folder','POST');
+      await refreshConsole();
+      if(r && r.ok){
+        setVideoCardMessage('Snapshot folder opened.', 'muted');
+      }else{
+        setVideoCardMessage((r && (r.error || r.message)) ? String(r.error || r.message) : 'Unable to open snapshot folder.', 'warn');
+      }
+    }catch(err){
+      setVideoCardMessage(`Unable to open snapshot folder: ${String(err)}`, 'warn');
+    }
+  };
+  const openLatestBtn = document.getElementById('openLatestSnapshot');
+  if(openLatestBtn){
+    openLatestBtn.onclick=(ev)=>{
+      if(!latestProcessedSnapshotAvailable){
+        ev.preventDefault();
+        setVideoCardMessage('No latest processed snapshot is available. Take a snapshot first.', 'warn');
+      }
+    };
+  }
+  const openRawBtn = document.getElementById('openLatestRaw');
+  if(openRawBtn){
+    openRawBtn.onclick=(ev)=>{
+      if(!latestRawSnapshotAvailable){
+        ev.preventDefault();
+        setVideoCardMessage('No latest raw snapshot is available. Take a snapshot first.', 'warn');
+      }
+    };
+  }
   const openCalibrationModal = ()=>{
     if(!calibrationModal || !calibrationFrame) return;
     calibrationFrame.src = calibrationUrl;
@@ -1346,8 +1408,12 @@ function bind(){
     calibrationFrame.src = '';
   };
   document.getElementById('camCalibrate').onclick=()=>{
+    if(!cameraConfigured){
+      showCameraNotConfiguredMessage();
+      return;
+    }
     openCalibrationModal();
-    document.getElementById('camMsg').textContent='Calibration opened.';
+    setVideoCardMessage('Calibration opened.', 'muted');
   };
   if(closeCalibrationBtn){
     closeCalibrationBtn.onclick=()=>closeCalibrationModal();
@@ -1370,6 +1436,10 @@ function bind(){
   });
   document.getElementById('camVideoToggle').onclick=async()=>{
     const nextEnabled = !cameraVideoEnabled;
+    if(nextEnabled && !cameraConfigured){
+      showCameraNotConfiguredMessage();
+      return;
+    }
     const r = await setCameraVideoEnabled(nextEnabled);
     if(!r.ok){
       setCameraTestStatus(`Camera video toggle failed: ${r.message || 'unknown error'}`, 'error', 10000);
@@ -1389,13 +1459,13 @@ function bind(){
       stopDashboardLiveVideo('Camera video disabled.');
       setCameraTestStatus('Camera video disabled.', 'muted', 8000);
     }
+    updateVideoToggleButton();
     refreshConsole();
     refreshStatus();
   };
   cam.onerror=()=>{
     if((cam.src||'').includes('camera_placeholder.svg')) return;
     stopDashboardLiveVideo('Camera stream unavailable.');
-    document.getElementById('camMsg').textContent='Camera stream unavailable.';
     setCameraTestStatus('Camera stream unavailable.', 'error', 10000);
   };
   cam.onload=()=>{
