@@ -335,8 +335,9 @@ def _check_source_update() -> dict[str, Any]:
         source_zip_url = str(release_info.get("source_zip_url") or "").strip()
         source_zip_sha256 = str(release_info.get("source_zip_sha256") or "").strip().lower()
         checksum_available = bool(re.fullmatch(r"[0-9a-f]{64}", source_zip_sha256))
-        update_installable = bool(update_available and source_zip_url and checksum_available)
-        install_metadata_missing = bool(release_info.get("install_metadata_missing", False)) or not update_installable
+        has_install_metadata = bool(source_zip_url and checksum_available)
+        update_installable = bool(update_available and has_install_metadata)
+        install_metadata_missing = bool(release_info.get("install_metadata_missing", False)) or not has_install_metadata
         if update_available and update_installable:
             message = f"Source update available: {latest_version}"
         elif update_available and install_metadata_missing:
