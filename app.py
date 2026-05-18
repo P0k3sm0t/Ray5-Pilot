@@ -303,20 +303,24 @@ def _fetch_latest_release_update_info(timeout_seconds: float = 8.0) -> dict[str,
             continue
         zip_asset = asset
         break
-    if not zip_asset:
-        raise RuntimeError("Latest release is missing a zip asset.")
-    source_zip_url = str(zip_asset.get("browser_download_url") or "").strip()
-    digest_raw = str(zip_asset.get("digest") or "").strip().lower()
+    source_zip_url = ""
     source_zip_sha256 = ""
-    if digest_raw.startswith("sha256:"):
-        source_zip_sha256 = digest_raw.split(":", 1)[1].strip()
-    if not source_zip_sha256:
-        raise RuntimeError("Latest release zip asset is missing SHA-256 digest metadata.")
+    install_metadata_missing = False
+    if zip_asset:
+        source_zip_url = str(zip_asset.get("browser_download_url") or "").strip()
+        digest_raw = str(zip_asset.get("digest") or "").strip().lower()
+        if digest_raw.startswith("sha256:"):
+            source_zip_sha256 = digest_raw.split(":", 1)[1].strip()
+        if not source_zip_sha256:
+            install_metadata_missing = True
+    else:
+        install_metadata_missing = True
     return {
         "tag": tag,
         "release_url": release_url,
         "source_zip_url": source_zip_url,
         "source_zip_sha256": source_zip_sha256,
+        "install_metadata_missing": bool(install_metadata_missing),
     }
 
 
@@ -328,8 +332,17 @@ def _check_source_update() -> dict[str, Any]:
         latest_version = str(release_info.get("tag") or "").strip()
         cmp_result = _compare_versions(current_version, latest_version)
         update_available = cmp_result < 0
-        if update_available:
+        source_zip_url = str(release_info.get("source_zip_url") or "").strip()
+        source_zip_sha256 = str(release_info.get("source_zip_sha256") or "").strip().lower()
+        checksum_available = bool(re.fullmatch(r"[0-9a-f]{64}", source_zip_sha256))
+        update_installable = bool(update_available and source_zip_url and checksum_available)
+        install_metadata_missing = bool(release_info.get("install_metadata_missing", False)) or not update_installable
+        if update_available and update_installable:
             message = f"Source update available: {latest_version}"
+        elif update_available and install_metadata_missing:
+            message = "Update available, but in-app install is blocked because the release ZIP/checksum asset is missing."
+        elif install_metadata_missing:
+            message = "Ray5 Pilot is up to date. In-app install metadata is unavailable."
         else:
             message = "Ray5 Pilot source is up to date."
         return {
@@ -339,30 +352,15 @@ def _check_source_update() -> dict[str, Any]:
             "latest_tag": latest_version,
             "update_available": update_available,
             "release_url": str(release_info.get("release_url") or GITHUB_REPO_URL),
-            "source_zip_url": str(release_info.get("source_zip_url") or ""),
-            "source_zip_sha256": str(release_info.get("source_zip_sha256") or "").strip().lower(),
+            "source_zip_url": source_zip_url,
+            "source_zip_sha256": source_zip_sha256,
+            "checksum_available": checksum_available,
+            "update_installable": update_installable,
+            "install_metadata_missing": install_metadata_missing,
             "message": message,
         }
     except Exception as exc:
-        console.add("warn", f"GitHub tagged release check failed: {exc}")
-    try:
-        latest_version = _fetch_remote_main_version(timeout_seconds=5.0)
-        cmp_result = _compare_versions(current_version, latest_version)
-        update_available = cmp_result < 0
-        return {
-            "ok": False,
-            "current_version": current_version,
-            "latest_version": latest_version,
-            "latest_tag": "",
-            "update_available": update_available,
-            "release_url": GITHUB_REPO_URL,
-            "source_zip_url": "",
-            "source_zip_url_fallback": GITHUB_SOURCE_ZIP_FALLBACK_URL,
-            "source_zip_sha256": "",
-            "message": "Tagged release metadata unavailable. Update package checksum cannot be verified.",
-        }
-    except Exception as exc:
-        console.add("warn", f"GitHub update check fallback failed: {exc}")
+        console.add("warn", f"GitHub update check failed: {exc}")
         return {
             "ok": False,
             "current_version": current_version,
@@ -397,8 +395,9 @@ def _update_github_check_cache_from_result(result: dict[str, Any], checking: boo
     release_url = str(result.get("release_url") or GITHUB_REPO_URL)
     source_zip_url = str(result.get("source_zip_url") or "")
     source_zip_sha256 = str(result.get("source_zip_sha256") or "").strip().lower()
-    checksum_available = bool(re.fullmatch(r"[0-9a-f]{64}", source_zip_sha256))
-    update_installable = bool(update_available and checksum_available and source_zip_url)
+    checksum_available = bool(result.get("checksum_available")) if ("checksum_available" in result) else bool(re.fullmatch(r"[0-9a-f]{64}", source_zip_sha256))
+    update_installable = bool(result.get("update_installable")) if ("update_installable" in result) else bool(update_available and checksum_available and source_zip_url)
+    install_metadata_missing = bool(result.get("install_metadata_missing", False))
     payload: dict[str, Any] = {
         "checked": True,
         "checking": bool(checking),
@@ -415,11 +414,15 @@ def _update_github_check_cache_from_result(result: dict[str, Any], checking: boo
         "source_zip_sha256": source_zip_sha256,
         "checksum_available": checksum_available,
         "update_installable": update_installable,
+        "install_metadata_missing": install_metadata_missing,
         "error": "",
     }
     if ok:
-        if update_available and not update_installable:
-            payload["message"] = "Update available, but install is blocked because checksum metadata is unavailable."
+        message = str(result.get("message") or "").strip()
+        if message:
+            payload["message"] = message
+        elif update_available and not update_installable:
+            payload["message"] = "Update available, but in-app install is blocked because the release ZIP/checksum asset is missing."
         else:
             payload["message"] = f"Update available: {latest_version or 'latest'}" if update_available else "Up to date"
     else:

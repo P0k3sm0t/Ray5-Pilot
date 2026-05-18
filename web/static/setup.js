@@ -364,6 +364,8 @@ async function init(){
     const updateAvailable = !!state.update_available;
     const updateInstallable = !!state.update_installable;
     const checksumAvailable = !!state.checksum_available;
+    const installMetadataMissing = !!state.install_metadata_missing;
+    const backendMessage = String(state.message || '').trim();
     const sourceZipUrl = String(state.source_zip_url || '').trim();
     const fallbackSourceZipUrl = String(state.source_zip_url_fallback || '').trim();
     versionEl.textContent = currentVersion;
@@ -388,19 +390,23 @@ async function init(){
     if(updateAvailable){
       updateAvailEl.textContent = `Yes - ${latestVersion || 'latest'}`;
       if(updateInstallable){
-        updateStatus.textContent = `Update available: v${latestVersion || 'latest'}`;
+        updateStatus.textContent = backendMessage || `Update available: v${latestVersion || 'latest'}`;
         setUpdateButtonVisible(true);
       }else{
         const reason = checksumAvailable
           ? 'install package metadata is incomplete'
           : 'checksum metadata is unavailable';
-        updateStatus.textContent = `Update available: v${latestVersion || 'latest'}. In-app install is currently blocked because ${reason}.`;
+        updateStatus.textContent = backendMessage || `Update available: v${latestVersion || 'latest'}. In-app install is currently blocked because ${reason}.`;
         setUpdateButtonVisible(false);
       }
       return;
     }
     updateAvailEl.textContent = 'No';
-    updateStatus.textContent = 'Ray5 Pilot is up to date.';
+    if(installMetadataMissing){
+      updateStatus.textContent = backendMessage || 'Ray5 Pilot is up to date. In-app install metadata is unavailable.';
+    }else{
+      updateStatus.textContent = backendMessage || 'Ray5 Pilot is up to date.';
+    }
     setUpdateButtonVisible(false);
   }
 
