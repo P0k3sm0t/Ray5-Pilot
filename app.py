@@ -319,6 +319,39 @@ def _github_update_cache_snapshot() -> dict[str, Any]:
         return dict(github_update_status)
 
 
+def _update_github_check_cache_from_result(result: dict[str, Any], checking: bool = False) -> dict[str, Any]:
+    checked_at_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+    checked_at_epoch = time.time()
+    current_version = str(result.get("current_version") or result.get("local_version") or _read_local_version() or "unknown")
+    latest_version = str(result.get("latest_version") or "").strip()
+    ok = bool(result.get("ok"))
+    update_available = bool(result.get("update_available")) if ok else False
+    release_url = str(result.get("release_url") or GITHUB_REPO_URL)
+    source_zip_url = str(result.get("source_zip_url") or GITHUB_SOURCE_ZIP_URL)
+    payload: dict[str, Any] = {
+        "checked": True,
+        "checking": bool(checking),
+        "ok": ok,
+        "current_version": current_version,
+        "local_version": current_version,
+        "latest_version": latest_version,
+        "update_available": update_available,
+        "checked_at": checked_at_iso,
+        "last_checked": checked_at_epoch,
+        "release_url": release_url,
+        "source_zip_url": source_zip_url,
+        "error": "",
+    }
+    if ok:
+        payload["message"] = f"Update available: {latest_version or 'latest'}" if update_available else "Up to date"
+    else:
+        payload["message"] = "Unable to check"
+        payload["error"] = str(result.get("message") or "Unable to check for updates right now.")
+    with app_state_lock:
+        github_update_status.update(payload)
+        return dict(github_update_status)
+
+
 def _github_update_refresh_needed(snapshot: dict[str, Any] | None = None, ttl_seconds: float = GITHUB_UPDATE_CACHE_TTL_SECONDS) -> bool:
     s = snapshot if isinstance(snapshot, dict) else _github_update_cache_snapshot()
     if bool(s.get("checking", False)):
@@ -336,33 +369,7 @@ def _github_update_refresh_needed(snapshot: dict[str, Any] | None = None, ttl_se
 def _run_github_update_check_worker() -> None:
     global github_update_check_thread
     result = _check_source_update()
-    checked_at_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
-    checked_at_epoch = time.time()
-    current_version = str(result.get("current_version") or _read_local_version() or "unknown")
-    latest_version = str(result.get("latest_version") or "").strip()
-    release_url = str(result.get("release_url") or GITHUB_REPO_URL)
-    source_zip_url = str(result.get("source_zip_url") or GITHUB_SOURCE_ZIP_URL)
-    payload: dict[str, Any] = {
-        "checked": True,
-        "checking": False,
-        "ok": bool(result.get("ok")),
-        "current_version": current_version,
-        "latest_version": latest_version,
-        "update_available": bool(result.get("update_available")),
-        "checked_at": checked_at_iso,
-        "last_checked": checked_at_epoch,
-        "release_url": release_url,
-        "source_zip_url": source_zip_url,
-        "error": "",
-    }
-    if payload["ok"]:
-        payload["message"] = f"Update available: {latest_version or 'latest'}" if payload["update_available"] else "Up to date"
-    else:
-        payload["update_available"] = False
-        payload["message"] = "Unable to check"
-        payload["error"] = str(result.get("message") or "Unable to check for updates right now.")
-    with app_state_lock:
-        github_update_status.update(payload)
+    _update_github_check_cache_from_result(result, checking=False)
     with github_update_lock:
         github_update_check_thread = None
 
@@ -3520,10 +3527,29 @@ def api_safety_clear_comm_loss() -> Any:
 def api_github_apply_update() -> Any:
     # Use a fresh check before apply-update safety decisions.
     update_info = _check_source_update()
+    cached_state = _update_github_check_cache_from_result(update_info, checking=False)
     if not bool(update_info.get("ok")):
-        return jsonify({"ok": False, "message": "Unable to check for updates right now."}), 503
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "message": "Unable to check for updates right now.",
+                    "update_status": cached_state,
+                }
+            ),
+            503,
+        )
     if not bool(update_info.get("update_available")):
-        return jsonify({"ok": False, "message": "Ray5 Pilot source is already up to date."}), 409
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "message": "Ray5 Pilot source is already up to date.",
+                    "update_status": cached_state,
+                }
+            ),
+            409,
+        )
 
     state_raw = _get_machine_state_for_update_guard()
     state_norm = _timelapse_normalize_state(state_raw).lower()
@@ -3533,6 +3559,7 @@ def api_github_apply_update() -> Any:
                 {
                     "ok": False,
                     "message": "Update blocked because the Ray5 appears to be running or paused. Stop the job before updating.",
+                    "update_status": cached_state,
                 }
             ),
             409,
@@ -3540,7 +3567,7 @@ def api_github_apply_update() -> Any:
 
     updater_path = BASE_DIR / "updater.py"
     if not updater_path.exists():
-        return jsonify({"ok": False, "message": "Updater script is missing. Cannot apply update."}), 500
+        return jsonify({"ok": False, "message": "Updater script is missing. Cannot apply update.", "update_status": cached_state}), 500
 
     args = [
         sys.executable,
@@ -3562,10 +3589,10 @@ def api_github_apply_update() -> Any:
         subprocess.Popen(args, cwd=str(BASE_DIR))
     except Exception as exc:
         console.add("error", f"Failed to launch updater: {exc}")
-        return jsonify({"ok": False, "message": f"Failed to launch updater: {exc}"}), 500
+        return jsonify({"ok": False, "message": f"Failed to launch updater: {exc}", "update_status": cached_state}), 500
 
     _delayed_process_exit(delay_seconds=0.8)
-    return jsonify({"ok": True, "message": "Update started. Ray5 Pilot will restart."})
+    return jsonify({"ok": True, "message": "Update started. Ray5 Pilot will restart.", "update_status": cached_state})
 
 
 @app.post("/api/config")

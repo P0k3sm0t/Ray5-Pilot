@@ -354,6 +354,41 @@ async function init(){
     if(applyUpdateBtn) applyUpdateBtn.disabled = !updateAvailableNow;
   }
 
+  function renderGithubUpdateState(us){
+    if(!updateStatus || !versionEl || !updateAvailEl) return;
+    const state = us || {};
+    const currentVersion = String(state.current_version || state.local_version || 'unknown');
+    const latestVersion = String(state.latest_version || '').trim();
+    const checking = (state.checking === true) || (state.checked === false);
+    const ok = (state.ok !== false);
+    const updateAvailable = !!state.update_available;
+    versionEl.textContent = currentVersion;
+    if(downloadLatestSource && state.source_zip_url){
+      downloadLatestSource.href = String(state.source_zip_url);
+    }
+    if(checking){
+      updateAvailEl.textContent = 'Unknown';
+      updateStatus.textContent = 'Checking for updates...';
+      setUpdateButtonVisible(false);
+      return;
+    }
+    if(!ok){
+      updateAvailEl.textContent = 'Unknown';
+      updateStatus.textContent = 'Could not check for updates. Check your internet connection or try again later.';
+      setUpdateButtonVisible(false);
+      return;
+    }
+    if(updateAvailable){
+      updateAvailEl.textContent = `Yes - ${latestVersion || 'latest'}`;
+      updateStatus.textContent = `Update available: v${latestVersion || 'latest'}`;
+      setUpdateButtonVisible(true);
+      return;
+    }
+    updateAvailEl.textContent = 'No';
+    updateStatus.textContent = 'Ray5 Pilot is up to date.';
+    setUpdateButtonVisible(false);
+  }
+
   function waitForUpdateRestart(){
     const startedAt = Date.now();
     const maxWaitMs = 120000;
@@ -402,37 +437,9 @@ async function init(){
     versionEl.textContent = 'unknown';
     updateAvailEl.textContent = 'Unknown';
     updateStatus.textContent = 'Checking update status...';
-    // Use the same cached GitHub update-check state used by the Status card.
     try{
       const us = await api('/api/github/check-updates');
-      const appVersion = String(
-        (us && (us.current_version || us.local_version))
-        || 'unknown'
-      );
-      versionEl.textContent = appVersion;
-      if(downloadLatestSource && us && us.source_zip_url){
-        downloadLatestSource.href = String(us.source_zip_url);
-      }
-      if(!us || us.checked === false || us.checking === true){
-        updateAvailEl.textContent = 'Unknown';
-        updateStatus.textContent = 'Checking update status...';
-        setUpdateButtonVisible(false);
-        return;
-      }
-      if(us.ok === false){
-        updateAvailEl.textContent = 'Unknown';
-        updateStatus.textContent = 'Could not check for updates. Check your internet connection or try again later.';
-        setUpdateButtonVisible(false);
-        return;
-      }
-      const available = !!us.update_available;
-      updateAvailEl.textContent = available
-        ? `Yes — ${String(us.latest_version || 'latest')}`
-        : 'No';
-      updateStatus.textContent = available
-        ? `Update available: v${String(us.latest_version || 'latest')}`
-        : 'Ray5 Pilot is up to date.';
-      setUpdateButtonVisible(available);
+      renderGithubUpdateState(us);
     }catch(_err){
       updateAvailEl.textContent = 'Unknown';
       updateStatus.textContent = 'Could not check for updates. Check your internet connection or try again later.';
@@ -446,6 +453,7 @@ async function init(){
     try{
       const res = await api('/api/github/update-status');
       const status = String((res && res.status) || 'none');
+      if(status === 'none') return;
       if(status === 'success' || status === 'failed'){
         if(res && res.to_version){
           versionEl.textContent = String(res.to_version);
@@ -480,9 +488,9 @@ async function init(){
     for(let i=0;i<8;i++){
       await loadUpdateStatus();
       try{
-        const statusRes = await api('/api/status');
-        const us = (statusRes && statusRes.update_status) ? statusRes.update_status : null;
+        const us = await api('/api/github/check-updates');
         if(us && us.checked === true && us.checking !== true){
+          renderGithubUpdateState(us);
           break;
         }
       }catch(_err){
@@ -496,7 +504,7 @@ async function init(){
   await loadUpdateStatus();
   await maybeShowPostUpdateStatus();
   // Trigger refresh on Settings page open so running app can detect updates without restart.
-  await triggerUpdateRefresh({force:false});
+  await triggerUpdateRefresh({force:true});
   if(updateRefreshTimer) clearInterval(updateRefreshTimer);
   updateRefreshTimer = setInterval(()=>{ triggerUpdateRefresh({force:false}); }, UPDATE_REFRESH_INTERVAL_MS);
 
@@ -519,15 +527,22 @@ async function init(){
           applyUpdateBtn.disabled = true;
           waitForUpdateRestart();
         }else{
+          window.sessionStorage.removeItem(UPDATE_FLOW_FLAG_KEY);
           if(updateStatus){
             updateStatus.textContent = (res && res.message)
               ? String(res.message)
               : 'Unable to start update right now.';
           }
+          if(res && res.update_status){
+            renderGithubUpdateState(res.update_status);
+          }
+          await triggerUpdateRefresh({force:true});
           applyUpdateBtn.disabled = false;
         }
       }catch(_err){
+        window.sessionStorage.removeItem(UPDATE_FLOW_FLAG_KEY);
         if(updateStatus) updateStatus.textContent = 'Unable to start update right now.';
+        await triggerUpdateRefresh({force:true});
         applyUpdateBtn.disabled = false;
       }
     };
@@ -609,3 +624,4 @@ async function init(){
   };
 }
 init();
+
