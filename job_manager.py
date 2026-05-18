@@ -291,6 +291,8 @@ class JobManager:
         min_x = min_y = float("inf")
         max_x = max_y = float("-inf")
         x = y = 0.0
+        g92_offset_x = 0.0
+        g92_offset_y = 0.0
         absolute = True
         motion = re.compile(r"([A-Z])\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))", re.IGNORECASE)
         finish_marker_seen = False
@@ -344,6 +346,15 @@ class JobManager:
             if "G91" in clean:
                 absolute = False
             tokens = {m.group(1).upper(): float(m.group(2)) for m in motion.finditer(clean)}
+            g92_match = re.search(r"\bG\s*92(?:\.\d+)?\b", clean)
+            if g92_match:
+                # G92 remaps the current work coordinate without motion. Keep machine-space
+                # tracking stable by updating offsets used for future absolute moves.
+                if "X" in tokens:
+                    g92_offset_x = x - tokens["X"]
+                if "Y" in tokens:
+                    g92_offset_y = y - tokens["Y"]
+                continue
             if "X" not in tokens and "Y" not in tokens:
                 continue
             if not g_is_motion:
@@ -352,9 +363,9 @@ class JobManager:
             nx, ny = x, y
             if absolute:
                 if "X" in tokens:
-                    nx = tokens["X"]
+                    nx = tokens["X"] + g92_offset_x
                 if "Y" in tokens:
-                    ny = tokens["Y"]
+                    ny = tokens["Y"] + g92_offset_y
             else:
                 if "X" in tokens:
                     nx = x + tokens["X"]

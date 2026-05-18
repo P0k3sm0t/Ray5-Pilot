@@ -362,9 +362,16 @@ async function init(){
     const checking = (state.checking === true) || (state.checked === false);
     const ok = (state.ok !== false);
     const updateAvailable = !!state.update_available;
+    const updateInstallable = !!state.update_installable;
+    const checksumAvailable = !!state.checksum_available;
+    const sourceZipUrl = String(state.source_zip_url || '').trim();
+    const fallbackSourceZipUrl = String(state.source_zip_url_fallback || '').trim();
     versionEl.textContent = currentVersion;
-    if(downloadLatestSource && state.source_zip_url){
-      downloadLatestSource.href = String(state.source_zip_url);
+    if(downloadLatestSource){
+      const href = sourceZipUrl || fallbackSourceZipUrl;
+      if(href){
+        downloadLatestSource.href = href;
+      }
     }
     if(checking){
       updateAvailEl.textContent = 'Unknown';
@@ -380,8 +387,16 @@ async function init(){
     }
     if(updateAvailable){
       updateAvailEl.textContent = `Yes - ${latestVersion || 'latest'}`;
-      updateStatus.textContent = `Update available: v${latestVersion || 'latest'}`;
-      setUpdateButtonVisible(true);
+      if(updateInstallable){
+        updateStatus.textContent = `Update available: v${latestVersion || 'latest'}`;
+        setUpdateButtonVisible(true);
+      }else{
+        const reason = checksumAvailable
+          ? 'install package metadata is incomplete'
+          : 'checksum metadata is unavailable';
+        updateStatus.textContent = `Update available: v${latestVersion || 'latest'}. In-app install is currently blocked because ${reason}.`;
+        setUpdateButtonVisible(false);
+      }
       return;
     }
     updateAvailEl.textContent = 'No';

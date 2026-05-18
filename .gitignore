@@ -32,3 +32,6 @@ dist/
 update_work/
 update_backups/
 update_logs/
+
+# Local-only secret scan denylist (never commit real secret terms)
+tools/secret_terms.local.txt

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import shutil
@@ -28,6 +29,7 @@ ALLOWED_UPDATE_PATHS: tuple[str, ...] = (
     "ray5_status_monitor.py",
     "gcode_safety.py",
     "requirements.txt",
+    "updater.py",
     "web/templates/index.html",
     "web/templates/setup.html",
     "web/templates/camera_calibration.html",
@@ -40,6 +42,17 @@ ALLOWED_UPDATE_PATHS: tuple[str, ...] = (
     "web/static/favicon.svg",
     "web/static/camera_placeholder.svg",
 )
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest().lower()
 
 
 def _now_stamp() -> str:
@@ -136,6 +149,7 @@ def _run(argv: argparse.Namespace) -> int:
     project_root = Path(argv.project_root).resolve()
     python_exe = str(Path(argv.python_exe).resolve())
     source_url = str(argv.source_url).strip()
+    expected_sha256 = str(argv.expected_sha256 or "").strip().lower()
     stamp = _now_stamp()
 
     work_dir = project_root / "update_work"
@@ -173,6 +187,15 @@ def _run(argv: argparse.Namespace) -> int:
         req = urlrequest.Request(source_url, headers={"User-Agent": "Ray5-Pilot-Updater"}, method="GET")
         with urlrequest.urlopen(req, timeout=15) as resp, download_zip.open("wb") as out_f:
             shutil.copyfileobj(resp, out_f)
+        actual_sha256 = _sha256_file(download_zip)
+        log(f"Downloaded ZIP sha256: {actual_sha256}")
+        if not expected_sha256:
+            raise RuntimeError("Missing expected SHA-256 for update package; refusing unsafe update.")
+        if actual_sha256 != expected_sha256:
+            raise RuntimeError(
+                f"Update package checksum mismatch. expected={expected_sha256} actual={actual_sha256}"
+            )
+        log("Update package checksum verified.")
 
         log(f"Extracting ZIP to {extract_dir}")
         with zipfile.ZipFile(download_zip, "r") as zf:
@@ -297,6 +320,7 @@ def main() -> int:
     parser.add_argument("--python-exe", required=True)
     parser.add_argument("--parent-pid", required=True, type=int)
     parser.add_argument("--source-url", required=True)
+    parser.add_argument("--expected-sha256", default="")
     parser.add_argument("--current-version", default="")
     parser.add_argument("--remote-version", default="")
     args = parser.parse_args()

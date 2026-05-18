@@ -314,6 +314,8 @@ Always supervise laser operation, verify all files and settings before running a
 - Removed manual Check for Updates button and reused startup/cached update status.
 - Settings Support card now reads the same cached GitHub update-check state as the Status card and no longer uses stale updater/apply-update status for normal availability display.
 - GitHub update status now refreshes at startup and when Settings opens, with stale-safe background refresh while Ray5 Pilot is running.
+- In-app update install now uses tagged release ZIP assets with SHA-256 digest verification.
+- In-app update install is blocked when release checksum metadata is unavailable.
 - Updated Longer support link to `https://eu.longer.net/pages/download-firmware`.
 - Added/updated `tools/safety_check.py` for no-hardware release validation.
 - Updated wiki/release documentation package for v1.1.3 wording and support changes.

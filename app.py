@@ -107,7 +107,10 @@ github_update_status: dict[str, Any] = {
     "last_checked": None,
     "error": "",
     "release_url": GITHUB_REPO_URL if "GITHUB_REPO_URL" in globals() else "",
-    "source_zip_url": GITHUB_SOURCE_ZIP_URL if "GITHUB_SOURCE_ZIP_URL" in globals() else "",
+    "source_zip_url": "",
+    "source_zip_sha256": "",
+    "checksum_available": False,
+    "update_installable": False,
 }
 github_update_check_started = False
 github_update_lock = RLock()
@@ -124,8 +127,9 @@ console.add("info", f"RAY5 BASE URL: {ray5._base()}")
 
 _SENSITIVE_DEBUG_TOKENS = ("password", "pass", "key", "token", "secret", "credential", "auth")
 GITHUB_REPO_URL = "https://github.com/P0k3sm0t/Ray5-Pilot"
-GITHUB_SOURCE_ZIP_URL = "https://github.com/P0k3sm0t/Ray5-Pilot/archive/refs/heads/main.zip"
+GITHUB_SOURCE_ZIP_FALLBACK_URL = "https://github.com/P0k3sm0t/Ray5-Pilot/archive/refs/heads/main.zip"
 GITHUB_MAIN_VERSION_URL = "https://raw.githubusercontent.com/P0k3sm0t/Ray5-Pilot/main/VERSION"
+GITHUB_LATEST_RELEASE_API_URL = "https://api.github.com/repos/P0k3sm0t/Ray5-Pilot/releases/latest"
 UPDATE_STATUS_PATH = BASE_DIR / "update_logs" / "update_status.json"
 _update_shutdown_started = False
 calibration_lock = RLock()
@@ -274,11 +278,54 @@ def _fetch_remote_main_version(timeout_seconds: float = 5.0) -> str:
     return _normalize_version_text(raw)
 
 
+def _fetch_latest_release_update_info(timeout_seconds: float = 8.0) -> dict[str, Any]:
+    req = urlrequest.Request(
+        GITHUB_LATEST_RELEASE_API_URL,
+        headers={"User-Agent": "Ray5-Pilot-UpdateCheck", "Accept": "application/vnd.github+json"},
+        method="GET",
+    )
+    with urlrequest.urlopen(req, timeout=timeout_seconds) as resp:
+        payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("Unexpected latest release payload.")
+    tag = _normalize_version_text(str(payload.get("tag_name") or payload.get("name") or "").strip())
+    if not tag:
+        raise RuntimeError("Latest release tag is missing.")
+    release_url = str(payload.get("html_url") or GITHUB_REPO_URL).strip() or GITHUB_REPO_URL
+    assets = payload.get("assets") if isinstance(payload.get("assets"), list) else []
+    zip_asset: dict[str, Any] | None = None
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name") or "").strip().lower()
+        url = str(asset.get("browser_download_url") or "").strip()
+        if not url or not name.endswith(".zip"):
+            continue
+        zip_asset = asset
+        break
+    if not zip_asset:
+        raise RuntimeError("Latest release is missing a zip asset.")
+    source_zip_url = str(zip_asset.get("browser_download_url") or "").strip()
+    digest_raw = str(zip_asset.get("digest") or "").strip().lower()
+    source_zip_sha256 = ""
+    if digest_raw.startswith("sha256:"):
+        source_zip_sha256 = digest_raw.split(":", 1)[1].strip()
+    if not source_zip_sha256:
+        raise RuntimeError("Latest release zip asset is missing SHA-256 digest metadata.")
+    return {
+        "tag": tag,
+        "release_url": release_url,
+        "source_zip_url": source_zip_url,
+        "source_zip_sha256": source_zip_sha256,
+    }
+
+
 def _check_source_update() -> dict[str, Any]:
     current_version = _read_local_version()
     latest_version = ""
     try:
-        latest_version = _fetch_remote_main_version(timeout_seconds=5.0)
+        release_info = _fetch_latest_release_update_info(timeout_seconds=8.0)
+        latest_version = str(release_info.get("tag") or "").strip()
         cmp_result = _compare_versions(current_version, latest_version)
         update_available = cmp_result < 0
         if update_available:
@@ -289,14 +336,33 @@ def _check_source_update() -> dict[str, Any]:
             "ok": True,
             "current_version": current_version,
             "latest_version": latest_version,
-            "latest_tag": "main",
+            "latest_tag": latest_version,
             "update_available": update_available,
-            "release_url": GITHUB_REPO_URL,
-            "source_zip_url": GITHUB_SOURCE_ZIP_URL,
+            "release_url": str(release_info.get("release_url") or GITHUB_REPO_URL),
+            "source_zip_url": str(release_info.get("source_zip_url") or ""),
+            "source_zip_sha256": str(release_info.get("source_zip_sha256") or "").strip().lower(),
             "message": message,
         }
     except Exception as exc:
-        console.add("warn", f"GitHub update check failed: {exc}")
+        console.add("warn", f"GitHub tagged release check failed: {exc}")
+    try:
+        latest_version = _fetch_remote_main_version(timeout_seconds=5.0)
+        cmp_result = _compare_versions(current_version, latest_version)
+        update_available = cmp_result < 0
+        return {
+            "ok": False,
+            "current_version": current_version,
+            "latest_version": latest_version,
+            "latest_tag": "",
+            "update_available": update_available,
+            "release_url": GITHUB_REPO_URL,
+            "source_zip_url": "",
+            "source_zip_url_fallback": GITHUB_SOURCE_ZIP_FALLBACK_URL,
+            "source_zip_sha256": "",
+            "message": "Tagged release metadata unavailable. Update package checksum cannot be verified.",
+        }
+    except Exception as exc:
+        console.add("warn", f"GitHub update check fallback failed: {exc}")
         return {
             "ok": False,
             "current_version": current_version,
@@ -304,7 +370,9 @@ def _check_source_update() -> dict[str, Any]:
             "latest_tag": "",
             "update_available": False,
             "release_url": GITHUB_REPO_URL,
-            "source_zip_url": GITHUB_SOURCE_ZIP_URL,
+            "source_zip_url": "",
+            "source_zip_url_fallback": GITHUB_SOURCE_ZIP_FALLBACK_URL,
+            "source_zip_sha256": "",
             "message": "Unable to check for updates right now.",
         }
 
@@ -325,9 +393,12 @@ def _update_github_check_cache_from_result(result: dict[str, Any], checking: boo
     current_version = str(result.get("current_version") or result.get("local_version") or _read_local_version() or "unknown")
     latest_version = str(result.get("latest_version") or "").strip()
     ok = bool(result.get("ok"))
-    update_available = bool(result.get("update_available")) if ok else False
+    update_available = bool(result.get("update_available"))
     release_url = str(result.get("release_url") or GITHUB_REPO_URL)
-    source_zip_url = str(result.get("source_zip_url") or GITHUB_SOURCE_ZIP_URL)
+    source_zip_url = str(result.get("source_zip_url") or "")
+    source_zip_sha256 = str(result.get("source_zip_sha256") or "").strip().lower()
+    checksum_available = bool(re.fullmatch(r"[0-9a-f]{64}", source_zip_sha256))
+    update_installable = bool(update_available and checksum_available and source_zip_url)
     payload: dict[str, Any] = {
         "checked": True,
         "checking": bool(checking),
@@ -340,10 +411,17 @@ def _update_github_check_cache_from_result(result: dict[str, Any], checking: boo
         "last_checked": checked_at_epoch,
         "release_url": release_url,
         "source_zip_url": source_zip_url,
+        "source_zip_url_fallback": GITHUB_SOURCE_ZIP_FALLBACK_URL,
+        "source_zip_sha256": source_zip_sha256,
+        "checksum_available": checksum_available,
+        "update_installable": update_installable,
         "error": "",
     }
     if ok:
-        payload["message"] = f"Update available: {latest_version or 'latest'}" if update_available else "Up to date"
+        if update_available and not update_installable:
+            payload["message"] = "Update available, but install is blocked because checksum metadata is unavailable."
+        else:
+            payload["message"] = f"Update available: {latest_version or 'latest'}" if update_available else "Up to date"
     else:
         payload["message"] = "Unable to check"
         payload["error"] = str(result.get("message") or "Unable to check for updates right now.")
@@ -435,6 +513,8 @@ def reload_components() -> None:
     global cfg, ray5, camera, jobs, status_monitor, _placeholder_api_warned, _placeholder_host_warned
     tl_state = _timelapse_snapshot_state()
     if bool(tl_state.get("active", False)) or bool(tl_state.get("paused", False)) or bool(tl_state.get("armed", False)):
+        # Intentionally synchronous: we stop timelapse before swapping runtime objects so the
+        # worker cannot continue capturing against stale camera/job references.
         stop_result = _timelapse_stop_internal(reason="settings_reload")
         if not bool(stop_result.get("ok")):
             msg = str(stop_result.get("message", "Unable to stop timelapse before settings reload.")).strip()
@@ -1416,33 +1496,42 @@ def _queue_timelapse_stop_from_status(reason: str, machine_state: str, online: b
     global timelapse_stop_worker
     now = time.time()
     duplicate_log_window_seconds = 12.0
+    duplicate_log_message = ""
+    def _mark_duplicate(session_key: str, msg: str) -> None:
+        nonlocal duplicate_log_message
+        last = float(timelapse_duplicate_log_at.get(session_key, 0) or 0)
+        if (now - last) >= duplicate_log_window_seconds:
+            timelapse_duplicate_log_at[session_key] = now
+            duplicate_log_message = msg
     with timelapse_lock:
         session_id = str(timelapse_state.get("session_id", "")).strip()
         control_mode = str(timelapse_state.get("control_mode", "")).strip().lower()
         active = bool(timelapse_state.get("active", False))
         session_key = session_id or "none"
-        def _log_duplicate(msg: str) -> None:
-            last = float(timelapse_duplicate_log_at.get(session_key, 0) or 0)
-            if (now - last) >= duplicate_log_window_seconds:
-                timelapse_duplicate_log_at[session_key] = now
-                console.add("info", msg)
+        duplicate_detected = False
         if control_mode != "job" or not active:
             return False
         if bool(timelapse_state.get("build_in_progress", False)):
-            _log_duplicate(f"Timelapse stop/build already running; duplicate request ignored for session={session_id or 'none'}")
-            return False
+            _mark_duplicate(session_key, f"Timelapse stop/build already running; duplicate request ignored for session={session_id or 'none'}")
+            duplicate_detected = True
         pending_session = str(timelapse_state.get("stop_pending_session_id", "")).strip()
-        if bool(timelapse_state.get("stop_pending", False)) and pending_session == session_id and session_id:
-            _log_duplicate(f"Timelapse stop/build already queued; duplicate request ignored for session={session_id}")
-            return False
-        if timelapse_stop_worker is not None and timelapse_stop_worker.is_alive():
-            _log_duplicate(f"Timelapse stop/build worker alive; duplicate request ignored for session={session_id or 'none'}")
-            return False
-        timelapse_duplicate_log_at.pop(session_key, None)
-        timelapse_state["stop_pending"] = True
-        timelapse_state["stop_pending_session_id"] = session_id
-        timelapse_state["stop_reason"] = str(reason or "")
-        timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+        if (not duplicate_detected) and bool(timelapse_state.get("stop_pending", False)) and pending_session == session_id and session_id:
+            _mark_duplicate(session_key, f"Timelapse stop/build already queued; duplicate request ignored for session={session_id}")
+            duplicate_detected = True
+        if (not duplicate_detected) and timelapse_stop_worker is not None and timelapse_stop_worker.is_alive():
+            _mark_duplicate(session_key, f"Timelapse stop/build worker alive; duplicate request ignored for session={session_id or 'none'}")
+            duplicate_detected = True
+        if not duplicate_detected:
+            timelapse_duplicate_log_at.pop(session_key, None)
+            timelapse_state["stop_pending"] = True
+            timelapse_state["stop_pending_session_id"] = session_id
+            timelapse_state["stop_reason"] = str(reason or "")
+            timelapse_state["status"] = _timelapse_status_label(timelapse_state)
+        else:
+            session_id = str(timelapse_state.get("session_id", "")).strip()
+    if duplicate_log_message:
+        console.add("info", duplicate_log_message)
+        return False
     console.add(
         "info",
         f"Queued background timelapse stop/build: session={session_id or 'none'} reason={reason} machine_state={machine_state or 'unknown'}",
@@ -3568,6 +3657,33 @@ def api_github_apply_update() -> Any:
     updater_path = BASE_DIR / "updater.py"
     if not updater_path.exists():
         return jsonify({"ok": False, "message": "Updater script is missing. Cannot apply update.", "update_status": cached_state}), 500
+    source_zip_url = str(update_info.get("source_zip_url") or "").strip()
+    source_zip_sha256 = str(update_info.get("source_zip_sha256") or "").strip().lower()
+    checksum_available = bool(re.fullmatch(r"[0-9a-f]{64}", source_zip_sha256))
+    source_zip_lower = source_zip_url.lower()
+    install_source_is_main_branch = ("/archive/refs/heads/main.zip" in source_zip_lower) or ("refs/heads/main" in source_zip_lower)
+    if install_source_is_main_branch:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "message": "Update blocked: main-branch source ZIP is not allowed for in-app installs.",
+                    "update_status": cached_state,
+                }
+            ),
+            503,
+        )
+    if not source_zip_url or not checksum_available:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "message": "Update blocked: release package checksum metadata is unavailable.",
+                    "update_status": cached_state,
+                }
+            ),
+            503,
+        )
 
     args = [
         sys.executable,
@@ -3579,7 +3695,9 @@ def api_github_apply_update() -> Any:
         "--parent-pid",
         str(os.getpid()),
         "--source-url",
-        str(update_info.get("source_zip_url") or GITHUB_SOURCE_ZIP_URL),
+        source_zip_url,
+        "--expected-sha256",
+        source_zip_sha256,
         "--current-version",
         str(update_info.get("current_version") or _read_local_version()),
         "--remote-version",
