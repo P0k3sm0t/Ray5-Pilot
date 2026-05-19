@@ -414,6 +414,7 @@ def check_safety_feature_presence(r: Result) -> None:
         ("final frame retry attempts", "final frame capture attempt"),
         ("unique final frame target", "final frame target"),
         ("duplicate timelapse start guard", "Timelapse is already active."),
+        ("status timelapse label field", "timelapse_status_label"),
     ]
     js_markers = [
         ("SD auto-refresh pause busy/lockout", "isMachineBusyForSdRefresh"),
@@ -422,6 +423,8 @@ def check_safety_feature_presence(r: Result) -> None:
         ("deleted timelapse playback clearing", "Selected timelapse was deleted."),
         ("Stop Timelapse confirmation", "Stop the active timelapse and save/build the output?"),
         ("Start Timelapse blocked message handling", "startTimelapseManual"),
+        ("status timelapse renderer", "normalizeTimelapseStatusLabel"),
+        ("status timelapse element", "statusTimelapse"),
     ]
     missing = []
     missing += [f"app.py: {x}" for x in _check_markers(ROOT / "app.py", app_markers)]

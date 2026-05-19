@@ -1298,6 +1298,24 @@ def _timelapse_normalize_state(machine_state: str) -> str:
     return raw
 
 
+def _timelapse_dashboard_status_label(state: Any) -> str:
+    if not isinstance(state, dict):
+        return "—"
+    if not bool(state.get("enabled", False)):
+        return "Disabled"
+    if str(state.get("error", "")).strip():
+        return "Error"
+    if bool(state.get("build_in_progress", False)) or bool(state.get("stop_pending", False)) or bool(state.get("stopping", False)):
+        return "Saving"
+    if bool(state.get("active", False)) and bool(state.get("paused", False)):
+        return "Paused"
+    if bool(state.get("active", False)):
+        return "Running"
+    if bool(state.get("armed", False)):
+        return "Armed"
+    return "Idle"
+
+
 def _timelapse_is_terminal_state(machine_state: str, online: bool) -> bool:
     if not online:
         return True
@@ -2059,6 +2077,7 @@ def api_status() -> Any:
         sd_working_current = None
     _timelapse_observe_machine_state(str(state), bool(online))
     tl_state = _timelapse_snapshot_state()
+    tl_status_label = _timelapse_dashboard_status_label(tl_state)
     app_version_value = _read_local_version() or "unknown"
     update_status_cached = _snapshot_startup_update_status()
     comm_safety = _snapshot_comm_safety_state()
@@ -2128,6 +2147,7 @@ def api_status() -> Any:
                 "camera_test_passed": cam_test_ok,
             },
             "timelapse_state": tl_state,
+            "timelapse_status_label": tl_status_label,
         }
     )
 

@@ -151,6 +151,20 @@ function updateConsoleJumpButton(){
   jumpBtn.style.display = consoleAutoScroll ? 'none' : 'inline-block';
 }
 
+function normalizeTimelapseStatusLabel(statusResp){
+  const direct = String((statusResp && statusResp.timelapse_status_label) || '').trim();
+  if(direct) return direct;
+  const ts = (statusResp && statusResp.timelapse_state) ? statusResp.timelapse_state : null;
+  if(!ts || typeof ts !== 'object') return '—';
+  if(ts.enabled === false) return 'Disabled';
+  if(String(ts.error || '').trim()) return 'Error';
+  if(ts.build_in_progress || ts.stop_pending || ts.stopping) return 'Saving';
+  if(ts.active && ts.paused) return 'Paused';
+  if(ts.active) return 'Running';
+  if(ts.armed) return 'Armed';
+  return 'Idle';
+}
+
 async function refreshStatus(){
   const d=await api('/api/status');
   const previousTimelapseState = timelapseRuntimeState ? {...timelapseRuntimeState} : null;
@@ -169,6 +183,7 @@ async function refreshStatus(){
   const laserText = isOfflineFallback ? '0' : ((d.spindle===null || d.spindle===undefined) ? '—' : fmtNum(d.spindle, 0));
   const alarmText = d.alarm_status || ((String(d.state_base||d.state||'').toLowerCase()==='alarm') ? 'Active' : (d.online ? 'Clear' : 'Unknown'));
   const jobText = d.job_status || 'Unknown';
+  const timelapseText = normalizeTimelapseStatusLabel(d);
   const sourceText = isOfflineFallback ? 'fallback_offline' : (effectiveSource || d.status_source || 'unknown');
   const coordSourceText = isOfflineFallback ? '—' : (d.coordinate_source_label || '—');
   const connectionText = effectiveSource === 'upload_busy' ? 'Busy / Uploading' : (isOfflineFallback ? 'Offline' : (d.connection_status || ((d.online && sourceText === 'live_websocket') ? 'Online' : 'Offline')));
@@ -228,6 +243,7 @@ async function refreshStatus(){
     <div class="status-safety">
       <div>Alarm: <b>${esc(alarmText)}</b></div>
       <div>Job: <b>${esc(jobText)}</b></div>
+      <div id="statusTimelapse">Timelapse: <b>${esc(timelapseText)}</b></div>
       <div>Connection: <b>${esc(connectionText)}</b></div>
     </div>
     <div class="status-foot muted small">
