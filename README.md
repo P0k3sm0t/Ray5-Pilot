@@ -293,6 +293,15 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
+## Ray5 Pilot v1.1.5
+### Highlights
+- Added support for `*.sha256.txt` release checksum sidecar assets, with fallback to GitHub release asset digest metadata.
+- Improved GitHub update-check diagnostics for 403/rate-limit and missing release metadata cases.
+- Hardened in-app update installability checks while continuing to block `main.zip` / `refs/heads/main` install paths.
+- Improved G-code bounds parsing for G92, bare G92, and G92.1 coordinate-offset behavior.
+- Fixed laser-on bounds parsing so motion segments include both the start point and destination point.
+- Updated `tools/safety_check.py` with static checks for updater/checksum and parser hardening.
+
 ## v1.1.4
 ### Highlights
 - Final tagged-release updater verification release for in-app update packaging flow.
