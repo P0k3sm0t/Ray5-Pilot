@@ -7,8 +7,8 @@
 
 ### Settings
 
-<a href="https://github.com/user-attachments/assets/d5e1bc64-a3af-42f4-b7d1-dc81d31deb76">
-  <img src="https://github.com/user-attachments/assets/d5e1bc64-a3af-42f4-b7d1-dc81d31deb76" width="420" alt="Ray5 Pilot settings screenshot">
+<a href="https://github.com/user-attachments/assets/c9ab85da-c22a-471f-a403-151bad736fe1">
+  <img src="https://github.com/user-attachments/assets/c9ab85da-c22a-471f-a403-151bad736fe1" width="420" alt="Ray5 Pilot settings screenshot">
 </a>
 
 ### Firmware Settings
