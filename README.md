@@ -293,6 +293,19 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
+## Ray5 Pilot v1.1.6
+
+### Highlights
+
+- Improved large-file Upload and Upload+Run behavior when the Ray5 becomes temporarily busy while writing to SD.
+- Added an upload-busy status state so expected upload/write pauses no longer appear as false offline connection loss.
+- Status card now switches to Uploading / Busy immediately when Upload, Upload+Run, or SD Upload is started.
+- Upload+Run now verifies the uploaded file on the SD card after timeout/reconnect before blocking the start.
+- Added a size-aware upload timeout for larger G-code files without changing normal request timeouts globally.
+- Serialized SD file-listing requests during upload-related operations to reduce overlapping `/files` calls.
+- Updated Upload+Run frontend messages to show in-progress and backend result messages more clearly.
+- Added `tools/safety_check.py` coverage for Upload+Run hardening markers.
+
 ## Ray5 Pilot v1.1.5
 ### Highlights
 - Added support for `*.sha256.txt` release checksum sidecar assets, with fallback to GitHub release asset digest metadata.

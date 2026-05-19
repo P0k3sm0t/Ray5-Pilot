@@ -44,7 +44,17 @@ status_monitor: Ray5StatusMonitor | None = None
 _placeholder_host_warned = False
 _placeholder_api_warned = False
 app_state_lock = RLock()
+sd_list_lock = RLock()
 runtime_started = False
+ray5_comm_busy_lock = RLock()
+ray5_comm_busy_state: dict[str, Any] = {
+    "active": False,
+    "reason": "",
+    "filename": "",
+    "started_at": None,
+    "expires_at": None,
+    "last_message": "",
+}
 timelapse_lock = RLock()
 timelapse_capture_lock = RLock()
 timelapse_stop_event = threading.Event()
@@ -823,6 +833,99 @@ def _max_upload_bytes() -> int:
     return int(float(limits.get("max_gcode_upload_mb", 50)) * 1024 * 1024)
 
 
+def _ray5_list_files_locked(path: str = "/") -> dict[str, Any]:
+    with sd_list_lock:
+        return ray5.list_files(path=path)
+
+
+def _wait_for_ray5_http_reachable(max_wait_seconds: float = 20.0, interval_seconds: float = 2.0) -> bool:
+    deadline = time.time() + max(2.0, float(max_wait_seconds))
+    while time.time() < deadline:
+        probe = ray5.probe_http()
+        if bool(probe.get("ok")):
+            return True
+        time.sleep(max(0.5, float(interval_seconds)))
+    return False
+
+
+def _set_ray5_comm_busy(reason: str, filename: str = "", seconds: float = 45.0, message: str = "") -> None:
+    now = time.time()
+    with ray5_comm_busy_lock:
+        ray5_comm_busy_state["active"] = True
+        ray5_comm_busy_state["reason"] = str(reason or "").strip()
+        ray5_comm_busy_state["filename"] = str(filename or "").strip()
+        ray5_comm_busy_state["started_at"] = now
+        ray5_comm_busy_state["expires_at"] = now + max(5.0, float(seconds))
+        ray5_comm_busy_state["last_message"] = str(message or "").strip()
+    console.add("info", f"Ray5 communication marked busy during upload: {filename or 'unknown'}")
+
+
+def _clear_ray5_comm_busy(reason: str = "") -> None:
+    with ray5_comm_busy_lock:
+        was_active = bool(ray5_comm_busy_state.get("active", False))
+        prev_reason = str(ray5_comm_busy_state.get("reason", "") or "")
+        ray5_comm_busy_state["active"] = False
+        ray5_comm_busy_state["reason"] = ""
+        ray5_comm_busy_state["filename"] = ""
+        ray5_comm_busy_state["started_at"] = None
+        ray5_comm_busy_state["expires_at"] = None
+        ray5_comm_busy_state["last_message"] = ""
+    if was_active:
+        console.add("info", f"Ray5 upload busy cleared: {reason or prev_reason or 'done'}")
+
+
+def _ray5_comm_busy_snapshot() -> dict[str, Any]:
+    with ray5_comm_busy_lock:
+        snap = dict(ray5_comm_busy_state)
+    active = bool(snap.get("active", False))
+    expires_at = snap.get("expires_at")
+    expired = bool(active and isinstance(expires_at, (int, float)) and (time.time() > float(expires_at)))
+    return {
+        "active": bool(active and not expired),
+        "expired": expired,
+        "reason": str(snap.get("reason", "") or ""),
+        "filename": str(snap.get("filename", "") or ""),
+        "started_at": snap.get("started_at"),
+        "expires_at": snap.get("expires_at"),
+        "last_message": str(snap.get("last_message", "") or ""),
+    }
+
+
+def _is_ray5_comm_busy() -> bool:
+    return bool(_ray5_comm_busy_snapshot().get("active", False))
+
+
+def _verify_uploaded_file_present_after_timeout(
+    upload_filename: str,
+    sd_path: str = "/",
+    expected_size: int | None = None,
+    retries: int = 8,
+    delay_seconds: float = 3.0,
+) -> tuple[bool, dict[str, Any]]:
+    target_name = str(upload_filename or "").strip().lstrip("/").lower()
+    target_path = (str(sd_path or "/").strip() or "/").rstrip("/") or "/"
+    for attempt in range(1, max(1, int(retries)) + 1):
+        listing = _ray5_list_files_locked(path=target_path)
+        if bool(listing.get("ok")):
+            for item in (listing.get("files") or []):
+                item_name = str(item.get("name") or "").strip().lstrip("/").lower()
+                if item_name != target_name:
+                    continue
+                size_bytes = item.get("size_bytes")
+                if expected_size is not None and isinstance(size_bytes, int) and size_bytes > 0 and int(size_bytes) != int(expected_size):
+                    console.add(
+                        "warn",
+                        f"Upload verify found '{upload_filename}' on SD with size mismatch "
+                        f"(expected={expected_size} actual={size_bytes}); continuing with filename match.",
+                    )
+                return True, {"attempt": attempt, "listing": listing}
+        else:
+            console.add("warn", f"Ray5 HTTP unavailable during post-upload verification; retrying ({attempt}/{retries})")
+        if attempt < retries:
+            time.sleep(max(0.5, float(delay_seconds)))
+    return False, {"attempt": retries, "listing": {}}
+
+
 def _set_system_check_flag(key: str, value: bool | None) -> None:
     with app_state_lock:
         system_check_state[key] = value
@@ -874,7 +977,7 @@ def _update_comm_safety_state(status_source: str, online: bool, state_base: str)
         comm_lost = bool(ray5_comm_safety_state.get("comm_lost_during_job", False))
         last_known = str(ray5_comm_safety_state.get("last_known_machine_state", "") or "")
         active_or_recent = _is_machine_active_state(last_known) or _is_recent_job_activity(now)
-        comm_unavailable = source in {"offline", "fallback_offline", "synthetic"} or not bool(online)
+        comm_unavailable = (source in {"offline", "fallback_offline", "synthetic"} or not bool(online)) and (not _is_ray5_comm_busy())
         if (not comm_lost) and comm_unavailable and active_or_recent:
             ray5_comm_safety_state["comm_lost_during_job"] = True
             ray5_comm_safety_state["message"] = (
@@ -917,6 +1020,9 @@ def _run_system_check_probe() -> None:
                     ray5_comm_safety_state["last_skip_log_at"] = now
                     console.add("warn", "System-check SD probe skipped due to communication-loss safety lockout.")
             return
+        if _is_ray5_comm_busy():
+            console.add("info", "System-check SD probe skipped while Ray5 upload-busy state is active.")
+            return
 
         # Lightweight HTTP reachability probe.
         http_ok = bool(ray5.connectivity().get("connected"))
@@ -926,7 +1032,7 @@ def _run_system_check_probe() -> None:
 
         # Reuse existing SD listing method to update SD health without touching UI state.
         req_path = str(active_cfg.get("ray5", {}).get("sd_path", "/") or "/")
-        sd_res = ray5.list_files(path=req_path)
+        sd_res = _ray5_list_files_locked(path=req_path)
         _set_system_check_flag("sd_card_list_working", bool(sd_res.get("ok")))
         if sd_res.get("ok"):
             _set_system_check_flag("ray5_http_reachable", True)
@@ -1742,6 +1848,11 @@ def api_status() -> Any:
         and (monitor_age is not None)
         and (float(monitor_age) <= live_status_stale_seconds)
     )
+    busy_snap = _ray5_comm_busy_snapshot()
+    if bool(busy_snap.get("expired", False)):
+        console.add("warn", "Upload busy grace expired; Ray5 still unreachable")
+        _clear_ray5_comm_busy(reason="grace_expired")
+        busy_snap = _ray5_comm_busy_snapshot()
     if not _is_ray5_host_configured():
         state = "Offline"
         source = "offline"
@@ -1774,6 +1885,22 @@ def api_status() -> Any:
         ws_page_id = monitor_status.get("websocket_page_id")
         last_error = None
         alarm_message = monitor_status.get("alarm_message")
+    elif busy_snap.get("active", False):
+        source = "upload_busy"
+        state = "Busy / Uploading"
+        mpos = monitor_status.get("machine_position", {}) or {} if monitor_status else {}
+        wpos = monitor_status.get("work_position", {}) or {} if monitor_status else {}
+        wco = monitor_status.get("work_offset", {}) or {} if monitor_status else {}
+        wco_available = bool(monitor_status.get("wco_available", False)) if monitor_status else False
+        wpos_calculated = bool(monitor_status.get("wpos_calculated", False)) if monitor_status else False
+        feed = monitor_status.get("feed") if monitor_status else None
+        spindle = monitor_status.get("spindle") if monitor_status else None
+        raw_status = monitor_status.get("raw_status", "") if monitor_status else ""
+        ws_connected = bool(monitor_status.get("websocket_connected", False)) if monitor_status else False
+        ws_page_id = monitor_status.get("websocket_page_id") if monitor_status else None
+        last_error = monitor_status.get("last_error") if monitor_status else None
+        alarm_message = monitor_status.get("alarm_message") if monitor_status else None
+        online = True
     elif monitor_status:
         source = "fallback_offline"
         state = "Offline"
@@ -1827,6 +1954,8 @@ def api_status() -> Any:
     state_key = state_base.lower()
     if source in {"offline", "fallback_offline"}:
         job_status = "Unknown"
+    elif source == "upload_busy":
+        job_status = "Busy"
     elif state_key == "run":
         job_status = "Running"
     elif state_key == "hold":
@@ -1876,16 +2005,24 @@ def api_status() -> Any:
 
     if source != _last_logged_status_source:
         console.add("info", f"Status source changed: {source}")
+        if source == "upload_busy":
+            console.add("info", "Suppressing live-status stale fallback while Ray5 is upload-busy")
         _last_logged_status_source = source
     if not online:
         err = str(last_error or "Ray5 live status unavailable")
         if ws_connected and _is_ray5_host_configured():
             if not _status_error_logged:
                 age_txt = f"{last_update_age_seconds:.1f}s" if isinstance(last_update_age_seconds, (int, float)) else "unknown"
-                console.add(
-                    "warn",
-                    f"Status stale: no fresh live packet for {age_txt}; falling back offline after {live_status_stale_seconds:.0f}s timeout.",
-                )
+                if source == "upload_busy":
+                    console.add(
+                        "info",
+                        f"Status stale during upload-busy window ({age_txt}); suppressing fallback_offline.",
+                    )
+                else:
+                    console.add(
+                        "warn",
+                        f"Status stale: no fresh live packet for {age_txt}; falling back offline after {live_status_stale_seconds:.0f}s timeout.",
+                    )
                 _status_error_logged = True
         else:
             if not _status_error_logged:
@@ -1945,12 +2082,20 @@ def api_status() -> Any:
             "raw": raw_status,
             "raw_status": raw_status,
             "status_source": source,
-            "position_source": "live_websocket" if source == "live_websocket" else ("cache" if source == "cache" else ("synthetic" if source == "synthetic" else "unknown")),
+            "position_source": (
+                "upload_busy"
+                if source == "upload_busy"
+                else ("live_websocket" if source == "live_websocket" else ("cache" if source == "cache" else ("synthetic" if source == "synthetic" else "unknown")))
+            ),
             "state_base": state_base,
             "display_state": display_state,
             "alarm_status": alarm_status,
             "job_status": job_status,
-            "connection_status": "Online" if (online and source == "live_websocket") else "Offline",
+            "connection_status": (
+                "Busy / Uploading"
+                if source == "upload_busy"
+                else ("Online" if (online and source == "live_websocket") else "Offline")
+            ),
             "coordinate_source_label": coordinate_source,
             "last_update_ts": last_update_ts,
             "last_update_age_seconds": last_update_age_seconds,
@@ -2833,7 +2978,11 @@ def api_jobs_upload() -> Any:
         console.add("warn", f"G-code safety scan warning: {filename} detected=unknown allowed_by_config=true")
     else:
         console.add("info", f"G-code safety scan passed: {filename} detected={safety.get('detected_type')}")
-    detail = ray5.upload_file_detailed(p)
+    _set_ray5_comm_busy(reason="uploading_to_sd", filename=filename, seconds=55.0, message="Uploading to SD")
+    try:
+        detail = ray5.upload_file_detailed(p)
+    finally:
+        _clear_ray5_comm_busy(reason="upload_complete")
     if detail.get("filename_shortened"):
         console.add(
             "info",
@@ -2909,6 +3058,7 @@ def api_jobs_start() -> Any:
     else:
         console.add("info", f"G-code safety scan passed: {filename} detected={safety.get('detected_type')}")
     console.add("info", f"Start request: {filename}")
+    _set_ray5_comm_busy(reason="uploading_to_sd", filename=filename, seconds=55.0, message="Upload+Run uploading to SD")
     upload_detail = ray5.upload_file_detailed(local_path)
     if upload_detail.get("filename_shortened"):
         console.add(
@@ -2924,17 +3074,79 @@ def api_jobs_start() -> Any:
     )
     if upload_detail.get("rewrite_used"):
         console.add("warn", "Upload rewrite enabled; uploaded file may differ from source.")
-    if not upload_ok:
-        console.add("error", f"Start blocked: upload failed for {filename}")
-        return jsonify({"ok": False, "error": "Upload failed before start", "upload": upload_detail}), 400
     machine_filename = str(upload_detail.get("upload_filename") or filename)
+    upload_path = str((upload_detail.get("params") or {}).get("path") or cfg.get("ray5", {}).get("upload_path", "/") or "/")
+    if not upload_ok:
+        console.add(
+            "warn",
+            "Upload response failed/timed out; verifying whether file exists on SD before blocking start",
+        )
+        _set_ray5_comm_busy(reason="post_upload_verify", filename=machine_filename, seconds=45.0, message="Verifying upload on SD")
+        verify_ok, verify_meta = _verify_uploaded_file_present_after_timeout(
+            upload_filename=machine_filename,
+            sd_path=upload_path,
+            expected_size=int(upload_detail.get("payload_size") or 0) or None,
+            retries=8,
+            delay_seconds=3.0,
+        )
+        if verify_ok:
+            upload_ok = True
+            upload_detail["ok"] = True
+            upload_detail["verified_after_timeout"] = True
+            upload_detail["verify_attempt"] = int(verify_meta.get("attempt", 0) or 0)
+            upload_detail["message"] = "Upload verified on SD after timeout."
+            console.add("warn", "Upload verified on SD after timeout; continuing with run")
+        else:
+            console.add("error", "Upload could not be verified on SD after retries; start blocked")
+            _clear_ray5_comm_busy(reason="upload_verify_failed")
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Upload failed or could not be verified on SD.",
+                        "message": "Upload failed or could not be verified on SD.",
+                        "upload": upload_detail | {"verified_after_timeout": False},
+                    }
+                ),
+                400,
+            )
+    _set_ray5_comm_busy(reason="starting_after_upload", filename=machine_filename, seconds=25.0, message="Waiting for Ray5 reconnect before start")
+    if not _wait_for_ray5_http_reachable(max_wait_seconds=20.0, interval_seconds=2.0):
+        console.add("warn", "Ray5 HTTP still unavailable after verified upload; start blocked")
+        _clear_ray5_comm_busy(reason="start_reconnect_timeout")
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Upload verified, but Ray5 did not reconnect in time to start.",
+                    "message": "Upload verified, but Ray5 did not reconnect in time to start.",
+                    "upload": upload_detail,
+                    "run_filename": machine_filename,
+                }
+            ),
+            503,
+        )
+    if bool(upload_detail.get("verified_after_timeout")):
+        console.add("info", "Upload verified after reconnect; starting job.")
     ok, resp = ray5.start_file(machine_filename)
+    _clear_ray5_comm_busy(reason="start_command_sent")
     console.add("info", f"Start result {filename}: {'ok' if ok else 'fail'} {str(resp)[:120]}")
     timelapse_arm = None
     if ok:
         _record_job_activity(source="imported_start", name=filename)
         timelapse_arm = _timelapse_arm(job_name=filename, job_source="imported")
-    return jsonify({"ok": ok, "response": resp, "upload_ok": upload_ok, "upload": upload_detail, "run_filename": machine_filename, "timelapse_arm": timelapse_arm})
+    run_message = "Upload verified after reconnect; starting job." if bool(upload_detail.get("verified_after_timeout")) else ""
+    return jsonify(
+        {
+            "ok": ok,
+            "response": resp,
+            "upload_ok": upload_ok,
+            "upload": upload_detail,
+            "run_filename": machine_filename,
+            "timelapse_arm": timelapse_arm,
+            "message": run_message,
+        }
+    )
 
 
 @app.delete("/api/jobs/<path:filename>")
@@ -3344,7 +3556,7 @@ def api_files() -> Any:
         return guard
     req_path = str(request.args.get("path", cfg.get("ray5", {}).get("sd_path", "/")) or "/")
     console.add("info", f"SD refresh requested path={req_path}")
-    data = ray5.list_files(path=req_path)
+    data = _ray5_list_files_locked(path=req_path)
     if not data.get("ok"):
         _set_system_check_flag("ray5_http_reachable", False)
         _set_system_check_flag("sd_card_list_working", False)
@@ -3377,7 +3589,7 @@ def api_files_start() -> Any:
     req_path = str(body.get("path", cfg.get("ray5", {}).get("sd_path", "/")) or "/")
     if not filename:
         return jsonify({"ok": False, "message": "filename is required"}), 400
-    listing = ray5.list_files(path=req_path)
+    listing = _ray5_list_files_locked(path=req_path)
     if not listing.get("ok"):
         return jsonify({"ok": False, "message": "Unable to validate file from SD listing", "raw": listing.get("error", "")}), 400
     selected = next((f for f in listing.get("files", []) if str(f.get("name")) == filename), None)
@@ -3431,7 +3643,11 @@ def api_files_upload() -> Any:
     else:
         console.add("info", f"G-code safety scan passed: {filename} detected={safety.get('detected_type')}")
     console.add("info", f"SD direct upload start: {filename} size={len(data)} path={req_path}")
-    result = ray5.upload_bytes_to_sd(filename=filename, data=data, path=req_path)
+    _set_ray5_comm_busy(reason="uploading_to_sd", filename=filename, seconds=55.0, message="SD direct upload writing")
+    try:
+        result = ray5.upload_bytes_to_sd(filename=filename, data=data, path=req_path)
+    finally:
+        _clear_ray5_comm_busy(reason="sd_upload_complete")
     if result.get("filename_shortened"):
         console.add(
             "info",
@@ -3462,7 +3678,7 @@ def api_files_delete() -> Any:
     req_path = str(body.get("path", cfg.get("ray5", {}).get("sd_path", "/")) or "/")
     if not filename:
         return jsonify({"ok": False, "message": "filename is required"}), 400
-    listing = ray5.list_files(path=req_path)
+    listing = _ray5_list_files_locked(path=req_path)
     if not listing.get("ok"):
         return jsonify({"ok": False, "message": "Unable to validate file from SD listing", "raw": listing.get("error", "")}), 400
     selected = next((f for f in listing.get("files", []) if str(f.get("name")) == filename), None)
@@ -3510,7 +3726,7 @@ def api_sd_files_delete() -> Any:
     if not requested:
         return jsonify({"ok": False, "message": "files or filenames must be a non-empty list"}), 400
 
-    listing = ray5.list_files(path=req_path)
+    listing = _ray5_list_files_locked(path=req_path)
     if not listing.get("ok"):
         return jsonify({"ok": False, "message": "Unable to validate files from SD listing", "raw": listing.get("error", "")}), 400
 
@@ -3596,7 +3812,7 @@ def api_files_refresh() -> Any:
 
 @app.get("/api/debug/ray5")
 def api_debug_ray5() -> Any:
-    probe = ray5.list_files()
+    probe = _ray5_list_files_locked()
     dbg = ray5.debug_info(str(cfg_mgr.config_path))
     online = bool(ray5.connectivity().get("connected"))
     return jsonify(

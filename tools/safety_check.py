@@ -484,6 +484,59 @@ def check_updater_parser_hardening(r: Result) -> None:
         r.ok("Updater/parser hardening checks")
 
 
+def check_upload_run_hardening(r: Result) -> None:
+    app_path = ROOT / "app.py"
+    client_path = ROOT / "ray5_client.py"
+    monitor_path = ROOT / "ray5_status_monitor.py"
+    js_path = ROOT / "web/static/app.js"
+
+    app_markers = [
+        ("post-upload verify helper", "_verify_uploaded_file_present_after_timeout"),
+        ("http recovery wait helper", "_wait_for_ray5_http_reachable"),
+        ("serialized SD list helper", "_ray5_list_files_locked"),
+        ("verified-after-timeout flag", "verified_after_timeout"),
+        ("upload timeout verify log", "Upload response failed/timed out; verifying whether file exists on SD before blocking start"),
+        ("upload verified log", "Upload verified on SD after timeout; continuing with run"),
+        ("upload could-not-verify log", "Upload could not be verified on SD after retries; start blocked"),
+        ("upload-busy status source", "upload_busy"),
+        ("upload-busy stale suppression log", "Suppressing live-status stale fallback while Ray5 is upload-busy"),
+        ("upload-busy clear helper", "_clear_ray5_comm_busy"),
+        ("sd upload busy reason marker", "SD direct upload writing"),
+        ("fallback_offline preserved", "fallback_offline"),
+        ("status stale log preserved", "Status stale: no fresh live packet"),
+        ("sd_list_lock preserved", "sd_list_lock"),
+    ]
+    client_markers = [
+        ("upload timeout setting", "upload_timeout_seconds"),
+        ("upload payload-size timeout logic", "payload_size"),
+        ("upload timeout used on upload call", "timeout=upload_timeout_seconds"),
+    ]
+    js_markers = [
+        ("local upload busy helper", "function setLocalUploadBusyStatus"),
+        ("Upload+Run progress message", "Upload+Run in progress..."),
+        ("Upload progress message", "Upload in progress..."),
+        ("Upload+Run backend message/error handling", "r.message || r.error"),
+        ("imported Upload uses local busy helper", "setLocalUploadBusyStatus('uploading_to_sd', name"),
+        ("SD upload uses local busy helper", "setLocalUploadBusyStatus('uploading_to_sd', file.name"),
+    ]
+
+    missing = []
+    missing += [f"app.py: {x}" for x in _check_markers(app_path, app_markers)]
+    missing += [f"ray5_client.py: {x}" for x in _check_markers(client_path, client_markers)]
+    missing += [f"web/static/app.js: {x}" for x in _check_markers(js_path, js_markers)]
+
+    monitor_txt = _read_text(monitor_path)
+    if "fallback_offline" not in monitor_txt and "fallback_offline" not in _read_text(app_path):
+        missing.append("ray5_status_monitor.py/app.py: missing fallback_offline handling indicator")
+
+    if missing:
+        r.fail("Upload+Run hardening checks")
+        for m in missing:
+            print(f"  - missing indicator: {m}")
+    else:
+        r.ok("Upload+Run hardening checks")
+
+
 def check_requirements_ranges(r: Result) -> None:
     txt = _read_text(ROOT / "requirements.txt").lower()
     checks = ["flask>=", "requests>=", "opencv-python>=", "numpy>=", "pillow>=", "websocket-client>="]
@@ -555,6 +608,7 @@ def main() -> int:
     check_firmware_rename(r)
     check_safety_feature_presence(r)
     check_updater_parser_hardening(r)
+    check_upload_run_hardening(r)
     check_requirements_ranges(r)
     check_launcher(r)
     check_git_status(r, args.require_clean)

@@ -613,6 +613,12 @@ class Ray5Client:
                 payload = payload.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
         payload_size = len(payload)
         payload_sha = hashlib.sha256(payload).hexdigest()
+        upload_timeout_seconds = max(
+            20.0,
+            float(up_cfg.get("upload_timeout_seconds", 45.0)),
+            float(self._timeout()),
+            15.0 + (float(payload_size) / (512.0 * 1024.0)),
+        )
         sanitize_filename = bool(up_cfg.get("sanitize_filename", False))
         upload_name = self._build_upload_filename(path.name, force_extension=force_extension, sanitize=sanitize_filename)
         auto_shorten = bool(up_cfg.get("auto_shorten_long_filenames", False))
@@ -639,7 +645,7 @@ class Ray5Client:
                 params=params,
                 data=data,
                 files=files,
-                timeout=max(20.0, self._timeout()),
+                timeout=upload_timeout_seconds,
                 stream=True,
             )
             text = resp.text if isinstance(resp.text, str) else ""
@@ -756,6 +762,12 @@ class Ray5Client:
         if ext not in {".gc", ".nc", ".gcode"}:
             return {"ok": False, "message": f"extension {ext!r} not allowed", "raw": ""}
         payload = bytes(data or b"")
+        upload_timeout_seconds = max(
+            20.0,
+            float(up_cfg.get("upload_timeout_seconds", 45.0)),
+            float(self._timeout()),
+            15.0 + (float(len(payload)) / (512.0 * 1024.0)),
+        )
         params = {"path": upload_path}
         form = {"path": upload_path, "size": str(len(payload))}
         files = {"file": (upload_name, payload, "application/octet-stream")}
@@ -765,7 +777,7 @@ class Ray5Client:
                 params=params,
                 data=form,
                 files=files,
-                timeout=max(20.0, self._timeout()),
+                timeout=upload_timeout_seconds,
                 stream=True,
             )
             text = resp.text if isinstance(resp.text, str) else ""

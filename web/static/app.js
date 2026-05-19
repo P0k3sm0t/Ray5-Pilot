@@ -71,6 +71,31 @@ const selectedTimelapseFiles = new Set();
 let currentTimelapseItems = [];
 let timelapseRuntimeState = null;
 let lastTimelapseCompletionRefreshKey = '';
+let localUploadBusyState = {active:false, reason:'', filename:'', startedAt:0, expiresAt:0};
+
+function setLocalUploadBusyStatus(reason='uploading_to_sd', filename='', seconds=45){
+  const now = Date.now();
+  localUploadBusyState = {
+    active: true,
+    reason: String(reason || 'uploading_to_sd'),
+    filename: String(filename || ''),
+    startedAt: now,
+    expiresAt: now + Math.max(5000, Number(seconds || 45) * 1000),
+  };
+}
+
+function clearLocalUploadBusyStatus(){
+  localUploadBusyState = {active:false, reason:'', filename:'', startedAt:0, expiresAt:0};
+}
+
+function isLocalUploadBusyActive(){
+  if(!localUploadBusyState.active) return false;
+  if(Date.now() >= Number(localUploadBusyState.expiresAt || 0)){
+    clearLocalUploadBusyStatus();
+    return false;
+  }
+  return true;
+}
 
 function setVideoCardMessage(message='', kind='muted'){
   const el = document.getElementById('camera-test-status');
@@ -133,17 +158,20 @@ async function refreshStatus(){
   const wpos = d.work_position || {};
   const wco = d.work_offset || {};
   const srcRaw = String(d.status_source || '').trim().toLowerCase();
-  const isOfflineFallback = srcRaw === 'offline' || srcRaw === 'fallback_offline' || srcRaw === 'synthetic' || !d.online;
-  const stateText = d.display_state || d.state_base || d.machine_state_label || d.state || 'Unknown';
+  const localUploadBusyActive = isLocalUploadBusyActive();
+  const effectiveSource = srcRaw === 'upload_busy' ? 'upload_busy' : (localUploadBusyActive ? 'upload_busy' : srcRaw);
+  if(srcRaw === 'upload_busy') clearLocalUploadBusyStatus();
+  const isOfflineFallback = effectiveSource === 'offline' || effectiveSource === 'fallback_offline' || effectiveSource === 'synthetic' || (!d.online && !localUploadBusyActive);
+  const stateText = effectiveSource === 'upload_busy' ? 'Uploading' : (d.display_state || d.state_base || d.machine_state_label || d.state || 'Unknown');
   latestMachineStateForSd = stateText;
   const pageId = (d.websocket_page_id===null || d.websocket_page_id===undefined || d.websocket_page_id==='') ? '—' : String(d.websocket_page_id);
   const feedText = isOfflineFallback ? '0' : ((d.feed===null || d.feed===undefined) ? '—' : fmtNum(d.feed, 0));
   const laserText = isOfflineFallback ? '0' : ((d.spindle===null || d.spindle===undefined) ? '—' : fmtNum(d.spindle, 0));
   const alarmText = d.alarm_status || ((String(d.state_base||d.state||'').toLowerCase()==='alarm') ? 'Active' : (d.online ? 'Clear' : 'Unknown'));
   const jobText = d.job_status || 'Unknown';
-  const sourceText = isOfflineFallback ? 'fallback_offline' : (d.status_source || 'unknown');
+  const sourceText = isOfflineFallback ? 'fallback_offline' : (effectiveSource || d.status_source || 'unknown');
   const coordSourceText = isOfflineFallback ? '—' : (d.coordinate_source_label || '—');
-  const connectionText = isOfflineFallback ? 'Offline' : (d.connection_status || ((d.online && sourceText === 'live_websocket') ? 'Online' : 'Offline'));
+  const connectionText = effectiveSource === 'upload_busy' ? 'Busy / Uploading' : (isOfflineFallback ? 'Offline' : (d.connection_status || ((d.online && sourceText === 'live_websocket') ? 'Online' : 'Offline')));
   const lastUpdateText = isOfflineFallback ? '—' : statusAgeText(d.last_update_age_seconds);
   const appVersionText = String(d.app_version || 'unknown');
   const us = (d && d.update_status) ? d.update_status : {};
@@ -176,10 +204,10 @@ async function refreshStatus(){
       loadSdFiles({preserveMessage:true, auto:true}).catch(()=>{});
     }
   }
-  const nowBusyForSd = isMachineBusyForSdRefresh(latestMachineStateForSd) || commSafetyLockout;
+  const nowBusyForSd = isMachineBusyForSdRefresh(latestMachineStateForSd) || commSafetyLockout || effectiveSource === 'upload_busy';
   if(sdWasBusyForAutoRefresh && !nowBusyForSd){
     setTimeout(()=>{
-      if(!isMachineBusyForSdRefresh(latestMachineStateForSd)){
+      if(!isMachineBusyForSdRefresh(latestMachineStateForSd) && !isLocalUploadBusyActive()){
         loadSdFiles({preserveMessage:true, auto:true}).catch(()=>{});
       }
     }, 3000);
@@ -371,10 +399,32 @@ async function refreshJobs(opts={}){
         frameBtn.disabled = false;
       }
     });
-    const uploadBtn=btn('Upload',()=>api('/api/jobs/upload','POST',{filename:name}).then((r)=>{msg.textContent=r.ok?'Upload complete':'Upload failed'; refreshConsole(); loadSdFiles();} ));
+    const uploadBtn=btn('Upload',()=>{
+      setLocalUploadBusyStatus('uploading_to_sd', name, 55);
+      msg.textContent = 'Upload in progress...';
+      api('/api/jobs/upload','POST',{filename:name}).then((r)=>{
+        msg.textContent = r.ok ? (r.message || 'Upload complete') : ((r.message || r.error) ? String(r.message || r.error) : 'Upload failed');
+        clearLocalUploadBusyStatus();
+        refreshConsole(); loadSdFiles();
+      }).catch(()=>{
+        clearLocalUploadBusyStatus();
+      });
+    });
     const runBtn=btn('Upload + Run',()=>{
       if(manualCfg.confirm_dangerous_actions && !confirm('Upload and run '+(j.name||j.filename)+' ?')) return;
-      api('/api/jobs/start','POST',{filename:name}).then((r)=>{msg.textContent=r.ok?'Start command sent':'Start failed'; refreshConsole(); refreshStatus(); loadSdFiles();});
+      setLocalUploadBusyStatus('uploading_to_sd', name, 65);
+      msg.textContent = 'Upload+Run in progress...';
+      api('/api/jobs/start','POST',{filename:name}).then((r)=>{
+        if(r.ok){
+          msg.textContent = r.message || 'Start command sent';
+        }else{
+          msg.textContent = (r.message || r.error) ? String(r.message || r.error) : 'Start failed';
+        }
+        clearLocalUploadBusyStatus();
+        refreshConsole(); refreshStatus(); loadSdFiles();
+      }).catch(()=>{
+        clearLocalUploadBusyStatus();
+      });
     });
     const delBtn=btn('Delete',async()=>{if(!confirm('Delete local imported job '+name+' ?')) return; const res = await fetch('/api/jobs/'+encodeURIComponent(name),{method:'DELETE'}); let data={ok:false}; try{data=await res.json();}catch(_e){} msg.textContent = data.ok ? (`Deleted imported file: ${name}`) : (`Delete failed: ${data.error||'unknown'}`); await refreshJobs({preserveMessage:true}); await refreshConsole();});
     frameBtn.classList.add('btn-sm');
@@ -1036,6 +1086,15 @@ async function loadSdFiles(opts={}){
     }
     return;
   }
+  if(auto && isLocalUploadBusyActive()){
+    const msgEl = document.getElementById('sdMsg');
+    const now = Date.now();
+    if(msgEl && (now - sdAutoRefreshPausedNoticeAt) >= 10000){
+      msgEl.textContent = 'SD auto-refresh paused while Ray5 is busy writing upload to SD.';
+      sdAutoRefreshPausedNoticeAt = now;
+    }
+    return;
+  }
   const preserveMessage = !!(opts && opts.preserveMessage);
   sdAutoRefreshInProgress = true;
   const msgEl = document.getElementById('sdMsg');
@@ -1655,6 +1714,7 @@ function bind(){
     }
     btnEl.disabled = true;
     msgEl.textContent = 'Uploading...';
+    setLocalUploadBusyStatus('uploading_to_sd', file.name || '', 55);
     try{
       const fd = new FormData();
       fd.append('file', file);
@@ -1672,6 +1732,7 @@ function bind(){
     }catch(err){
       msgEl.textContent = `Upload failed: ${String(err)}`;
     }finally{
+      clearLocalUploadBusyStatus();
       btnEl.disabled = false;
     }
   };
