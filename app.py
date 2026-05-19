@@ -3299,10 +3299,16 @@ def api_unlock() -> Any:
     console.add("info", "Unlock / Clear Alarm requested")
     result = ray5.clear_alarm()
     steps = result.get("steps", {}) if isinstance(result.get("steps"), dict) else {}
+    reset = steps.get("CTRL_X", {}) if isinstance(steps.get("CTRL_X"), dict) else {}
     m5 = steps.get("M5", {}) if isinstance(steps.get("M5"), dict) else {}
     x = steps.get("$X", {}) if isinstance(steps.get("$X"), dict) else {}
+    status_q = steps.get("?", {}) if isinstance(steps.get("?"), dict) else {}
+    console.add("warn", f"Command Ctrl-X soft reset => {'ok' if reset.get('ok') else 'fail'}")
     console.add("info", f"Command M5 => {'ok' if m5.get('ok') else 'fail'}")
     console.add("info", f"Command $X => {'ok' if x.get('ok') else 'fail'}")
+    if status_q:
+        console.add("info", f"Command ? status probe => {'ok' if status_q.get('ok') else 'fail'}")
+    console.add("info", "Soft reset + unlock sequence attempted for hard-limit clear")
     console.add("info", f"Unlock / Clear Alarm result: {'ok' if result.get('ok') else 'fail'}")
     if not result.get("ok"):
         dbg = ray5.debug_info(str(cfg_mgr.config_path))

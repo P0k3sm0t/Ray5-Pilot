@@ -416,6 +416,13 @@ def check_safety_feature_presence(r: Result) -> None:
         ("duplicate timelapse start guard", "Timelapse is already active."),
         ("status timelapse label field", "timelapse_status_label"),
     ]
+    client_markers = [
+        ("clear_alarm soft reset step", '"CTRL_X"'),
+        ("clear_alarm sends Ctrl-X", '"\\x18"'),
+        ("clear_alarm delay after reset", "time.sleep(1.0)"),
+        ("clear_alarm sends M5", 'send_gcode("M5")'),
+        ("clear_alarm sends $X", 'send_gcode("$X")'),
+    ]
     js_markers = [
         ("SD auto-refresh pause busy/lockout", "isMachineBusyForSdRefresh"),
         ("camera setup guard", "Camera is not configured. Set up camera first in Settings."),
@@ -429,6 +436,7 @@ def check_safety_feature_presence(r: Result) -> None:
     missing = []
     missing += [f"app.py: {x}" for x in _check_markers(ROOT / "app.py", app_markers)]
     missing += [f"web/static/app.js: {x}" for x in _check_markers(ROOT / "web/static/app.js", js_markers)]
+    missing += [f"ray5_client.py: {x}" for x in _check_markers(ROOT / "ray5_client.py", client_markers)]
     app_txt = _read_text(ROOT / "app.py")
     if "def _timelapse_dashboard_status_label" in app_txt:
         missing.append("app.py: duplicate timelapse dashboard label helper still present")

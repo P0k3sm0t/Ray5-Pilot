@@ -249,13 +249,26 @@ class Ray5Client:
         return self.clear_alarm()
 
     def clear_alarm(self) -> dict[str, Any]:
+        # Staged hard-limit-capable clear sequence:
+        # 1) Ctrl-X soft reset, 2) short wait, 3) M5 laser off, 4) $X unlock.
+        reset = self._request_single_command("\x18", tolerate_error_text=True)
+        time.sleep(1.0)
         m5 = self.send_gcode("M5")
         x = self.send_gcode("$X")
+        status_probe = self.trigger_live_status("0")
+        reset_msg = str(reset.get("message", "") or "").strip().lower()
+        reset_sent = bool(reset.get("ok")) or (reset_msg in {"ok", "error", "invalid command"})
+        overall_ok = bool(reset_sent and x.get("ok"))
         return {
-            "ok": bool(m5.get("ok")) and bool(x.get("ok")),
-            "message": "ok" if (m5.get("ok") and x.get("ok")) else "unlock failed",
-            "raw": {"M5": m5.get("raw", ""), "$X": x.get("raw", "")},
-            "steps": {"M5": m5, "$X": x},
+            "ok": overall_ok,
+            "message": "ok" if overall_ok else "unlock failed",
+            "raw": {
+                "CTRL_X": reset.get("raw", ""),
+                "M5": m5.get("raw", ""),
+                "$X": x.get("raw", ""),
+                "?": status_probe.get("raw", ""),
+            },
+            "steps": {"CTRL_X": reset, "M5": m5, "$X": x, "?": status_probe},
         }
 
     def move(self, axis: str, distance: float, feedrate: float) -> dict[str, Any]:
