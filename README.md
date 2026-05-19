@@ -293,24 +293,14 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
-## Ray5 Pilot v1.1.7
+## Ray5 Pilot v1.1.7.1
 
-### Highlights
+### Hotfix
 
-- Improved large-file Upload and Upload+Run behavior when the Ray5 becomes temporarily busy while writing to SD.
-- Added an upload-busy status state so expected upload/write pauses no longer appear as false offline connection loss.
-- Status card now switches to Uploading / Busy immediately when Upload, Upload+Run, or SD Upload is started.
-- Upload+Run now verifies the uploaded file on the SD card after timeout/reconnect before blocking the start.
-- Upload+Run now blocks auto-start if SD verification reports a file-size mismatch, to avoid running a possibly incomplete file.
-- Added a size-aware upload timeout for larger G-code files without changing normal request timeouts globally.
-- Serialized SD file-listing requests during upload-related operations to reduce overlapping `/files` calls.
-- Updated Upload+Run frontend messages to show in-progress and backend result messages more clearly.
-- Added Timelapse status to the Dashboard Status card.
-- Renamed the Video / Camera popout button label from **Pop Out Video** to **Open Video**.
-- Added `tools/safety_check.py` coverage for Upload+Run hardening markers.
-- Added Upload+Run hardening cleanup for unexpected exceptions so upload-busy state is always cleared.
-- Consolidated backend timelapse status labeling to one canonical function for `/api/status`.
-- Improved `*.sha256.txt` checksum parsing by preferring lines that match the expected ZIP filename before broad fallback.
+- Improved Unlock / Clear Alarm for Ray5 hard-limit alarms by using a staged Ctrl-X reset, laser-off, unlock, and status refresh sequence.
+- Keeps the existing safety behavior of sending M5 laser-off before unlock.
+- Adds/updates safety_check.py coverage for the hard-limit alarm clear sequence.
+- Keeps the release compatible with the tagged GitHub Release ZIP + SHA-256 auto-update flow.
 
 ## Ray5 Pilot v1.1.5
 ### Highlights
