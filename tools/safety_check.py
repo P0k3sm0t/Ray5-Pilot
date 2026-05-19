@@ -429,6 +429,11 @@ def check_safety_feature_presence(r: Result) -> None:
     missing = []
     missing += [f"app.py: {x}" for x in _check_markers(ROOT / "app.py", app_markers)]
     missing += [f"web/static/app.js: {x}" for x in _check_markers(ROOT / "web/static/app.js", js_markers)]
+    app_txt = _read_text(ROOT / "app.py")
+    if "def _timelapse_dashboard_status_label" in app_txt:
+        missing.append("app.py: duplicate timelapse dashboard label helper still present")
+    if 'tl_status_label = _timelapse_status_label(tl_state)' not in app_txt:
+        missing.append("app.py: /api/status not using canonical _timelapse_status_label")
     if missing:
         r.fail("Safety feature static checks")
         for m in missing:
@@ -504,10 +509,17 @@ def check_upload_run_hardening(r: Result) -> None:
         ("upload-busy status source", "upload_busy"),
         ("upload-busy stale suppression log", "Suppressing live-status stale fallback while Ray5 is upload-busy"),
         ("upload-busy clear helper", "_clear_ray5_comm_busy"),
+        ("unexpected-exception busy clear", "unexpected_exception"),
         ("sd upload busy reason marker", "SD direct upload writing"),
+        ("size mismatch warning flag", "size_mismatch_warning"),
+        ("size mismatch expected size field", "expected_size"),
+        ("size mismatch actual size field", "actual_size"),
+        ("size mismatch block message", "file size does not match"),
         ("fallback_offline preserved", "fallback_offline"),
         ("status stale log preserved", "Status stale: no fresh live packet"),
         ("sd_list_lock preserved", "sd_list_lock"),
+        ("sha256 filename-aware parser", "expected_filename"),
+        ("sha256 broad fallback comment", "Broad fallback: accept the first 64-hex token"),
     ]
     client_markers = [
         ("upload timeout setting", "upload_timeout_seconds"),

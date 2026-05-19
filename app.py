@@ -291,19 +291,38 @@ def _fetch_remote_main_version(timeout_seconds: float = 5.0) -> str:
     return _normalize_version_text(raw)
 
 
-def _extract_sha256_from_text(text: str) -> str:
+def _extract_sha256_from_text(text: str, expected_filename: str = "") -> str:
     raw = str(text or "").strip()
     if not raw:
         return ""
-    patterns = [
+    expected = str(expected_filename or "").strip().lower()
+    lines = raw.splitlines() or [raw]
+    # Prefer hashes from lines that reference the expected ZIP name when available.
+    if expected:
+        for line in lines:
+            line_l = line.lower()
+            if expected not in line_l:
+                continue
+            for pat in (
+                r"\bsha256\s*[:=]\s*([0-9a-f]{64})\b",
+                r"\b([0-9a-f]{64})\b",
+            ):
+                m = re.search(pat, line, flags=re.IGNORECASE)
+                if m:
+                    return str(m.group(1)).strip().lower()
+    patterns = (
         r"\bsha256\s*[:=]\s*([0-9a-f]{64})\b",
-        r"\bSHA256\s*[:=]\s*([0-9A-F]{64})\b",
         r"\b([0-9a-f]{64})\b",
-    ]
+    )
     for pat in patterns:
         m = re.search(pat, raw, flags=re.IGNORECASE)
         if m:
             return str(m.group(1)).strip().lower()
+    # Broad fallback: accept the first 64-hex token for single-artifact sidecar files.
+    # This keeps compatibility with minimal checksum files that contain only a hash.
+    m = re.search(r"\b([0-9a-f]{64})\b", raw, flags=re.IGNORECASE)
+    if m:
+        return str(m.group(1)).strip().lower()
     return ""
 
 
@@ -414,7 +433,7 @@ def _fetch_latest_release_update_info(timeout_seconds: float = 8.0) -> dict[str,
                 )
                 with urlrequest.urlopen(req, timeout=timeout_seconds) as resp:
                     sidecar_text = resp.read().decode("utf-8", errors="replace")
-                parsed = _extract_sha256_from_text(sidecar_text)
+                parsed = _extract_sha256_from_text(sidecar_text, expected_filename=zip_name)
                 if parsed:
                     source_zip_sha256 = parsed
                     checksum_source = "sidecar"
@@ -422,7 +441,7 @@ def _fetch_latest_release_update_info(timeout_seconds: float = 8.0) -> dict[str,
                 console.add("warn", f"Release checksum sidecar read failed: {exc}")
         if not source_zip_sha256:
             digest_raw = str(zip_asset.get("digest") or "").strip()
-            parsed = _extract_sha256_from_text(digest_raw)
+            parsed = _extract_sha256_from_text(digest_raw, expected_filename=zip_name)
             if parsed:
                 source_zip_sha256 = parsed
                 checksum_source = "github_asset_digest"
@@ -916,9 +935,22 @@ def _verify_uploaded_file_present_after_timeout(
                     console.add(
                         "warn",
                         f"Upload verify found '{upload_filename}' on SD with size mismatch "
-                        f"(expected={expected_size} actual={size_bytes}); continuing with filename match.",
+                        f"(expected={expected_size} actual={size_bytes}); blocking auto-start for safety.",
                     )
-                return True, {"attempt": attempt, "listing": listing}
+                    return True, {
+                        "attempt": attempt,
+                        "listing": listing,
+                        "size_mismatch_warning": True,
+                        "expected_size": int(expected_size),
+                        "actual_size": int(size_bytes),
+                    }
+                return True, {
+                    "attempt": attempt,
+                    "listing": listing,
+                    "size_mismatch_warning": False,
+                    "expected_size": int(expected_size) if isinstance(expected_size, int) else None,
+                    "actual_size": int(size_bytes) if isinstance(size_bytes, int) else None,
+                }
         else:
             console.add("warn", f"Ray5 HTTP unavailable during post-upload verification; retrying ({attempt}/{retries})")
         if attempt < retries:
@@ -1241,20 +1273,20 @@ def _timelapse_output_dir(config: dict[str, Any] | None = None) -> Path:
 def _timelapse_status_label(state: dict[str, Any]) -> str:
     if not bool(state.get("enabled", False)):
         return "Disabled"
+    if str(state.get("error", "")).strip():
+        return "Error"
     if bool(state.get("build_in_progress", False)):
-        return "Building"
+        return "Saving"
     if bool(state.get("stop_pending", False)):
-        return "Stopping (Queued)"
+        return "Saving"
     if bool(state.get("stopping", False)):
-        return "Stopping"
+        return "Saving"
     if bool(state.get("active", False)) and bool(state.get("paused", False)):
         return "Paused"
     if bool(state.get("active", False)):
         return "Running"
     if bool(state.get("armed", False)):
         return "Armed"
-    if str(state.get("error", "")).strip():
-        return "Error"
     return "Stopped"
 
 
@@ -1296,24 +1328,6 @@ def _timelapse_normalize_state(machine_state: str) -> str:
     if base == "sleep":
         return "Sleep"
     return raw
-
-
-def _timelapse_dashboard_status_label(state: Any) -> str:
-    if not isinstance(state, dict):
-        return "—"
-    if not bool(state.get("enabled", False)):
-        return "Disabled"
-    if str(state.get("error", "")).strip():
-        return "Error"
-    if bool(state.get("build_in_progress", False)) or bool(state.get("stop_pending", False)) or bool(state.get("stopping", False)):
-        return "Saving"
-    if bool(state.get("active", False)) and bool(state.get("paused", False)):
-        return "Paused"
-    if bool(state.get("active", False)):
-        return "Running"
-    if bool(state.get("armed", False)):
-        return "Armed"
-    return "Idle"
 
 
 def _timelapse_is_terminal_state(machine_state: str, online: bool) -> bool:
@@ -2077,7 +2091,7 @@ def api_status() -> Any:
         sd_working_current = None
     _timelapse_observe_machine_state(str(state), bool(online))
     tl_state = _timelapse_snapshot_state()
-    tl_status_label = _timelapse_dashboard_status_label(tl_state)
+    tl_status_label = _timelapse_status_label(tl_state) if isinstance(tl_state, dict) else "—"
     app_version_value = _read_local_version() or "unknown"
     update_status_cached = _snapshot_startup_update_status()
     comm_safety = _snapshot_comm_safety_state()
@@ -3079,94 +3093,127 @@ def api_jobs_start() -> Any:
         console.add("info", f"G-code safety scan passed: {filename} detected={safety.get('detected_type')}")
     console.add("info", f"Start request: {filename}")
     _set_ray5_comm_busy(reason="uploading_to_sd", filename=filename, seconds=55.0, message="Upload+Run uploading to SD")
-    upload_detail = ray5.upload_file_detailed(local_path)
-    if upload_detail.get("filename_shortened"):
+    busy_cleared = False
+    try:
+        upload_detail = ray5.upload_file_detailed(local_path)
+        if upload_detail.get("filename_shortened"):
+            console.add(
+                "info",
+                f"Ray5 upload filename shortened: original='{upload_detail.get('original_filename', filename)}' final='{upload_detail.get('upload_filename', '')}'",
+            )
+        upload_ok = bool(upload_detail.get("ok"))
         console.add(
             "info",
-            f"Ray5 upload filename shortened: original='{upload_detail.get('original_filename', filename)}' final='{upload_detail.get('upload_filename', '')}'",
+            f"Upload source size={upload_detail.get('source_size')} sha256={str(upload_detail.get('source_sha256',''))[:12]} "
+            f"payload_size={upload_detail.get('payload_size')} payload_sha256={str(upload_detail.get('payload_sha256',''))[:12]} "
+            f"preserve_original={str(upload_detail.get('preserve_original')).lower()} rewrite_used={str(upload_detail.get('rewrite_used')).lower()}",
         )
-    upload_ok = bool(upload_detail.get("ok"))
-    console.add(
-        "info",
-        f"Upload source size={upload_detail.get('source_size')} sha256={str(upload_detail.get('source_sha256',''))[:12]} "
-        f"payload_size={upload_detail.get('payload_size')} payload_sha256={str(upload_detail.get('payload_sha256',''))[:12]} "
-        f"preserve_original={str(upload_detail.get('preserve_original')).lower()} rewrite_used={str(upload_detail.get('rewrite_used')).lower()}",
-    )
-    if upload_detail.get("rewrite_used"):
-        console.add("warn", "Upload rewrite enabled; uploaded file may differ from source.")
-    machine_filename = str(upload_detail.get("upload_filename") or filename)
-    upload_path = str((upload_detail.get("params") or {}).get("path") or cfg.get("ray5", {}).get("upload_path", "/") or "/")
-    if not upload_ok:
-        console.add(
-            "warn",
-            "Upload response failed/timed out; verifying whether file exists on SD before blocking start",
-        )
-        _set_ray5_comm_busy(reason="post_upload_verify", filename=machine_filename, seconds=45.0, message="Verifying upload on SD")
-        verify_ok, verify_meta = _verify_uploaded_file_present_after_timeout(
-            upload_filename=machine_filename,
-            sd_path=upload_path,
-            expected_size=int(upload_detail.get("payload_size") or 0) or None,
-            retries=8,
-            delay_seconds=3.0,
-        )
-        if verify_ok:
-            upload_ok = True
-            upload_detail["ok"] = True
-            upload_detail["verified_after_timeout"] = True
-            upload_detail["verify_attempt"] = int(verify_meta.get("attempt", 0) or 0)
-            upload_detail["message"] = "Upload verified on SD after timeout."
-            console.add("warn", "Upload verified on SD after timeout; continuing with run")
-        else:
-            console.add("error", "Upload could not be verified on SD after retries; start blocked")
-            _clear_ray5_comm_busy(reason="upload_verify_failed")
+        if upload_detail.get("rewrite_used"):
+            console.add("warn", "Upload rewrite enabled; uploaded file may differ from source.")
+        machine_filename = str(upload_detail.get("upload_filename") or filename)
+        upload_path = str((upload_detail.get("params") or {}).get("path") or cfg.get("ray5", {}).get("upload_path", "/") or "/")
+        if not upload_ok:
+            console.add(
+                "warn",
+                "Upload response failed/timed out; verifying whether file exists on SD before blocking start",
+            )
+            _set_ray5_comm_busy(reason="post_upload_verify", filename=machine_filename, seconds=45.0, message="Verifying upload on SD")
+            verify_ok, verify_meta = _verify_uploaded_file_present_after_timeout(
+                upload_filename=machine_filename,
+                sd_path=upload_path,
+                expected_size=int(upload_detail.get("payload_size") or 0) or None,
+                retries=8,
+                delay_seconds=3.0,
+            )
+            if verify_ok:
+                size_mismatch_warning = bool(verify_meta.get("size_mismatch_warning", False))
+                upload_ok = True
+                upload_detail["ok"] = True
+                upload_detail["verified_after_timeout"] = True
+                upload_detail["verify_attempt"] = int(verify_meta.get("attempt", 0) or 0)
+                upload_detail["size_mismatch_warning"] = size_mismatch_warning
+                upload_detail["expected_size"] = verify_meta.get("expected_size")
+                upload_detail["actual_size"] = verify_meta.get("actual_size")
+                if size_mismatch_warning:
+                    msg = "Upload verified on SD, but file size does not match. Start blocked to avoid running a possibly incomplete file."
+                    upload_detail["message"] = msg
+                    console.add("error", msg)
+                    _clear_ray5_comm_busy(reason="upload_verify_size_mismatch")
+                    busy_cleared = True
+                    return (
+                        jsonify(
+                            {
+                                "ok": False,
+                                "error": msg,
+                                "message": msg,
+                                "upload": upload_detail,
+                                "run_filename": machine_filename,
+                            }
+                        ),
+                        409,
+                    )
+                upload_detail["message"] = "Upload verified on SD after timeout."
+                console.add("warn", "Upload verified on SD after timeout; continuing with run")
+            else:
+                console.add("error", "Upload could not be verified on SD after retries; start blocked")
+                _clear_ray5_comm_busy(reason="upload_verify_failed")
+                busy_cleared = True
+                return (
+                    jsonify(
+                        {
+                            "ok": False,
+                            "error": "Upload failed or could not be verified on SD.",
+                            "message": "Upload failed or could not be verified on SD.",
+                            "upload": upload_detail | {"verified_after_timeout": False},
+                        }
+                    ),
+                    400,
+                )
+        _set_ray5_comm_busy(reason="starting_after_upload", filename=machine_filename, seconds=25.0, message="Waiting for Ray5 reconnect before start")
+        if not _wait_for_ray5_http_reachable(max_wait_seconds=20.0, interval_seconds=2.0):
+            console.add("warn", "Ray5 HTTP still unavailable after verified upload; start blocked")
+            _clear_ray5_comm_busy(reason="start_reconnect_timeout")
+            busy_cleared = True
             return (
                 jsonify(
                     {
                         "ok": False,
-                        "error": "Upload failed or could not be verified on SD.",
-                        "message": "Upload failed or could not be verified on SD.",
-                        "upload": upload_detail | {"verified_after_timeout": False},
+                        "error": "Upload verified, but Ray5 did not reconnect in time to start.",
+                        "message": "Upload verified, but Ray5 did not reconnect in time to start.",
+                        "upload": upload_detail,
+                        "run_filename": machine_filename,
                     }
                 ),
-                400,
+                503,
             )
-    _set_ray5_comm_busy(reason="starting_after_upload", filename=machine_filename, seconds=25.0, message="Waiting for Ray5 reconnect before start")
-    if not _wait_for_ray5_http_reachable(max_wait_seconds=20.0, interval_seconds=2.0):
-        console.add("warn", "Ray5 HTTP still unavailable after verified upload; start blocked")
-        _clear_ray5_comm_busy(reason="start_reconnect_timeout")
-        return (
-            jsonify(
-                {
-                    "ok": False,
-                    "error": "Upload verified, but Ray5 did not reconnect in time to start.",
-                    "message": "Upload verified, but Ray5 did not reconnect in time to start.",
-                    "upload": upload_detail,
-                    "run_filename": machine_filename,
-                }
-            ),
-            503,
+        if bool(upload_detail.get("verified_after_timeout")):
+            console.add("info", "Upload verified after reconnect; starting job.")
+        ok, resp = ray5.start_file(machine_filename)
+        _clear_ray5_comm_busy(reason="start_command_sent")
+        busy_cleared = True
+        console.add("info", f"Start result {filename}: {'ok' if ok else 'fail'} {str(resp)[:120]}")
+        timelapse_arm = None
+        if ok:
+            _record_job_activity(source="imported_start", name=filename)
+            timelapse_arm = _timelapse_arm(job_name=filename, job_source="imported")
+        run_message = "Upload verified after reconnect; starting job." if bool(upload_detail.get("verified_after_timeout")) else ""
+        return jsonify(
+            {
+                "ok": ok,
+                "response": resp,
+                "upload_ok": upload_ok,
+                "upload": upload_detail,
+                "run_filename": machine_filename,
+                "timelapse_arm": timelapse_arm,
+                "message": run_message,
+            }
         )
-    if bool(upload_detail.get("verified_after_timeout")):
-        console.add("info", "Upload verified after reconnect; starting job.")
-    ok, resp = ray5.start_file(machine_filename)
-    _clear_ray5_comm_busy(reason="start_command_sent")
-    console.add("info", f"Start result {filename}: {'ok' if ok else 'fail'} {str(resp)[:120]}")
-    timelapse_arm = None
-    if ok:
-        _record_job_activity(source="imported_start", name=filename)
-        timelapse_arm = _timelapse_arm(job_name=filename, job_source="imported")
-    run_message = "Upload verified after reconnect; starting job." if bool(upload_detail.get("verified_after_timeout")) else ""
-    return jsonify(
-        {
-            "ok": ok,
-            "response": resp,
-            "upload_ok": upload_ok,
-            "upload": upload_detail,
-            "run_filename": machine_filename,
-            "timelapse_arm": timelapse_arm,
-            "message": run_message,
-        }
-    )
+    except Exception as exc:
+        console.add("error", f"Upload+Run failed unexpectedly: {exc}")
+        return jsonify({"ok": False, "error": "Upload+Run failed unexpectedly.", "message": str(exc)}), 500
+    finally:
+        if not busy_cleared:
+            _clear_ray5_comm_busy(reason="unexpected_exception")
 
 
 @app.delete("/api/jobs/<path:filename>")

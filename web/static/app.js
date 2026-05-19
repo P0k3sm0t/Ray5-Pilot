@@ -153,7 +153,7 @@ function updateConsoleJumpButton(){
 
 function normalizeTimelapseStatusLabel(statusResp){
   const direct = String((statusResp && statusResp.timelapse_status_label) || '').trim();
-  if(direct) return direct;
+  if(direct) return direct === 'Stopped' ? 'Idle' : direct;
   const ts = (statusResp && statusResp.timelapse_state) ? statusResp.timelapse_state : null;
   if(!ts || typeof ts !== 'object') return '—';
   if(ts.enabled === false) return 'Disabled';
@@ -1387,7 +1387,7 @@ function bind(){
         'width=960,height=720,resizable=yes,scrollbars=no'
       );
       if(!popout){
-        setCameraTestStatus('Popup blocked. Allow popups to use Pop Out Video.', 'warn', 10000);
+        setCameraTestStatus('Popup blocked. Allow popups to use Open Video.', 'warn', 10000);
         return;
       }
       cameraPopoutWindow = popout;
