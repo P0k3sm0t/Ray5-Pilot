@@ -214,3 +214,7 @@ input[type='checkbox']{width:auto}
 @media (max-width:700px){
   .brand-logo-main{height:52px;max-width:75vw}
 }
+
+.timelapse-sessions-wrap{margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12)}
+.timelapse-session-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:6px 0}
+.timelapse-session-actions{display:flex;gap:6px;flex-wrap:wrap}

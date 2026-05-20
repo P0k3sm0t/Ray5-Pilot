@@ -44,6 +44,8 @@ function load(cfg){
   setChecked('cam_proxy_enabled', (cam.proxy_enabled!==false), true);
   setVal('cam_proxy_path', cam.proxy_path||'/camera/stream', '/camera/stream');
   setVal('cam_reconnect', cam.reconnect_seconds||5, 5);
+  const rtspTransport = String(cam.rtsp_transport || 'tcp').toLowerCase();
+  setVal('cam_rtsp_transport', (['auto', 'tcp', 'udp'].includes(rtspTransport) ? rtspTransport : 'tcp'), 'tcp');
   setVal('cam_capture_method', cam.capture_method||'ffmpeg', 'ffmpeg');
   setVal('cam_output_dir', cam.output_dir||'camera_captures', 'camera_captures');
   setVal('cam_filename_prefix', cam.filename_prefix||'ray5_bed', 'ray5_bed');
@@ -180,6 +182,7 @@ function collect(){
       proxy_path:v('cam_proxy_path').value.trim()||'/camera/stream',
       mask_credentials:true,
       reconnect_seconds:Number(v('cam_reconnect').value)||5,
+      rtsp_transport: (['auto', 'tcp', 'udp'].includes(String(v('cam_rtsp_transport').value || '').toLowerCase()) ? String(v('cam_rtsp_transport').value || '').toLowerCase() : 'tcp'),
       capture_method:v('cam_capture_method').value.trim()||'ffmpeg',
       output_dir:v('cam_output_dir').value.trim()||'camera_captures',
       filename_prefix:v('cam_filename_prefix').value.trim()||'ray5_bed',
@@ -608,6 +611,7 @@ async function init(){
     const camEnabled = v('cam_enabled').checked;
     const camStream = v('cam_stream').value.trim();
     const camSnapshot = v('cam_snapshot').value.trim();
+    const camRtspTransport = String(v('cam_rtsp_transport').value || '').toLowerCase();
     const testDur = Number(v('safe_dur').value);
     const timelapseInterval = Number(v('timelapse_interval').value);
     const timelapseFinalDelay = Number(v('timelapse_final_delay').value);
@@ -630,6 +634,7 @@ async function init(){
       if(presetY < machineMinY || presetY > machineMaxY){ v('saveOut').textContent='Save failed: preset Y is outside machine limits'; return; }
     }
     if(camEnabled && !camStream && !camSnapshot){ v('saveOut').textContent='Save failed: camera enabled requires stream or snapshot URL'; return; }
+    if(!['auto', 'tcp', 'udp'].includes(camRtspTransport)){ v('saveOut').textContent='Save failed: RTSP transport must be Auto, TCP, or UDP'; return; }
     if(testDur > hiddenDurMax){ v('saveOut').textContent='Save failed: test fire duration exceeds max duration'; return; }
     if(testS > hiddenSMax){ v('saveOut').textContent='Save failed: test fire S value exceeds max S value'; return; }
     if(!(timelapseInterval >= 1)){ v('saveOut').textContent='Save failed: timelapse interval must be >= 1 second'; return; }

@@ -252,6 +252,7 @@ class Ray5Client:
         # Staged hard-limit-capable clear sequence:
         # 1) Ctrl-X soft reset, 2) short wait, 3) M5 laser off, 4) $X unlock.
         reset = self._request_single_command("\x18", tolerate_error_text=True)
+        # After Ctrl-X, GRBL needs a brief settle window before it reliably accepts M5/$X.
         time.sleep(1.0)
         m5 = self.send_gcode("M5")
         x = self.send_gcode("$X")

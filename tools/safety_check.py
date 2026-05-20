@@ -415,6 +415,13 @@ def check_safety_feature_presence(r: Result) -> None:
         ("unique final frame target", "final frame target"),
         ("duplicate timelapse start guard", "Timelapse is already active."),
         ("status timelapse label field", "timelapse_status_label"),
+        ("sensitive token pwd", '"pwd"'),
+        ("sensitive token ssid", '"ssid"'),
+        ("sensitive token wifi", '"wifi"'),
+        ("sensitive token sta", '"sta"'),
+        ("sensitive token ap_", '"ap_"'),
+        ("timelapse duplicate log map", "timelapse_duplicate_log_at"),
+        ("timelapse duplicate log pop cleanup", 'timelapse_duplicate_log_at.pop(str(session_id or "none"), None)'),
     ]
     client_markers = [
         ("clear_alarm soft reset step", '"CTRL_X"'),
@@ -473,6 +480,8 @@ def check_updater_parser_hardening(r: Result) -> None:
         ("expected-sha256 argument", "--expected-sha256"),
         ("missing checksum refusal", "Missing expected SHA-256"),
         ("mismatched checksum refusal", "checksum mismatch"),
+        ("parent wait timeout constant", "PARENT_EXIT_WAIT_TIMEOUT_SECONDS"),
+        ("parent wait timeout warning", "still running after"),
     ]
     parser_markers = [
         ("G92 handling", "g92_set"),
@@ -560,6 +569,170 @@ def check_upload_run_hardening(r: Result) -> None:
         r.ok("Upload+Run hardening checks")
 
 
+def check_rtsp_transport_hardening(r: Result) -> None:
+    config_markers = [
+        ("default config rtsp_transport key", '"rtsp_transport": "tcp"'),
+        ("config validation rtsp_transport", "camera.rtsp_transport must be 'tcp', 'udp', or 'auto'"),
+    ]
+    example_markers = [
+        ("config.example rtsp_transport key", '"rtsp_transport"'),
+    ]
+    manager_markers = [
+        ("rtsp transport helper", "def rtsp_transport"),
+        ("rtsp transport ffmpeg arg", "-rtsp_transport"),
+        ("rtsp url check", 'startswith("rtsp://")'),
+        ("opencv capture options helper", "def _opencv_ffmpeg_capture_options"),
+        ("opencv ffmpeg env var", "OPENCV_FFMPEG_CAPTURE_OPTIONS"),
+        ("live stream generator transport arg", "def mjpeg_generator("),
+        ("live stream transport logging", "RTSP live stream transport"),
+        ("live stream transport capture open", "_open_video_capture_with_rtsp_transport"),
+    ]
+    setup_template_markers = [
+        ("settings label", "RTSP transport"),
+        ("settings option auto", '<option value="auto">Auto</option>'),
+        ("settings option tcp", '<option value="tcp">TCP</option>'),
+        ("settings option udp", '<option value="udp">UDP</option>'),
+    ]
+    setup_js_markers = [
+        ("settings load", "cam_rtsp_transport"),
+        ("settings save", "rtsp_transport:"),
+        ("settings validation", "RTSP transport must be Auto, TCP, or UDP"),
+    ]
+
+    missing = []
+    missing += [f"config_manager.py: {x}" for x in _check_markers(ROOT / "config_manager.py", config_markers)]
+    missing += [f"config.example.json: {x}" for x in _check_markers(ROOT / "config.example.json", example_markers)]
+    missing += [f"camera_manager.py: {x}" for x in _check_markers(ROOT / "camera_manager.py", manager_markers)]
+    missing += [f"app.py: {x}" for x in _check_markers(ROOT / "app.py", [("mjpeg_generator receives rtsp_transport", "rtsp_transport=str(cam.get(\"rtsp_transport\", \"tcp\") or \"tcp\")")])]
+    missing += [f"web/templates/setup.html: {x}" for x in _check_markers(ROOT / "web/templates/setup.html", setup_template_markers)]
+    missing += [f"web/static/setup.js: {x}" for x in _check_markers(ROOT / "web/static/setup.js", setup_js_markers)]
+
+    if missing:
+        r.fail("RTSP transport hardening checks")
+        for m in missing:
+            print(f"  - missing indicator: {m}")
+    else:
+        r.ok("RTSP transport hardening checks")
+
+
+def check_firmware_settings_background_collection(r: Result) -> None:
+    app_markers = [
+        ("machine settings collect state lock", "firmware_settings_collect_lock"),
+        ("machine settings collect state", "firmware_settings_collect_state"),
+        ("collect worker", "def _firmware_settings_collect_worker"),
+        ("collect start helper", "def _start_firmware_settings_collect"),
+        ("collect start endpoint", '"/api/machine-settings/collect"'),
+        ("collect status endpoint", '"/api/machine-settings/collect/status"'),
+        ("collect thread", 'name="firmware-settings-collect"'),
+    ]
+    js_markers = [
+        ("start collect endpoint call", 'api("/api/machine-settings/collect", "POST")'),
+        ("status poll endpoint call", 'api("/api/machine-settings/collect/status")'),
+        ("reading message", "Reading firmware settings..."),
+        ("poll timeout guard", "COLLECT_POLL_TIMEOUT_MS"),
+    ]
+    missing = []
+    missing += [f"app.py: {x}" for x in _check_markers(ROOT / "app.py", app_markers)]
+    missing += [f"web/static/machine_settings.js: {x}" for x in _check_markers(ROOT / "web/static/machine_settings.js", js_markers)]
+    if missing:
+        r.fail("Firmware Settings background collection checks")
+        for m in missing:
+            print(f"  - missing indicator: {m}")
+    else:
+        r.ok("Firmware Settings background collection checks")
+
+
+def check_watch_state_locking(r: Result) -> None:
+    app_markers = [
+        ("watch state lock", "watch_state_lock"),
+        ("watch state dict", "_watch_state: dict[str, Any]"),
+        ("watch state snapshot helper", "def _watch_state_snapshot"),
+        ("watch state update helper", "def _update_watch_state"),
+        ("watch loop uses update helper", "_update_watch_state("),
+        ("status debug uses watch snapshot", "watch_state = _watch_state_snapshot()"),
+    ]
+    missing = [f"app.py: {x}" for x in _check_markers(ROOT / "app.py", app_markers)]
+    if missing:
+        r.fail("Watch state locking checks")
+        for m in missing:
+            print(f"  - missing indicator: {m}")
+    else:
+        r.ok("Watch state locking checks")
+
+
+def check_gcode_pause_bounds_handling(r: Result) -> None:
+    markers = [
+        ("parse_bounds path present", "def parse_bounds_path"),
+        ("M-command parse token", 're.search(r"\\bM0*([0-9]+)\\b"'),
+        ("M0/M1 exact numeric barrier", "m_num in {0, 1}"),
+        ("pause warning marker", "program_pause"),
+        ("pause clears laser mode", "laser_off_mode = True"),
+        ("pause keeps current point", "_include_point(min_x, min_y, max_x, max_y, x, y)"),
+        ("pause barrier comment", "program pause/optional-stop barriers"),
+    ]
+    missing = [f"job_manager.py: {x}" for x in _check_markers(ROOT / "job_manager.py", markers)]
+    if missing:
+        r.fail("G-code pause/bounds checks")
+        for m in missing:
+            print(f"  - missing indicator: {m}")
+    else:
+        r.ok("G-code pause/bounds checks")
+
+
+def check_timelapse_recovery_safeguards(r: Result) -> None:
+    app_markers = [
+        ("session validation helper", "def _timelapse_safe_session_name"),
+        ("recoverable scan helper", "def _scan_timelapse_sessions"),
+        ("recover endpoint", '"/api/timelapses/recover"'),
+        ("delete-session endpoint", '"/api/timelapses/delete-session"'),
+        ("sessions included in listing", '"sessions": sessions'),
+        ("active session protected recover", "Cannot recover active timelapse session."),
+        ("active session protected delete", "Cannot delete active timelapse session."),
+        ("recover deletes session only after video exists", "if not output_file.exists() or output_file.stat().st_size <= 0"),
+    ]
+    js_markers = [
+        ("recoverable sessions section renderer", "renderTimelapseSessions"),
+        ("recover action", "recoverTimelapseSession"),
+        ("delete session action", "deleteTimelapseSessionFrames"),
+        ("recover endpoint call", "api('/api/timelapses/recover','POST'"),
+        ("delete-session endpoint call", "api('/api/timelapses/delete-session','POST'"),
+    ]
+    missing = []
+    missing += [f"app.py: {x}" for x in _check_markers(ROOT / "app.py", app_markers)]
+    missing += [f"web/static/app.js: {x}" for x in _check_markers(ROOT / "web/static/app.js", js_markers)]
+    if missing:
+        r.fail("Timelapse recovery checks")
+        for m in missing:
+            print(f"  - missing indicator: {m}")
+    else:
+        r.ok("Timelapse recovery checks")
+
+
+def check_import_refresh_watched_folder(r: Result) -> None:
+    app_markers = [
+        ("manual watched refresh endpoint", '"/api/jobs/refresh-watched"'),
+        ("shared watched import scan helper", "def _run_watched_import_scan"),
+        ("watched import lock", "watched_import_lock"),
+        ("watcher loop uses shared watched scan", '_run_watched_import_scan(source="watcher")'),
+        ("no new watched files message", "No new watched-folder files found."),
+    ]
+    js_markers = [
+        ("refresh button handler", "refreshImportedJobsFromWatched"),
+        ("refresh endpoint call", "fetch('/api/jobs/refresh-watched'"),
+        ("checking watched folder message", "Checking watched folder..."),
+        ("no new watched files message", "No new watched-folder files found."),
+    ]
+    missing = []
+    missing += [f"app.py: {x}" for x in _check_markers(ROOT / "app.py", app_markers)]
+    missing += [f"web/static/app.js: {x}" for x in _check_markers(ROOT / "web/static/app.js", js_markers)]
+    if missing:
+        r.fail("Imported Jobs watched refresh checks")
+        for m in missing:
+            print(f"  - missing indicator: {m}")
+    else:
+        r.ok("Imported Jobs watched refresh checks")
+
+
 def check_requirements_ranges(r: Result) -> None:
     txt = _read_text(ROOT / "requirements.txt").lower()
     checks = ["flask>=", "requests>=", "opencv-python>=", "numpy>=", "pillow>=", "websocket-client>="]
@@ -632,6 +805,12 @@ def main() -> int:
     check_safety_feature_presence(r)
     check_updater_parser_hardening(r)
     check_upload_run_hardening(r)
+    check_rtsp_transport_hardening(r)
+    check_firmware_settings_background_collection(r)
+    check_watch_state_locking(r)
+    check_gcode_pause_bounds_handling(r)
+    check_timelapse_recovery_safeguards(r)
+    check_import_refresh_watched_folder(r)
     check_requirements_ranges(r)
     check_launcher(r)
     check_git_status(r, args.require_clean)

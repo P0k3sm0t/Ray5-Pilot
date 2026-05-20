@@ -24,6 +24,9 @@ class CameraCaptureError(RuntimeError):
     pass
 
 
+_opencv_ffmpeg_env_lock = threading.Lock()
+
+
 def mask_camera_url(url: str) -> str:
     try:
         parsed = urlsplit(str(url or "").strip())
@@ -48,6 +51,35 @@ def offline_frame_jpeg(message: str = "Camera unavailable") -> bytes:
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=85)
     return out.getvalue()
+
+
+def _opencv_ffmpeg_capture_options(rtsp_transport: str, url: str) -> str | None:
+    if not str(url or "").strip().lower().startswith("rtsp://"):
+        return None
+    transport = str(rtsp_transport or "").strip().lower()
+    if transport not in {"tcp", "udp"}:
+        return None
+    return f"rtsp_transport;{transport}"
+
+
+def _open_video_capture_with_rtsp_transport(stream_url: str, rtsp_transport: str = "auto") -> cv2.VideoCapture:
+    capture_opts = _opencv_ffmpeg_capture_options(rtsp_transport, stream_url)
+    if not capture_opts:
+        return cv2.VideoCapture(stream_url)
+    with _opencv_ffmpeg_env_lock:
+        env_key = "OPENCV_FFMPEG_CAPTURE_OPTIONS"
+        previous = os.environ.get(env_key)
+        # OpenCV/FFmpeg reads this option during VideoCapture construction.
+        # Set it only for constructor scope, then restore previous process env immediately.
+        os.environ[env_key] = capture_opts
+        try:
+            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+        finally:
+            if previous is None:
+                os.environ.pop(env_key, None)
+            else:
+                os.environ[env_key] = previous
+    return cap
 
 
 class CameraManager:
@@ -94,6 +126,10 @@ class CameraManager:
 
     def capture_method(self) -> str:
         return str(self.camera.get("capture_method", "ffmpeg")).strip().lower()
+
+    def rtsp_transport(self) -> str:
+        value = str(self.camera.get("rtsp_transport", "tcp") or "tcp").strip().lower()
+        return value if value in {"tcp", "udp", "auto"} else "tcp"
 
     def capture(self, reason: str = "manual") -> Path:
         with self._capture_lock:
@@ -238,19 +274,22 @@ class CameraManager:
             ) as tmp_file:
                 tmp = Path(tmp_file.name)
 
-            cmd = [
-                ffmpeg,
-                "-y",
-                "-rtsp_transport",
-                "tcp",
-                "-i",
-                stream_url,
-                "-frames:v",
-                "1",
-                "-q:v",
-                "2",
-                str(tmp),
-            ]
+            cmd = [ffmpeg, "-y"]
+            if stream_url.strip().lower().startswith("rtsp://"):
+                transport = self.rtsp_transport()
+                if transport in {"tcp", "udp"}:
+                    cmd.extend(["-rtsp_transport", transport])
+            cmd.extend(
+                [
+                    "-i",
+                    stream_url,
+                    "-frames:v",
+                    "1",
+                    "-q:v",
+                    "2",
+                    str(tmp),
+                ]
+            )
 
             try:
                 subprocess.run(cmd, check=True, capture_output=True, timeout=self.timeout_seconds + 8)
@@ -681,12 +720,18 @@ class CameraManager:
 def mjpeg_generator(
     rtsp_url: str,
     reconnect_seconds: float = 5.0,
+    rtsp_transport: str = "auto",
     on_frame_ok: Any | None = None,
     on_frame_fail: Any | None = None,
 ) -> Iterator[bytes]:
     delay = max(1.0, float(reconnect_seconds))
+    transport = str(rtsp_transport or "auto").strip().lower()
+    if transport not in {"tcp", "udp", "auto"}:
+        transport = "auto"
+    if rtsp_url.strip().lower().startswith("rtsp://") and transport in {"tcp", "udp"}:
+        logging.getLogger("CameraManager").info("RTSP live stream transport: %s", transport)
     while True:
-        cap = cv2.VideoCapture(rtsp_url)
+        cap = _open_video_capture_with_rtsp_transport(rtsp_url, transport)
         if not cap.isOpened():
             if callable(on_frame_fail):
                 try:

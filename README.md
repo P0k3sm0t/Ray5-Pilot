@@ -293,6 +293,34 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
+## Ray5 Pilot v1.1.8
+### Highlights
+- Added configurable RTSP transport handling for camera streams with **Auto**, **TCP**, and **UDP** options.
+- Added a new **RTSP transport** setting in the Settings page Camera card.
+- Default RTSP transport is now **TCP**, which is recommended for Wi-Fi cameras to reduce corrupted H.264 frames and FFmpeg/OpenCV decode warnings.
+- FFmpeg camera capture now applies `-rtsp_transport tcp` or `-rtsp_transport udp` for RTSP camera URLs when selected.
+- Live Dashboard video and **Open Video** streaming now apply the RTSP transport setting for RTSP camera URLs through the OpenCV/FFmpeg live-stream path.
+- Auto mode leaves RTSP transport unforced and preserves the previous camera behavior.
+- HTTP/MJPEG camera URLs are unchanged and are not affected by the RTSP transport setting.
+- Snapshot and timelapse frame capture inherit the RTSP transport behavior when using the FFmpeg/RTSP camera path.
+- Moved Firmware Settings `$$` collection into a background read/poll flow so the page stays responsive while settings are collected.
+- Added locked watcher-state helpers so watched-folder status updates are handled safely across watcher/API paths.
+- Improved G-code bounds parsing around `M0` / `M1` program-pause commands so stale laser-on modal state does not carry across a pause unless the laser is explicitly re-enabled afterward.
+- Added Timelapse recovery support for leftover `session_*` frame folders when video building fails, FFmpeg is unavailable, or Ray5 Pilot exits before saving.
+- Added recoverable timelapse session detection with **Recover Video** and **Delete Frames** actions in the Timelapse card.
+- Timelapse session folders are deleted only after a recovered/built MP4 exists and has a non-zero size; failed builds preserve frames.
+- Updated Imported Jobs **Refresh** so it checks the watched folder immediately, imports any new valid files, refreshes the card, and reports when no new watched-folder files are found.
+- Expanded `tools/safety_check.py` with checks for RTSP transport hardening, Firmware Settings background collection, watcher-state locking, G-code pause/bounds handling, timelapse recovery, and Imported Jobs watched-folder refresh behavior.
+
+### Notes
+This release focuses on camera stability, background task responsiveness, watched-folder reliability, safer G-code bounds parsing, and timelapse recovery.
+
+For RTSP cameras, **TCP** is now the default transport because it is usually more reliable over Wi-Fi. If a camera does not work well with TCP, switch:
+
+```text
+Settings → Camera → RTSP transport
+```
+
 ## Ray5 Pilot v1.1.7.1
 ### Hotfix
 - Improved Unlock / Clear Alarm for Ray5 hard-limit alarms by using a staged Ctrl-X reset, laser-off, unlock, and status refresh sequence.

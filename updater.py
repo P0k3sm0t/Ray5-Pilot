@@ -42,6 +42,7 @@ ALLOWED_UPDATE_PATHS: tuple[str, ...] = (
     "web/static/favicon.svg",
     "web/static/camera_placeholder.svg",
 )
+PARENT_EXIT_WAIT_TIMEOUT_SECONDS = 30.0
 
 
 def _sha256_file(path: Path) -> str:
@@ -181,7 +182,11 @@ def _run(argv: argparse.Namespace) -> int:
         log(f"Remote version: {argv.remote_version}")
         log(f"Source URL: {source_url}")
 
-        _safe_wait_for_parent_exit(int(argv.parent_pid), timeout_seconds=20.0, log=log)
+        _safe_wait_for_parent_exit(
+            int(argv.parent_pid),
+            timeout_seconds=PARENT_EXIT_WAIT_TIMEOUT_SECONDS,
+            log=log,
+        )
 
         log(f"Downloading update ZIP to {download_zip}")
         req = urlrequest.Request(source_url, headers={"User-Agent": "Ray5-Pilot-Updater"}, method="GET")

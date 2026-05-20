@@ -69,6 +69,7 @@ const selectedImportedJobs = new Set();
 let lastImportedJobs = [];
 const selectedTimelapseFiles = new Set();
 let currentTimelapseItems = [];
+let currentTimelapseSessions = [];
 let timelapseRuntimeState = null;
 let lastTimelapseCompletionRefreshKey = '';
 let localUploadBusyState = {active:false, reason:'', filename:'', startedAt:0, expiresAt:0};
@@ -118,6 +119,66 @@ function updateVideoToggleButton(){
 function setTimelapseMessage(message){
   const msg = document.getElementById('timelapseMsg');
   if(msg) msg.textContent = String(message || '');
+}
+
+function renderTimelapseSessions(){
+  const wrap = document.getElementById('timelapseSessionsWrap');
+  const body = document.getElementById('timelapseSessionsBody');
+  if(!wrap || !body) return;
+  const sessions = Array.isArray(currentTimelapseSessions) ? currentTimelapseSessions : [];
+  const displaySessions = sessions.filter(s => String(s.status || '') !== 'active');
+  if(!displaySessions.length){
+    wrap.style.display = 'none';
+    body.innerHTML = '';
+    return;
+  }
+  wrap.style.display = '';
+  body.innerHTML = '';
+  displaySessions.forEach((sess)=>{
+    const row = document.createElement('div');
+    row.className = 'timelapse-session-row';
+    const meta = document.createElement('div');
+    meta.className = 'timelapse-session-meta';
+    meta.innerHTML = `<strong>${esc(sess.session)}</strong> · ${esc(sess.status)} · ${Number(sess.frame_count||0)} frame(s) · ${esc(shortDate(sess.last_modified))}<div class="muted small">${esc(sess.message || '')}</div>`;
+    const actions = document.createElement('div');
+    actions.className = 'timelapse-session-actions';
+    const recoverBtn = btn('Recover Video', ()=>recoverTimelapseSession(sess.session));
+    recoverBtn.classList.add('btn-sm');
+    recoverBtn.disabled = String(sess.status || '') !== 'recoverable';
+    const deleteBtn = btn('Delete Frames', ()=>deleteTimelapseSessionFrames(sess.session));
+    deleteBtn.classList.add('btn-sm','danger');
+    actions.append(recoverBtn, deleteBtn);
+    row.append(meta, actions);
+    body.append(row);
+  });
+}
+
+async function recoverTimelapseSession(session){
+  const safeSession = String(session || '').trim();
+  if(!safeSession) return;
+  if(!confirm(`Recover timelapse video from ${safeSession}?`)) return;
+  setTimelapseMessage(`Recovering ${safeSession}...`);
+  try{
+    const r = await api('/api/timelapses/recover','POST',{session:safeSession});
+    setTimelapseMessage(r.message || (r.ok ? 'Timelapse recovered.' : 'Timelapse recover failed.'));
+    await loadTimelapses({preserveMessage:true});
+  }catch(err){
+    setTimelapseMessage(`Timelapse recover failed: ${String(err)}`);
+  }
+}
+
+async function deleteTimelapseSessionFrames(session){
+  const safeSession = String(session || '').trim();
+  if(!safeSession) return;
+  if(!confirm(`Delete frames for ${safeSession}?`)) return;
+  setTimelapseMessage(`Deleting session frames for ${safeSession}...`);
+  try{
+    const r = await api('/api/timelapses/delete-session','POST',{session:safeSession});
+    setTimelapseMessage(r.message || (r.ok ? 'Session frames deleted.' : 'Session delete failed.'));
+    await loadTimelapses({preserveMessage:true});
+  }catch(err){
+    setTimelapseMessage(`Session delete failed: ${String(err)}`);
+  }
 }
 
 function isConsoleNearBottom(el){
@@ -462,6 +523,40 @@ async function refreshJobs(opts={}){
   updateImportedSelectionUi();
 }
 
+async function refreshImportedJobsFromWatched(){
+  const msg = document.getElementById('jobsMsg');
+  const refreshBtn = document.getElementById('jobsRefresh');
+  if(msg) msg.textContent = 'Checking watched folder...';
+  if(refreshBtn) refreshBtn.disabled = true;
+  let result = null;
+  try{
+    const res = await fetch('/api/jobs/refresh-watched', {method:'POST'});
+    try{
+      result = await res.json();
+    }catch(_e){
+      result = {ok:false, message:'Watched-folder refresh failed.'};
+    }
+    await refreshJobs({preserveMessage:true});
+    if(msg){
+      if(result && result.ok){
+        const imported = Number(result.imported || 0);
+        const rejected = Number(result.rejected || 0);
+        const defaultMsg = imported > 0
+          ? (imported === 1 ? 'Imported 1 watched-folder file.' : `Imported ${imported} watched-folder files.`)
+          : (rejected > 0 ? (rejected === 1 ? 'No new watched-folder files imported. Rejected 1 file.' : `No new watched-folder files imported. Rejected ${rejected} files.`) : 'No new watched-folder files found.');
+        msg.textContent = String(result.message || defaultMsg);
+      }else{
+        msg.textContent = String((result && (result.message || result.error)) || 'Watched-folder refresh failed.');
+      }
+    }
+  }catch(_e){
+    await refreshJobs({preserveMessage:true});
+    if(msg) msg.textContent = 'Watched-folder refresh failed.';
+  }finally{
+    if(refreshBtn) refreshBtn.disabled = false;
+  }
+}
+
 function updateTimelapseSelectionUi(){
   const selectedCountEl = document.getElementById('timelapseSelectedCount');
   const deleteBtn = document.getElementById('timelapseDeleteSelected');
@@ -636,11 +731,14 @@ async function loadTimelapses(opts={}){
     body.append(tr);
     if(!preserveMessage) setTimelapseMessage(`Timelapse refresh failed: ${d.message || d.error || 'unknown'}`);
     currentTimelapseItems = [];
+    currentTimelapseSessions = [];
+    renderTimelapseSessions();
     selectedTimelapseFiles.clear();
     updateTimelapseSelectionUi();
     return;
   }
   const items = Array.isArray(d.items) ? d.items : [];
+  const sessions = Array.isArray(d.sessions) ? d.sessions : [];
   const liveNames = new Set(items.map(x => normalizeName(x.name || x.filename)));
   for(const name of Array.from(selectedTimelapseFiles)){
     if(!liveNames.has(name)) selectedTimelapseFiles.delete(name);
@@ -651,6 +749,14 @@ async function loadTimelapses(opts={}){
     modified: Number(it.modified || 0),
     url: String(it.url || ''),
   })).filter(it => it.name);
+  currentTimelapseSessions = sessions.map(sess => ({
+    session: normalizeName(sess.session || ''),
+    frame_count: Number(sess.frame_count || 0),
+    status: String(sess.status || 'unknown'),
+    last_modified: Number(sess.last_modified || 0),
+    message: String(sess.message || ''),
+  })).filter(sess => sess.session);
+  renderTimelapseSessions();
   if(currentTimelapsePlaybackFile){
     const liveNamesNow = new Set(currentTimelapseItems.map(it => normalizeName(it.name)));
     if(!liveNamesNow.has(currentTimelapsePlaybackFile)){
@@ -1566,7 +1672,7 @@ function bind(){
       document.getElementById('importBtn').disabled = false;
     }
   };
-  document.getElementById('jobsRefresh').onclick=refreshJobs;
+  document.getElementById('jobsRefresh').onclick=refreshImportedJobsFromWatched;
   const timelapseRefresh = document.getElementById('timelapseRefresh');
   if(timelapseRefresh) timelapseRefresh.onclick = loadTimelapses;
   const timelapseStart = document.getElementById('timelapseStart');

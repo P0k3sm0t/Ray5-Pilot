@@ -17,6 +17,13 @@
 <label><input id="cam_proxy_enabled" type="checkbox"> Proxy enabled</label><p class="field-help">Routes camera video through Ray5 Pilot as <code>/camera/stream</code> for the dashboard.</p>
 <label>Proxy path <input id="cam_proxy_path"></label>
 <label>Reconnect seconds <input id="cam_reconnect" type="number"></label>
+<label>RTSP transport
+  <select id="cam_rtsp_transport">
+    <option value="auto">Auto</option>
+    <option value="tcp">TCP</option>
+    <option value="udp">UDP</option>
+  </select>
+</label><p class="field-help">TCP is recommended for Wi-Fi cameras because it can reduce corrupted H.264 frames. UDP may have lower latency but can show more decode errors on weak Wi-Fi.</p>
 <label>Capture method <input id="cam_capture_method"></label><p class="field-help">ffmpeg is recommended for RTSP snapshots.</p>
 <label>Output directory <input id="cam_output_dir"></label><p class="field-help">Folder where latest.jpg and latest_raw.jpg are saved.</p>
 <label>Snapshot history filename prefix <input id="cam_filename_prefix"></label>
@@ -110,7 +117,7 @@
 </div>
 <div class="card"><button id="saveCfg">Save Config</button><pre id="saveOut"></pre></div>
 </main>
-<script src="/static/setup.js?v=1.1.7.1"></script>
+<script src="/static/setup.js?v=1.1.8"></script>
 </body></html>
 
 

@@ -131,6 +131,31 @@ github_update_check_thread: threading.Thread | None = None
 GITHUB_UPDATE_CACHE_TTL_SECONDS = 1800.0
 camera_stream_clients = 0
 camera_stream_clients_lock = RLock()
+watch_state_lock = RLock()
+watched_import_lock = RLock()
+_watch_state: dict[str, Any] = {
+    "running": False,
+    "enabled": True,
+    "thread_name": "",
+    "last_poll_at": None,
+    "poll_seconds": 3.0,
+    "last_import_count": 0,
+    "last_error": "",
+    "status": "idle",
+}
+firmware_settings_collect_lock = RLock()
+firmware_settings_collect_state: dict[str, Any] = {
+    "job_id": "",
+    "running": False,
+    "started_at": None,
+    "completed_at": None,
+    "ok": None,
+    "message": "Idle",
+    "error": "",
+    "timed_out": False,
+    "raw": "",
+    "settings": [],
+}
 console.add("info", f"CONFIG PATH: {cfg_mgr.config_path}")
 console.add("info", f"CONFIG EXISTS: {cfg_mgr.config_path.exists()}")
 console.add("info", f"RAY5 HOST: {cfg.get('ray5', {}).get('host', '')}")
@@ -138,7 +163,7 @@ console.add("info", f"RAY5 PORT: {cfg.get('ray5', {}).get('port', '')}")
 console.add("info", f"RAY5 BASE URL: {ray5._base()}")
 
 
-_SENSITIVE_DEBUG_TOKENS = ("password", "pass", "key", "token", "secret", "credential", "auth")
+_SENSITIVE_DEBUG_TOKENS = ("password", "pass", "key", "token", "secret", "credential", "auth", "pwd", "ssid", "wifi", "sta", "ap_")
 GITHUB_REPO_URL = "https://github.com/P0k3sm0t/Ray5-Pilot"
 GITHUB_SOURCE_ZIP_FALLBACK_URL = "https://github.com/P0k3sm0t/Ray5-Pilot/archive/refs/heads/main.zip"
 GITHUB_MAIN_VERSION_URL = "https://raw.githubusercontent.com/P0k3sm0t/Ray5-Pilot/main/VERSION"
@@ -745,6 +770,12 @@ def reload_components() -> None:
     console.add("info", f"RAY5 BASE URL: {new_ray5._base()}")
     _warn_if_non_local_bind()
     ensure_runtime_directories(new_cfg)
+    try:
+        recoverable_count = sum(1 for s in _scan_timelapse_sessions() if str(s.get("status")) == "recoverable")
+        if recoverable_count > 0:
+            console.add("warn", f"Recoverable timelapse sessions found: {recoverable_count}")
+    except Exception:
+        pass
     _ensure_watch_thread()
 
 
@@ -768,37 +799,59 @@ def _status_fallback(live: dict[str, Any]) -> dict[str, Any]:
     return {"state": "UNKNOWN", "x": None, "y": None, "z": None, "raw": "", "source": "synthetic"}
 
 
+def _watch_state_snapshot() -> dict[str, Any]:
+    with watch_state_lock:
+        return dict(_watch_state)
+
+
+def _update_watch_state(**updates: Any) -> dict[str, Any]:
+    with watch_state_lock:
+        _watch_state.update(updates)
+        return dict(_watch_state)
+
+
 def _watch_loop() -> None:
     with app_state_lock:
         active_jobs = jobs
     console.add("info", f"Watcher started: {active_jobs.watched_dir.name} -> {active_jobs.imported_dir.name}")
+    _update_watch_state(running=True, status="running", thread_name=threading.current_thread().name, last_error="")
     while not _watch_stop.is_set():
         try:
             with app_state_lock:
                 active_cfg = cfg
-                active_jobs = jobs
             jobs_cfg = active_cfg.get("jobs", {})
+            imported_count = 0
             if bool(jobs_cfg.get("watch_enabled", True)):
-                imported = active_jobs.poll_watched_imports()
-                for item in imported:
-                    if item.get("rejected"):
-                        console.add(
-                            "error",
-                            f"G-code safety scan failed: {item.get('name','unknown')} blocked as 3D printer G-code; "
-                            f"matches={','.join(item.get('matches', []))}",
-                        )
-                        continue
-                    src = item.get("source_name", item.get("name"))
-                    dst = item.get("name")
-                    if item.get("removed_source", False):
-                        console.add("info", f"Imported watched job: source={src} dest={dst}; removed source")
-                    else:
-                        console.add("info", f"Imported watched job: source={src} dest={dst}")
+                watched_result = _run_watched_import_scan(source="watcher")
+                if watched_result.get("ok"):
+                    imported_count = int(watched_result.get("imported", 0) or 0)
+                elif watched_result.get("busy"):
+                    imported_count = 0
+                else:
+                    raise RuntimeError(str(watched_result.get("message") or "watched-folder scan failed"))
+            enabled = bool(jobs_cfg.get("watch_enabled", True))
             poll_seconds = max(1.0, float(jobs_cfg.get("watch_poll_seconds", 3)))
+            _update_watch_state(
+                running=True,
+                enabled=enabled,
+                status="running" if enabled else "disabled",
+                last_poll_at=time.time(),
+                poll_seconds=poll_seconds,
+                last_import_count=imported_count,
+                last_error="",
+            )
         except Exception as exc:
             console.add("error", f"Watch poller error: {exc}")
             poll_seconds = 3.0
+            _update_watch_state(
+                running=True,
+                status="error",
+                last_poll_at=time.time(),
+                poll_seconds=poll_seconds,
+                last_error=str(exc),
+            )
         _watch_stop.wait(poll_seconds)
+    _update_watch_state(running=False, status="stopped", thread_name="", last_poll_at=time.time())
 
 
 def _ensure_watch_thread() -> None:
@@ -810,11 +863,13 @@ def _ensure_watch_thread() -> None:
         return
     if active_jobs.watched_dir.resolve() == active_jobs.imported_dir.resolve():
         console.add("error", "Watcher disabled: watched_gcode_dir and imported_jobs_dir are the same folder")
+        _update_watch_state(running=False, enabled=False, status="disabled_conflict", last_error="watched and imported folders are identical")
         return
     _watch_stop.clear()
     new_thread = threading.Thread(target=_watch_loop, daemon=True, name="watched-folder-poller")
     with app_state_lock:
         _watch_thread = new_thread
+    _update_watch_state(running=False, status="starting", thread_name=new_thread.name, last_error="")
     new_thread.start()
 
 
@@ -825,16 +880,83 @@ def _stop_watch_thread() -> None:
     if thread is None:
         return
     _watch_stop.set()
+    _update_watch_state(status="stopping")
     try:
         thread.join(timeout=2.0)
     except Exception:
         pass
     if thread.is_alive():
         console.add("warn", "Watcher stop timeout: previous watched-folder thread still alive; keeping stop event set.")
+        _update_watch_state(running=True, status="stop_timeout")
         return
     with app_state_lock:
         _watch_thread = None
     _watch_stop.clear()
+    _update_watch_state(running=False, status="stopped", thread_name="")
+
+
+def _run_watched_import_scan(source: str = "manual") -> dict[str, Any]:
+    with app_state_lock:
+        active_cfg = cfg
+        active_jobs = jobs
+    if active_jobs.imported_dir.resolve() == active_jobs.watched_dir.resolve():
+        return {
+            "ok": False,
+            "imported": 0,
+            "rejected": 0,
+            "skipped": 0,
+            "busy": False,
+            "message": "Watched and imported folders are identical.",
+            "items": [],
+        }
+    if not watched_import_lock.acquire(blocking=False):
+        return {
+            "ok": False,
+            "imported": 0,
+            "rejected": 0,
+            "skipped": 0,
+            "busy": True,
+            "message": "Watched-folder scan already running.",
+            "items": [],
+        }
+    try:
+        imported = active_jobs.poll_watched_imports()
+    finally:
+        watched_import_lock.release()
+    imported_count = 0
+    rejected_count = 0
+    for item in imported:
+        if item.get("rejected"):
+            rejected_count += 1
+            console.add(
+                "error",
+                f"G-code safety scan failed: {item.get('name','unknown')} blocked as 3D printer G-code; "
+                f"matches={','.join(item.get('matches', []))}",
+            )
+            continue
+        imported_count += 1
+        src = item.get("source_name", item.get("name"))
+        dst = item.get("name")
+        if item.get("removed_source", False):
+            console.add("info", f"Imported watched job: source={src} dest={dst}; removed source")
+        else:
+            console.add("info", f"Imported watched job: source={src} dest={dst}")
+    if imported_count > 0:
+        msg = f"Imported {imported_count} watched-folder file." if imported_count == 1 else f"Imported {imported_count} watched-folder files."
+    elif rejected_count > 0:
+        msg = f"No new watched-folder files imported. Rejected {rejected_count} file." if rejected_count == 1 else f"No new watched-folder files imported. Rejected {rejected_count} files."
+    else:
+        msg = "No new watched-folder files found."
+    return {
+        "ok": True,
+        "busy": False,
+        "source": source,
+        "imported": imported_count,
+        "rejected": rejected_count,
+        "skipped": 0,
+        "message": msg,
+        "items": imported,
+    }
 
 
 def _warn_if_non_local_bind() -> None:
@@ -1188,6 +1310,12 @@ def start_runtime() -> None:
     with app_state_lock:
         active_cfg = cfg
     ensure_runtime_directories(active_cfg)
+    try:
+        recoverable_count = sum(1 for s in _scan_timelapse_sessions() if str(s.get("status")) == "recoverable")
+        if recoverable_count > 0:
+            console.add("warn", f"Recoverable timelapse sessions found: {recoverable_count}")
+    except Exception:
+        pass
     _start_startup_update_check()
     _ensure_watch_thread()
     if active_monitor is not None:
@@ -1271,6 +1399,8 @@ def _timelapse_output_dir(config: dict[str, Any] | None = None) -> Path:
 
 
 def _timelapse_status_label(state: dict[str, Any]) -> str:
+    # Canonical server-side inactive label is "Stopped".
+    # Dashboard display may normalize "Stopped" -> "Idle" for readability.
     if not bool(state.get("enabled", False)):
         return "Disabled"
     if str(state.get("error", "")).strip():
@@ -1368,6 +1498,66 @@ def _timelapse_session_id_from_video_name(filename: str) -> str:
     name = str(filename or "").strip()
     m = re.search(r"_(\d{8}_\d{6})\.[A-Za-z0-9]+$", name)
     return m.group(1) if m else ""
+
+
+def _timelapse_safe_session_name(session_name: str) -> str:
+    name = str(session_name or "").strip()
+    if not re.fullmatch(r"session_\d{8}_\d{6}", name):
+        return ""
+    return name
+
+
+def _scan_timelapse_sessions() -> list[dict[str, Any]]:
+    out_dir = _timelapse_output_dir()
+    allowed_video_exts = {".mp4", ".webm", ".mov", ".avi"}
+    active_state = _timelapse_snapshot_state()
+    active_session_id = str(active_state.get("session_id", "")).strip()
+    active_like = bool(active_state.get("active") or active_state.get("armed") or active_state.get("paused") or active_state.get("stopping") or active_state.get("stop_pending") or active_state.get("build_in_progress"))
+    known_video_session_ids: set[str] = set()
+    for p in out_dir.glob("*"):
+        if p.is_file() and p.suffix.lower() in allowed_video_exts:
+            sid = _timelapse_session_id_from_video_name(p.name)
+            if sid:
+                known_video_session_ids.add(sid)
+
+    sessions: list[dict[str, Any]] = []
+    for p in sorted(out_dir.glob("session_*"), key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True):
+        if not p.exists() or not p.is_dir():
+            continue
+        safe_name = _timelapse_safe_session_name(p.name)
+        if not safe_name:
+            continue
+        sid = safe_name.replace("session_", "", 1)
+        frames = sorted([f for f in p.glob("frame_*.jpg") if f.is_file()])
+        frame_count = len(frames)
+        last_modified = 0.0
+        try:
+            last_modified = float(max((f.stat().st_mtime for f in frames), default=p.stat().st_mtime))
+        except Exception:
+            last_modified = 0.0
+        if active_like and active_session_id and sid == active_session_id:
+            status = "active"
+            msg = "Session is currently active."
+        elif frame_count <= 0:
+            status = "empty"
+            msg = "Session folder has no frames."
+        elif sid in known_video_session_ids:
+            status = "already_built"
+            msg = "Matching video appears to exist."
+        else:
+            status = "recoverable"
+            msg = "Frames found but no built video."
+        sessions.append(
+            {
+                "session": safe_name,
+                "session_id": sid,
+                "frame_count": frame_count,
+                "last_modified": last_modified,
+                "status": status,
+                "message": msg,
+            }
+        )
+    return sessions
 
 
 def _timelapse_worker() -> None:
@@ -1780,7 +1970,7 @@ def _timelapse_stop_worker_run(reason: str, session_id: str, machine_state: str,
             timelapse_state["stop_pending"] = False
             timelapse_state["stop_pending_session_id"] = ""
             timelapse_state["status"] = _timelapse_status_label(timelapse_state)
-        timelapse_duplicate_log_at.pop(str(session_id or "none"), None)
+            timelapse_duplicate_log_at.pop(str(session_id or "none"), None)
         timelapse_stop_worker = None
 
 
@@ -2170,10 +2360,12 @@ def api_status() -> Any:
 def api_status_debug() -> Any:
     with app_state_lock:
         active_monitor = status_monitor
+    watch_state = _watch_state_snapshot()
     if active_monitor is None:
         return jsonify(
             {
                 "monitor_exists": False,
+                "watch_state": watch_state,
                 "websocket_enabled": False,
                 "websocket_connected": False,
                 "page_id": None,
@@ -2188,7 +2380,10 @@ def api_status_debug() -> Any:
                 "last_error": None,
             }
         )
-    return jsonify(active_monitor.get_debug_info())
+    info = active_monitor.get_debug_info()
+    if isinstance(info, dict):
+        info["watch_state"] = watch_state
+    return jsonify(info)
 
 
 @app.get("/api/console")
@@ -2322,12 +2517,13 @@ def _parse_machine_settings_raw(raw_text: str) -> list[dict[str, str]]:
     return rows
 
 
-def _collect_machine_settings_raw(timeout_seconds: float = 4.0, max_lines: int = 200) -> tuple[str, str]:
+def _collect_machine_settings_raw(timeout_seconds: float = 4.0, max_lines: int = 200) -> tuple[str, str, bool]:
     start_ts = time.time()
     initial_result = ray5.send_gcode("$$")
     immediate_raw = str(initial_result.get("raw", "") or "")
     lines: list[str] = []
     seen_settings = False
+    saw_ok = False
     end_at = start_ts + max(1.0, float(timeout_seconds))
     while time.time() < end_at:
         if status_monitor is not None:
@@ -2335,8 +2531,9 @@ def _collect_machine_settings_raw(timeout_seconds: float = 4.0, max_lines: int =
             if new_lines:
                 lines = new_lines[-max(1, int(max_lines)) :]
                 seen_settings = any(re.match(r"^\$(\d+)=(.+)$", str(x).strip()) for x in lines)
+                saw_ok = any(str(x).strip().lower() == "ok" for x in lines)
         # If settings already arrived and stream has signaled completion, stop early.
-        if seen_settings and any(str(x).strip().lower() == "ok" for x in lines):
+        if seen_settings and saw_ok:
             break
         time.sleep(0.1)
 
@@ -2346,7 +2543,78 @@ def _collect_machine_settings_raw(timeout_seconds: float = 4.0, max_lines: int =
     combined = "\n".join([p for p in combined_parts if str(p).strip()]).strip()
     if not combined:
         combined = immediate_raw.strip()
-    return combined, str(initial_result.get("message") or "")
+    timed_out = (time.time() >= end_at) and not seen_settings
+    return combined, str(initial_result.get("message") or ""), timed_out
+
+
+def _firmware_settings_collect_snapshot() -> dict[str, Any]:
+    with firmware_settings_collect_lock:
+        return dict(firmware_settings_collect_state)
+
+
+def _firmware_settings_collect_worker(job_id: str) -> None:
+    try:
+        raw_text, initial_message, timed_out = _collect_machine_settings_raw(timeout_seconds=4.0, max_lines=200)
+        settings = _parse_machine_settings_raw(raw_text)
+        now_ts = time.time()
+        with firmware_settings_collect_lock:
+            if firmware_settings_collect_state.get("job_id") != job_id:
+                return
+            firmware_settings_collect_state["running"] = False
+            firmware_settings_collect_state["completed_at"] = now_ts
+            firmware_settings_collect_state["raw"] = raw_text
+            firmware_settings_collect_state["settings"] = settings
+            firmware_settings_collect_state["timed_out"] = bool(timed_out)
+            if settings:
+                firmware_settings_collect_state["ok"] = True
+                firmware_settings_collect_state["error"] = ""
+                firmware_settings_collect_state["message"] = f"Loaded {len(settings)} setting(s)."
+            else:
+                detail = str(raw_text or initial_message or "No response text received.").strip()
+                firmware_settings_collect_state["ok"] = False
+                firmware_settings_collect_state["error"] = (
+                    "Timed out waiting for GRBL settings response."
+                    if timed_out
+                    else f"No GRBL settings were found in the $$ response. Device output: {detail[:3000]}"
+                )
+                firmware_settings_collect_state["message"] = str(initial_message or "Firmware settings read failed.")
+    except Exception as exc:
+        with firmware_settings_collect_lock:
+            if firmware_settings_collect_state.get("job_id") != job_id:
+                return
+            firmware_settings_collect_state["running"] = False
+            firmware_settings_collect_state["completed_at"] = time.time()
+            firmware_settings_collect_state["ok"] = False
+            firmware_settings_collect_state["error"] = f"Firmware settings read failed: {exc}"
+            firmware_settings_collect_state["message"] = "Firmware settings read failed."
+            firmware_settings_collect_state["timed_out"] = False
+            firmware_settings_collect_state["settings"] = []
+
+
+def _start_firmware_settings_collect() -> dict[str, Any]:
+    with firmware_settings_collect_lock:
+        if bool(firmware_settings_collect_state.get("running", False)):
+            return {
+                "ok": True,
+                "started": False,
+                "running": True,
+                "job_id": str(firmware_settings_collect_state.get("job_id", "")),
+                "message": "Firmware settings read already in progress.",
+            }
+        job_id = str(int(time.time() * 1000))
+        firmware_settings_collect_state["job_id"] = job_id
+        firmware_settings_collect_state["running"] = True
+        firmware_settings_collect_state["started_at"] = time.time()
+        firmware_settings_collect_state["completed_at"] = None
+        firmware_settings_collect_state["ok"] = None
+        firmware_settings_collect_state["message"] = "Firmware settings read started."
+        firmware_settings_collect_state["error"] = ""
+        firmware_settings_collect_state["timed_out"] = False
+        firmware_settings_collect_state["raw"] = ""
+        firmware_settings_collect_state["settings"] = []
+    worker = threading.Thread(target=_firmware_settings_collect_worker, args=(job_id,), name="firmware-settings-collect", daemon=True)
+    worker.start()
+    return {"ok": True, "started": True, "running": True, "job_id": job_id, "message": "Firmware settings read started."}
 
 
 def _validate_machine_setting_change(item: Any) -> tuple[bool, str, str]:
@@ -2372,19 +2640,79 @@ def api_machine_settings_get() -> Any:
     guard = _require_ray5_configured()
     if guard:
         return guard
-    raw_text, initial_message = _collect_machine_settings_raw(timeout_seconds=4.0, max_lines=200)
-    settings = _parse_machine_settings_raw(raw_text)
-    if not settings:
-        detail = str(raw_text or initial_message or "No response text received.").strip()
+    snap = _firmware_settings_collect_snapshot()
+    if snap.get("running"):
+        return jsonify(
+            {
+                "ok": True,
+                "running": True,
+                "job_id": snap.get("job_id", ""),
+                "settings": [],
+                "raw": str(snap.get("raw", "") or ""),
+                "message": str(snap.get("message", "Firmware settings read in progress.")),
+                "error": "",
+                "timed_out": False,
+            }
+        )
+    if snap.get("ok") is True and isinstance(snap.get("settings"), list):
+        return jsonify(
+            {
+                "ok": True,
+                "running": False,
+                "job_id": snap.get("job_id", ""),
+                "settings": snap.get("settings", []),
+                "raw": str(snap.get("raw", "") or ""),
+                "message": str(snap.get("message", "")),
+                "error": "",
+                "timed_out": bool(snap.get("timed_out", False)),
+            }
+        )
+    if snap.get("ok") is False:
         return jsonify(
             {
                 "ok": False,
+                "running": False,
+                "job_id": snap.get("job_id", ""),
                 "settings": [],
-                "raw": raw_text,
-                "error": f"No GRBL settings were found in the $$ response. Device output: {detail[:3000]}",
+                "raw": str(snap.get("raw", "") or ""),
+                "message": str(snap.get("message", "")),
+                "error": str(snap.get("error", "") or "Firmware settings read failed."),
+                "timed_out": bool(snap.get("timed_out", False)),
             }
         ), 502
-    return jsonify({"ok": True, "settings": settings, "raw": raw_text, "message": f"Loaded {len(settings)} setting(s)."})
+    start_res = _start_firmware_settings_collect()
+    return jsonify(start_res), 202
+
+
+@app.post("/api/machine-settings/collect")
+def api_machine_settings_collect_start() -> Any:
+    guard = _require_ray5_configured()
+    if guard:
+        return guard
+    result = _start_firmware_settings_collect()
+    return jsonify(result), (200 if not result.get("started") else 202)
+
+
+@app.get("/api/machine-settings/collect/status")
+def api_machine_settings_collect_status() -> Any:
+    guard = _require_ray5_configured()
+    if guard:
+        return guard
+    snap = _firmware_settings_collect_snapshot()
+    return jsonify(
+        {
+            "ok": True if snap.get("ok") is not False else False,
+            "running": bool(snap.get("running", False)),
+            "job_id": str(snap.get("job_id", "") or ""),
+            "started_at": snap.get("started_at"),
+            "completed_at": snap.get("completed_at"),
+            "timed_out": bool(snap.get("timed_out", False)),
+            "message": str(snap.get("message", "") or ("Firmware settings read in progress." if snap.get("running") else "Idle")),
+            "error": str(snap.get("error", "") or ""),
+            "settings": snap.get("settings", []),
+            "raw": str(snap.get("raw", "") or ""),
+        }
+    )
 
 
 @app.post("/api/machine-settings")
@@ -2481,6 +2809,7 @@ def camera_stream() -> Any:
             yield from mjpeg_generator(
                 cam["url"],
                 cam["reconnect_seconds"],
+                rtsp_transport=str(cam.get("rtsp_transport", "tcp") or "tcp"),
                 on_frame_ok=_on_stream_frame_ok,
                 on_frame_fail=_on_stream_frame_fail,
             )
@@ -2700,7 +3029,8 @@ def api_timelapses() -> Any:
                 "url": f"/api/timelapses/open/{p.name}",
             }
         )
-    return jsonify({"ok": True, "items": items})
+    sessions = _scan_timelapse_sessions()
+    return jsonify({"ok": True, "items": items, "sessions": sessions})
 
 
 @app.get("/api/timelapse/state")
@@ -2844,9 +3174,76 @@ def api_timelapses_delete() -> Any:
     return jsonify({"ok": True, "deleted": deleted, "deleted_sessions": deleted_sessions, "failed": [], "message": msg})
 
 
+@app.post("/api/timelapses/recover")
+def api_timelapses_recover() -> Any:
+    body = request.get_json(silent=True) or {}
+    session_name = _timelapse_safe_session_name(str(body.get("session", "")).strip())
+    if not session_name:
+        return jsonify({"ok": False, "message": "Invalid session name."}), 400
+    out_dir = _timelapse_output_dir().resolve()
+    session_dir = (out_dir / session_name).resolve()
+    if out_dir not in session_dir.parents or not session_dir.exists() or not session_dir.is_dir():
+        return jsonify({"ok": False, "message": "Session not found."}), 404
+    active_state = _timelapse_snapshot_state()
+    active_session_id = str(active_state.get("session_id", "")).strip()
+    active_like = bool(active_state.get("active") or active_state.get("armed") or active_state.get("paused") or active_state.get("stopping") or active_state.get("stop_pending") or active_state.get("build_in_progress"))
+    if active_like and session_name == f"session_{active_session_id}":
+        return jsonify({"ok": False, "message": "Cannot recover active timelapse session."}), 409
+    frames = sorted([f for f in session_dir.glob("frame_*.jpg") if f.is_file()])
+    if not frames:
+        return jsonify({"ok": False, "message": "Session has no frames to recover."}), 400
+    sid = session_name.replace("session_", "", 1)
+    output_file = out_dir / f"timelapse_recovered_{sid}.mp4"
+    fps = max(1.0, min(60.0, float(_timelapse_cfg().get("playback_fps", 10) or 10)))
+    ok, err = _build_timelapse_video(session_dir, output_file, fps)
+    if not ok:
+        return jsonify({"ok": False, "message": f"Recover failed: {err or 'video build failed'}"}), 502
+    if not output_file.exists() or output_file.stat().st_size <= 0:
+        return jsonify({"ok": False, "message": "Recover failed: output video was not created."}), 502
+    try:
+        shutil.rmtree(session_dir)
+    except OSError as exc:
+        return jsonify({"ok": False, "message": f"Recovered video saved, but failed to delete session frames: {exc}", "video": output_file.name}), 207
+    console.add("info", f"Recovered timelapse from session: {session_name} -> {output_file.name}")
+    return jsonify({"ok": True, "message": f"Recovered video: {output_file.name}", "video": output_file.name, "deleted_session": session_name})
+
+
+@app.post("/api/timelapses/delete-session")
+def api_timelapses_delete_session() -> Any:
+    body = request.get_json(silent=True) or {}
+    session_name = _timelapse_safe_session_name(str(body.get("session", "")).strip())
+    if not session_name:
+        return jsonify({"ok": False, "message": "Invalid session name."}), 400
+    out_dir = _timelapse_output_dir().resolve()
+    session_dir = (out_dir / session_name).resolve()
+    if out_dir not in session_dir.parents or not session_dir.exists() or not session_dir.is_dir():
+        return jsonify({"ok": False, "message": "Session not found."}), 404
+    active_state = _timelapse_snapshot_state()
+    active_session_id = str(active_state.get("session_id", "")).strip()
+    active_like = bool(active_state.get("active") or active_state.get("armed") or active_state.get("paused") or active_state.get("stopping") or active_state.get("stop_pending") or active_state.get("build_in_progress"))
+    if active_like and session_name == f"session_{active_session_id}":
+        return jsonify({"ok": False, "message": "Cannot delete active timelapse session."}), 409
+    try:
+        shutil.rmtree(session_dir)
+        console.add("info", f"Deleted timelapse session folder: {session_name}")
+        return jsonify({"ok": True, "deleted_session": session_name, "message": f"Deleted session frames: {session_name}"})
+    except OSError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 500
+
+
 @app.get("/api/jobs")
 def api_jobs() -> Any:
     return jsonify({"ok": True, "jobs": jobs.list_jobs()})
+
+
+@app.post("/api/jobs/refresh-watched")
+def api_jobs_refresh_watched() -> Any:
+    result = _run_watched_import_scan(source="manual")
+    if result.get("busy"):
+        return jsonify(result | {"jobs": jobs.list_jobs()}), 409
+    if not result.get("ok"):
+        return jsonify(result | {"jobs": jobs.list_jobs()}), 400
+    return jsonify(result | {"jobs": jobs.list_jobs()})
 
 
 @app.post("/api/jobs/import")
@@ -3767,6 +4164,7 @@ def api_files_delete() -> Any:
 
 @app.post("/api/files/delete")
 def api_files_delete_post() -> Any:
+    # Compatibility route: some clients/browser flows still POST this endpoint.
     return api_files_delete()
 
 

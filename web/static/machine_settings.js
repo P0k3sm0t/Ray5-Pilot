@@ -19,6 +19,10 @@ function esc(v) {
 
 let settingsRows = [];
 let rawBackupText = "";
+let collectPollTimer = null;
+let collectPollStartedAt = 0;
+const COLLECT_POLL_MS = 800;
+const COLLECT_POLL_TIMEOUT_MS = 90000;
 
 function setRawOutput(text) {
   const el = document.getElementById("msRaw");
@@ -41,8 +45,11 @@ function updateButtons() {
   const changed = changedRows().length > 0;
   const save = document.getElementById("msSave");
   const reset = document.getElementById("msReset");
+  const refresh = document.getElementById("msRefresh");
+  const running = !!(window.__firmwareCollectRunning);
   if (save) save.disabled = !changed;
   if (reset) reset.disabled = !changed;
+  if (refresh) refresh.disabled = running;
 }
 
 function setRowChangedState(idx, inputEl) {
@@ -83,19 +90,17 @@ function renderTable() {
   updateButtons();
 }
 
-async function loadSettings(options = {}) {
-  const opts = typeof options === "boolean" ? { showMsg: options } : (options || {});
-  const showMsg = opts.showMsg !== false;
-  const preserveMessage = opts.preserveMessage === true;
-  if (showMsg && !preserveMessage) setMsg("Loading firmware settings...", "muted");
-  const r = await api("/api/machine-settings");
-  setRawOutput(r.raw || "");
-  if (!r.ok) {
-    if (!preserveMessage) setMsg(r.error || "Failed to load firmware settings.", "error");
-    settingsRows = [];
-    renderTable();
-    return;
+function stopCollectPolling() {
+  if (collectPollTimer) {
+    clearTimeout(collectPollTimer);
+    collectPollTimer = null;
   }
+  window.__firmwareCollectRunning = false;
+  updateButtons();
+}
+
+function renderLoadedSettings(r) {
+  setRawOutput(r.raw || "");
   rawBackupText = String(r.raw || "");
   settingsRows = (r.settings || []).map((x) => ({
     ...x,
@@ -103,7 +108,61 @@ async function loadSettings(options = {}) {
     status: "",
   }));
   renderTable();
-  if (!preserveMessage) setMsg(r.message || `Loaded ${settingsRows.length} setting(s).`, "muted");
+}
+
+async function pollCollectStatus(preserveMessage = false) {
+  try {
+    const elapsed = Date.now() - collectPollStartedAt;
+    if (elapsed > COLLECT_POLL_TIMEOUT_MS) {
+      stopCollectPolling();
+      if (!preserveMessage) setMsg("Firmware settings read timed out. Please try again.", "error");
+      return;
+    }
+    const r = await api("/api/machine-settings/collect/status");
+    if (r.running) {
+      window.__firmwareCollectRunning = true;
+      updateButtons();
+      if (!preserveMessage) setMsg("Reading firmware settings...", "muted");
+      if (r.raw) setRawOutput(r.raw);
+      collectPollTimer = setTimeout(() => { pollCollectStatus(preserveMessage); }, COLLECT_POLL_MS);
+      return;
+    }
+    stopCollectPolling();
+    if (r.ok && Array.isArray(r.settings) && r.settings.length) {
+      renderLoadedSettings(r);
+      if (!preserveMessage) setMsg(r.message || `Loaded ${settingsRows.length} setting(s).`, "muted");
+      return;
+    }
+    if (r.ok && Array.isArray(r.settings) && r.settings.length === 0 && !r.error) {
+      if (!preserveMessage) setMsg(r.message || "No firmware settings found.", "error");
+      return;
+    }
+    if (!preserveMessage) setMsg(r.error || r.message || "Failed to load firmware settings.", "error");
+  } catch (_err) {
+    stopCollectPolling();
+    if (!preserveMessage) setMsg("Failed to read firmware settings status.", "error");
+  }
+}
+
+async function startCollectAndPoll(options = {}) {
+  const opts = typeof options === "boolean" ? { showMsg: options } : (options || {});
+  const showMsg = opts.showMsg !== false;
+  const preserveMessage = opts.preserveMessage === true;
+  if (showMsg && !preserveMessage) setMsg("Reading firmware settings...", "muted");
+  const startRes = await api("/api/machine-settings/collect", "POST");
+  if (!startRes.ok) {
+    if (!preserveMessage) setMsg(startRes.error || startRes.message || "Failed to start firmware settings read.", "error");
+    return;
+  }
+  window.__firmwareCollectRunning = true;
+  updateButtons();
+  collectPollStartedAt = Date.now();
+  await pollCollectStatus(preserveMessage);
+}
+
+async function loadSettings(options = {}) {
+  const opts = typeof options === "boolean" ? { showMsg: options } : (options || {});
+  await startCollectAndPoll(opts);
 }
 
 function buildBackupContent() {
@@ -161,6 +220,7 @@ async function saveChanges() {
 }
 
 function init() {
+  window.__firmwareCollectRunning = false;
   const tableBody = document.getElementById("msBody");
   if (tableBody) {
     tableBody.addEventListener("input", (ev) => {

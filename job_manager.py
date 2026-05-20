@@ -313,6 +313,18 @@ class JobManager:
                 continue
             if clean in {"M2", "M30"}:
                 break
+            m_match = re.search(r"\bM0*([0-9]+)\b", clean)
+            m_num = int(m_match.group(1)) if m_match else None
+            if m_num in {0, 1}:
+                # M0/M00/M1/M01 are program pause/optional-stop barriers.
+                # Treat them as non-motion commands that clear active laser-on modal state,
+                # so stale laser mode cannot carry through paused program flow.
+                if not laser_off_mode:
+                    min_x, min_y, max_x, max_y = self._include_point(min_x, min_y, max_x, max_y, x, y)
+                laser_off_mode = True
+                if "program_pause" not in warnings:
+                    warnings.append("program_pause")
+                continue
             g_match = re.search(r"\bG0*([0-9]+)\b", clean)
             g_num = int(g_match.group(1)) if g_match else None
             g_is_motion = g_num in {0, 1, 2, 3}

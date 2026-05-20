@@ -36,6 +36,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "proxy_path": "/camera/stream",
         "mask_credentials": True,
         "reconnect_seconds": 5,
+        "rtsp_transport": "tcp",
         "capture_method": "ffmpeg",
         "output_dir": "camera_captures",
         "filename_prefix": "ray5_bed",
@@ -281,6 +282,9 @@ class ConfigManager:
                 snap = str(camera.get("snapshot_url", "")).strip()
                 if not stream and not snap:
                     return False, "camera requires stream_url or snapshot_url when enabled"
+            rtsp_transport = str(camera.get("rtsp_transport", "tcp") or "tcp").strip().lower()
+            if rtsp_transport not in {"tcp", "udp", "auto"}:
+                return False, "camera.rtsp_transport must be 'tcp', 'udp', or 'auto'"
             timelapse = data.get("timelapse", {})
             tl_interval = int(timelapse.get("interval_seconds", 30))
             if tl_interval < 1:

@@ -27,6 +27,7 @@
                    "proxy_path":  "/camera/stream",
                    "mask_credentials":  true,
                    "reconnect_seconds":  5,
+                   "rtsp_transport":  "tcp",
                    "capture_method":  "ffmpeg",
                    "output_dir":  "camera_captures",
                    "filename_prefix":  "ray5_bed",
