@@ -310,10 +310,13 @@ Always supervise laser operation, verify all files and settings before running a
 - Added recoverable timelapse session detection with **Recover Video** and **Delete Frames** actions in the Timelapse card.
 - Timelapse session folders are deleted only after a recovered/built MP4 exists and has a non-zero size; failed builds preserve frames.
 - Updated Imported Jobs **Refresh** so it checks the watched folder immediately, imports any new valid files, refreshes the card, and reports when no new watched-folder files are found.
-- Expanded `tools/safety_check.py` with checks for RTSP transport hardening, Firmware Settings background collection, watcher-state locking, G-code pause/bounds handling, timelapse recovery, and Imported Jobs watched-folder refresh behavior.
+- Expanded debug scrubbing for ESP/Ray5/Wi-Fi-style sensitive fields such as SSID, password, Wi-Fi, station, and access-point keys.
+- Added an updater parent-process wait timeout so the updater does not wait forever if Ray5 Pilot fails to exit cleanly.
+- Expanded `tools/safety_check.py` with checks for RTSP transport hardening, Firmware Settings background collection, watcher-state locking, G-code pause/bounds handling, timelapse recovery, Imported Jobs watched-folder refresh behavior, debug-token hardening, and updater wait-timeout markers.
 
 ### Notes
-This release focuses on camera stability, background task responsiveness, watched-folder reliability, safer G-code bounds parsing, and timelapse recovery.
+
+This release focuses on camera stability, background task responsiveness, watched-folder reliability, safer G-code bounds parsing, timelapse recovery, and additional release-safety validation.
 
 For RTSP cameras, **TCP** is now the default transport because it is usually more reliable over Wi-Fi. If a camera does not work well with TCP, switch:
 
