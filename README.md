@@ -1,4 +1,4 @@
-﻿# Web UI Demo Screenshots
+# Web UI Demo Screenshots
 ### Dashboard
 
 <a href="https://github.com/user-attachments/assets/310f0630-182f-42ac-8b9e-2949695c9b33">
@@ -294,13 +294,38 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
 ## Ray5 Pilot v1.1.7.1
-
 ### Hotfix
-
 - Improved Unlock / Clear Alarm for Ray5 hard-limit alarms by using a staged Ctrl-X reset, laser-off, unlock, and status refresh sequence.
 - Keeps the existing safety behavior of sending M5 laser-off before unlock.
 - Adds/updates safety_check.py coverage for the hard-limit alarm clear sequence.
-- Keeps the release compatible with the tagged GitHub Release ZIP + SHA-256 auto-update flow.
+
+## Ray5 Pilot v1.1.7
+### Highlights
+- Improved large-file Upload and Upload+Run reliability when the Ray5 temporarily becomes busy while writing files to SD.
+- Added an upload-busy status state so expected upload/write pauses no longer appear as false offline connection loss.
+- Status card now switches to Uploading / Busy immediately when Upload, Upload+Run, or SD Upload is started.
+- Upload+Run now verifies the uploaded file on the SD card after timeout/reconnect before blocking the start.
+- Upload+Run now blocks auto-start if SD verification finds a reliable file-size mismatch, helping avoid running a possibly incomplete G-code file.
+- Added a size-aware upload timeout for larger G-code files without changing normal request timeouts globally.
+- Serialized SD file-listing requests during upload-related operations to reduce overlapping `/files` calls while the Ray5 is busy.
+- Updated Upload+Run frontend messages to show in-progress and backend result messages more clearly.
+- Added Timelapse status to the Dashboard Status card, including Disabled, Idle, Armed, Running, Paused, Saving, Error, and unavailable states.
+- Renamed the Dashboard video pop-out button from “Pop Out Video” to “Open Video” for clearer wording.
+- Consolidated backend timelapse status-label logic so the Status card and timelapse runtime use the same label source.
+- Improved upload-busy cleanup so unexpected Upload+Run exceptions clear the busy state instead of waiting for the timeout.
+- Improved release checksum parsing by preferring checksum lines that match the expected ZIP filename before falling back to broad single-hash parsing.
+- Added and expanded `tools/safety_check.py` coverage for Upload+Run hardening, upload-busy status, Timelapse status, and release/update hardening markers.
+
+## Ray5 Pilot v1.1.6
+### Highlights
+- Improved large-file Upload and Upload+Run behavior when the Ray5 becomes temporarily busy while writing to SD.
+- Added an upload-busy status state so expected upload/write pauses no longer appear as false offline connection loss.
+- Status card now switches to Uploading / Busy immediately when Upload, Upload+Run, or SD Upload is started.
+- Upload+Run now verifies the uploaded file on the SD card after timeout/reconnect before blocking the start.
+- Added a size-aware upload timeout for larger G-code files without changing normal request timeouts globally.
+- Serialized SD file-listing requests during upload-related operations to reduce overlapping `/files` calls.
+- Updated Upload+Run frontend messages to show in-progress and backend result messages more clearly.
+- Added `tools/safety_check.py` coverage for Upload+Run hardening markers.
 
 ## Ray5 Pilot v1.1.5
 ### Highlights
@@ -331,7 +356,7 @@ Always supervise laser operation, verify all files and settings before running a
 - Improved video pop-out behavior.
 - Prevented video enable/disable from restarting unrelated watcher/WebSocket/runtime services.
 - Consolidated Video / Camera messages into the correct message area.
-- Added setup guards and clean messages for Enable Video, Open Video, Calibrate Overlay, Take Snapshot, Open Latest, and Open Raw.
+- Added setup guards and clean messages for Enable Video, Pop Out Video, Calibrate Overlay, Take Snapshot, Open Latest, and Open Raw.
 - Moved timelapse stop/save/build work into a background worker.
 - Added `timelapse.final_capture_delay_seconds` with default/range handling.
 - Improved final timelapse frame reliability with capture locking, unique filenames, and retry logic.
@@ -378,7 +403,7 @@ python tools/safety_check.py
 
 ### Changed
 - Improved live camera stream lifecycle handling to prevent duplicate or stale `/camera/stream` requests.
-- Centralized Dashboard live-video start/stop behavior so stream state is managed consistently across Enable/Disable Video, Open Video, refresh, error handling, placeholder display, and timelapse playback.
+- Centralized Dashboard live-video start/stop behavior so stream state is managed consistently across Enable/Disable Video, Pop Out Video, refresh, error handling, placeholder display, and timelapse playback.
 - Dashboard video now stops cleanly when the feed is popped out, disabled, unavailable, or replaced by timelapse playback.
 - Improved `/camera/stream` cleanup visibility by wrapping the stream generator with connect/disconnect tracking.
 - Paused SD Card Files auto-refresh while the Ray5 is in active/busy states such as `Run`, `Hold`, `Jog`, or `Door`.
