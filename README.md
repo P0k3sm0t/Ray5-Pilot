@@ -11,10 +11,16 @@
   <img src="https://github.com/user-attachments/assets/c9ab85da-c22a-471f-a403-151bad736fe1" width="420" alt="Ray5 Pilot settings screenshot">
 </a>
 
-### Firmware Settings
+### GRBL Settings
 
-<a href="https://github.com/user-attachments/assets/758234ab-6f16-41f5-8d09-a1403b6bb6fb">
-  <img src="https://github.com/user-attachments/assets/758234ab-6f16-41f5-8d09-a1403b6bb6fb" width="420" alt="Ray5 Pilot firmware settings screenshot">
+<a href="https://github.com/user-attachments/assets/7feac8cb-c26b-4ad5-b767-cf576de72868">
+  <img src="https://github.com/user-attachments/assets/7feac8cb-c26b-4ad5-b767-cf576de72868" width="420" alt="Ray5 Pilot firmware settings screenshot">
+</a>
+
+### ESP32 Settings
+
+<a href="https://github.com/user-attachments/assets/1742ba9b-e8f6-490c-adab-dcc286533380">
+  <img src="https://github.com/user-attachments/assets/1742ba9b-e8f6-490c-adab-dcc286533380" width="420" alt="Ray5 Pilot firmware settings screenshot">
 </a>
 
 ### Overlay Accuracy Preview
@@ -35,43 +41,87 @@ Make sure **Output** is not selected so the reference image is not included in t
 A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-style HTTP/WebSocket interface.
 
 ## Features
-- Dashboard, Settings, and Firmware Settings web UI
+
+- Dashboard, Settings, GRBL, and ESP32 / ESP3D web UI
 - Live Ray5 status via ESP3D WebSocket port 8849
-- Back up, edit, and save firmware settings
-- System check / health status
 - X/Y live MPos/WPos display
+- System check / health status
 - Manual controls with jog pad
 - Pause, Resume, and true Stop/Abort controls
-- Communication-loss safety lockout for active or recently started jobs
-- Status card safety warning when Ray5 communication is lost during a possible active job
-- SD Card Files auto-refresh pauses during active/busy machine states
-- Background timelapse stop/save/build handling to keep status polling responsive
-- Timelapse final frame delay after normal job completion for parked-head final images
-- Improved live camera stream lifecycle handling to reduce duplicate/stale stream requests
 - Improved Pause/Resume handling for GRBL real-time commands
 - Stop Job defaults to M5 + Ctrl-X soft reset
 - Unlock / Clear Alarm using M5 + $X
 - Preset move button
+- Live Console with smart auto-scroll
+- Send commands through the web/manual console area
+
+### GRBL Settings
+
+- Read, back up, edit, and save Ray5/GRBL settings
+- GRBL page replaces the older Firmware Settings page name
+- Automatic local GRBL backup before saving setting changes
+- Manual GRBL backup download
+- GRBL backup files stored under `backups/grbl/`
+- GRBL backup retention with newest backups kept automatically
+
+### ESP32 / ESP3D Settings
+
+- ESP32 / ESP3D page for Ray5 ESP3D information and EEPROM settings
+- ESP3D info display from `[ESP800]`
+- EEPROM/settings table from `[ESP400]`
+- Edit and save ESP32 EEPROM settings through `[ESP401]`
+- Automatic local ESP32 backup before saving setting changes
+- Manual ESP32 backup download
+- ESP32 backup files stored under `backups/esp32/`
+- ESP32 WebSocket status summary with PAGEID, state, MPos, feed/spindle, and raw status
+- ESP32 command box for G-code `commandText` commands and ESP commands
+
+### Jobs, SD Card, and Imports
+
 - Watched folder for saving G-code files directly for auto-import
 - Imported Jobs workflow: import, frame, upload, upload + run, delete
 - Direct SD card upload
-- Auto-shorten long filenames when enabled
 - SD card file list, start, delete, and refresh
+- SD Card Files auto-refresh pauses during active/busy machine states
+- Auto-shorten long filenames when enabled
+- Communication-loss safety lockout for active or recently started jobs
+- Status card safety warning when Ray5 communication is lost during a possible active job
+- 3D-printer G-code rejection safety scanner
+
+### Timelapse and Camera
+
 - Timelapse with manual start and automatic job-mode start from Imported Upload + Run or SD Start
+- Background timelapse stop/save/build handling to keep status polling responsive
+- Timelapse final frame delay after normal job completion for parked-head final images
 - Camera stream proxy for RTSP or HTTP feeds
+- Improved live camera stream lifecycle handling to reduce duplicate/stale stream requests
 - Calibrated camera snapshot overlay for laser software/material alignment
 - Camera deskew/postprocess/rotation/source-offset alignment settings
 - Camera Overlay Alignment card with source X/Y offset and scaling explanations
-- Live Console with smart auto-scroll
-- Send commands through the web/manual console area
 - Enable/Disable Video button near the camera controls
 - Full-size pop-out window for live camera video
 - Disabled-video placeholder when camera preview is turned off
-- Settings page with expanded descriptions and examples
-- 3D-printer G-code rejection safety scanner
+
+### Backups and Release Packaging
+
+- Centralized backup folder structure:
+  - `backups/esp32/`
+  - `backups/grbl/`
+  - `backups/updates/`
+- Backup retention limit with configurable `max_keep_backups`
+- Release zip builder script: `tools/make_release_zip.py`
+- Release zip includes `Ray5 Pilot.exe`
+- Release zip excludes runtime folders, backups, logs, `.git`, caches, and `config.json`
+- SHA256 checksum `.txt` generated with each release zip
+
+### Tools and Support
+
 - Optional sanitized Ray5 diagnostic endpoints
 - Portable Windows BAT and EXE launcher options
+- Ray5 emulator support for offline Pilot testing
+- Settings page with expanded descriptions and examples
 - Wiki pages for setup, usage, troubleshooting, and feature help
+
 
 Firmware Settings was previously labeled Machine Settings.
 
@@ -292,6 +342,59 @@ Ray5 Pilot is provided as-is and is used at your own risk. This software control
 The author/contributors are not responsible for damage, injury, loss, failed jobs, machine misconfiguration, unsafe operation, or any other consequences resulting from the use or misuse of this software.
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
+
+## v1.1.9
+This release focuses on the new ESP32 / ESP3D tools, safer settings workflows, backup improvements, GRBL page cleanup, and release packaging.
+
+### Added
+- Added a new **ESP32 / ESP3D** page.
+- Added ESP3D information display using `[ESP800]`.
+- Added ESP32 EEPROM/settings display using `[ESP400]`.
+- Added live ESP32 websocket status display with PAGEID, machine state, MPos, feed/spindle, and raw status.
+- Added ESP32 command box support for both G-code commands and ESP commands.
+- Added editable ESP32 EEPROM settings table.
+- Added ESP32 EEPROM save support using `[ESP401]`.
+- Added automatic local backups before saving ESP32 settings.
+- Added automatic local backups before saving GRBL settings.
+- Added backup organization under one root folder:
+  - `backups/esp32/`
+  - `backups/grbl/`
+  - `backups/updates/`
+- Added backup retention with `max_keep_backups`, defaulting to the latest 15 backups per category.
+- Added a release zip builder script: `tools/make_release_zip.py`.
+- Added SHA256 checksum generation for release zips.
+- Added release packaging support for including `Ray5 Pilot.exe`.
+
+### Changed
+- Renamed **Firmware Settings** to **GRBL** throughout the user-facing UI and documentation.
+- Updated the GRBL settings page layout to better match the ESP32 page style.
+- Updated the ESP32 page to open in an editable settings layout similar to the GRBL page.
+- Cleaned up ESP32 page styling with dark-theme inputs, compact rows, improved table width, and cleaner status badges.
+- Simplified ESP32 backup controls to use a single **Download Backup** workflow.
+- ESP32 and GRBL saves now create an internal backup automatically before writing settings.
+- Release zip creation now excludes development/runtime files such as `.git`, `__pycache__`, `backups`, logs, runtime folders, and `config.json`.
+- Updated README wording from “Firmware Settings” to “GRBL” where appropriate.
+
+### Fixed
+- Fixed ESP32 ESP command transport to use `commandText=` for Ray5-compatible ESP commands.
+- Fixed ESP32 EEPROM option display so values no longer show as `[object Object]`.
+- Fixed ESP32 info parsing so raw `[ESP800]` output is parsed into useful fields.
+- Fixed backup folder handling after reorganizing backup paths.
+- Fixed ESP32 and GRBL save visibility so save results show clearer status and backup information.
+- Fixed release zip missing `Ray5 Pilot.exe`.
+- Fixed release zip missing SHA256 checksum output.
+
+### Safety Improvements
+- ESP32 and GRBL settings are backed up automatically before save operations.
+- Save operations abort if the automatic backup fails.
+- Sensitive ESP32 values such as passwords remain masked in the UI and logs.
+- Backup folders are ignored from release/source packaging.
+- Backup retention prevents backup folders from growing indefinitely.
+
+### Notes
+- The **GRBL** page was previously called **Firmware Settings**.
+- Manual **Download Backup** creates a user copy, while automatic backups are stored locally before settings are written.
+- Existing old backup folders are not deleted automatically.
 
 ## Ray5 Pilot v1.1.8
 ### Highlights
