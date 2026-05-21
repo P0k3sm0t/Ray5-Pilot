@@ -154,9 +154,34 @@ input[type='checkbox']{width:auto}
 .console-command-wrap{margin-top:10px}
 
 .machine-settings-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
-.machine-settings-table td,.machine-settings-table th{vertical-align:top}
-.machine-settings-table input.machine-setting-input{width:100%;min-width:120px}
-.machine-setting-changed{background:rgba(59,130,246,.12)}
+.machine-settings-card{width:100%;max-width:100%}
+.machine-settings-wrap{width:100%;max-width:100%;max-height:60vh;overflow:auto;border:1px solid #2b364d;border-radius:10px}
+.machine-settings-table{width:100%;min-width:980px;border-collapse:collapse;table-layout:auto}
+.machine-settings-table thead th{position:sticky;top:0;background:#141c2c;z-index:1;color:#cbd5e1}
+.machine-settings-table th,.machine-settings-table td{padding:10px 12px;border-bottom:1px solid #2b364d;vertical-align:top}
+.machine-settings-table td:nth-child(1){width:12%;white-space:nowrap}
+.machine-settings-table td:nth-child(2){width:30%}
+.machine-settings-table td:nth-child(3){width:12%;white-space:nowrap}
+.machine-settings-table td:nth-child(4){width:18%}
+.machine-settings-table td:nth-child(5){width:20%}
+.machine-settings-table td:nth-child(6){width:8%;white-space:nowrap}
+.machine-settings-table input.machine-setting-input{
+  width:100%;
+  min-width:130px;
+  height:30px;
+  padding:4px 8px;
+  background:#0f1726;
+  color:#e2e8f0;
+  border:1px solid #2b364d;
+  border-radius:6px;
+}
+.machine-settings-table input.machine-setting-input:focus{
+  outline:none;
+  border-color:#3ea6ff;
+  box-shadow:0 0 0 1px rgba(62,166,255,.4);
+}
+.machine-setting-changed td{background:rgba(183,132,46,.14)}
+.machine-setting-status{font-size:12px}
 .machine-settings-raw{margin-top:10px}
 .machine-settings-raw pre{max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word}
 .error{color:#fca5a5}

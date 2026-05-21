@@ -194,6 +194,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "raw_command_enabled": True,
         "confirm_dangerous_raw_commands": True,
     },
+    "backups": {
+        "backup_root": "backups",
+        "esp32_backup_dir": "backups/esp32",
+        "grbl_backup_dir": "backups/grbl",
+        "update_backup_dir": "backups/updates",
+        "max_keep_backups": 15,
+    },
+    "esp32_page": {
+        "esp_command_param": "auto",
+    },
     "air_assist": {"supported": True, "on_command": "M8", "off_command": "M9"},
 }
 

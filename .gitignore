@@ -1,13 +1,17 @@
-﻿config.json
+config.json
+backups/
 *.log
+logs/
 logs/*.log
 logs/*
 __pycache__/
 *.pyc
+*.pyo
 .pytest_cache/
 .venv/
 venv/
 env/
+.env
 camera_captures/
 timelapse/
 snapshots/
@@ -35,3 +39,4 @@ update_logs/
 
 # Local-only secret scan denylist (never commit real secret terms)
 tools/secret_terms.local.txt
+

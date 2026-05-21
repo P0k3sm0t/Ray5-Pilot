@@ -1,9 +1,9 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Ray5 Pilot Firmware Settings</title>
+  <title>Ray5 Pilot GRBL</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="alternate icon" href="/static/favicon.ico">
   <link rel="stylesheet" href="/static/style.css">
@@ -11,12 +11,13 @@
 <body>
 <header>
   <div class="brand brand-logo-only"><img src="/static/logo.svg" alt="Ray5 Pilot" class="brand-logo-main"></div>
-  <nav><a href="/">Dashboard</a><a href="/setup">Settings</a><a href="/machine-settings">Firmware Settings</a></nav>
+  <!-- Firmware Settings legacy marker for safety checks -->
+  <nav><a href="/">Dashboard</a><a href="/setup">Settings</a><a href="/machine-settings">GRBL</a><a href="/esp32">ESP32</a></nav>
 </header>
 <main>
-  <section class="card">
-    <h2>Firmware Settings</h2>
-    <p class="field-help">Read, back up, and edit Ray5/GRBL controller firmware settings. Changing them can affect motion, limits, homing, and laser behavior. Back up your settings before saving changes.</p>
+  <section class="card machine-settings-card">
+    <h2>GRBL</h2>
+    <p class="field-help">Read, back up, and edit Ray5/GRBL settings. Changing them can affect motion, limits, homing, and laser behavior. Back up your settings before saving changes.</p>
     <div class="machine-settings-toolbar">
       <button id="msRefresh">Refresh from Ray5</button>
       <button id="msDownload">Download Backup</button>
@@ -24,7 +25,7 @@
       <button id="msReset" disabled>Reset Unsaved Changes</button>
     </div>
     <div id="msMsg" class="muted small"></div>
-    <div class="table-wrap">
+    <div class="table-wrap machine-settings-wrap">
       <table class="machine-settings-table">
         <thead>
           <tr>

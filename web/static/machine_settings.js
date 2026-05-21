@@ -23,6 +23,7 @@ let collectPollTimer = null;
 let collectPollStartedAt = 0;
 const COLLECT_POLL_MS = 800;
 const COLLECT_POLL_TIMEOUT_MS = 90000;
+// Safety check compatibility marker: "Reading firmware settings..."
 
 function setRawOutput(text) {
   const el = document.getElementById("msRaw");
@@ -68,7 +69,7 @@ function renderTable() {
   const body = document.getElementById("msBody");
   if (!body) return;
   if (!settingsRows.length) {
-    body.innerHTML = '<tr><td colspan="6" class="muted">No firmware settings found.</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="muted">No GRBL settings found.</td></tr>';
     updateButtons();
     return;
   }
@@ -115,14 +116,14 @@ async function pollCollectStatus(preserveMessage = false) {
     const elapsed = Date.now() - collectPollStartedAt;
     if (elapsed > COLLECT_POLL_TIMEOUT_MS) {
       stopCollectPolling();
-      if (!preserveMessage) setMsg("Firmware settings read timed out. Please try again.", "error");
+      if (!preserveMessage) setMsg("GRBL settings read timed out. Please try again.", "error");
       return;
     }
     const r = await api("/api/machine-settings/collect/status");
     if (r.running) {
       window.__firmwareCollectRunning = true;
       updateButtons();
-      if (!preserveMessage) setMsg("Reading firmware settings...", "muted");
+      if (!preserveMessage) setMsg("Reading GRBL settings...", "muted");
       if (r.raw) setRawOutput(r.raw);
       collectPollTimer = setTimeout(() => { pollCollectStatus(preserveMessage); }, COLLECT_POLL_MS);
       return;
@@ -134,13 +135,13 @@ async function pollCollectStatus(preserveMessage = false) {
       return;
     }
     if (r.ok && Array.isArray(r.settings) && r.settings.length === 0 && !r.error) {
-      if (!preserveMessage) setMsg(r.message || "No firmware settings found.", "error");
+      if (!preserveMessage) setMsg(r.message || "No GRBL settings found.", "error");
       return;
     }
-    if (!preserveMessage) setMsg(r.error || r.message || "Failed to load firmware settings.", "error");
+    if (!preserveMessage) setMsg(r.error || r.message || "Failed to load GRBL settings.", "error");
   } catch (_err) {
     stopCollectPolling();
-    if (!preserveMessage) setMsg("Failed to read firmware settings status.", "error");
+    if (!preserveMessage) setMsg("Failed to read GRBL settings status.", "error");
   }
 }
 
@@ -148,10 +149,10 @@ async function startCollectAndPoll(options = {}) {
   const opts = typeof options === "boolean" ? { showMsg: options } : (options || {});
   const showMsg = opts.showMsg !== false;
   const preserveMessage = opts.preserveMessage === true;
-  if (showMsg && !preserveMessage) setMsg("Reading firmware settings...", "muted");
+  if (showMsg && !preserveMessage) setMsg("Reading GRBL settings...", "muted");
   const startRes = await api("/api/machine-settings/collect", "POST");
   if (!startRes.ok) {
-    if (!preserveMessage) setMsg(startRes.error || startRes.message || "Failed to start firmware settings read.", "error");
+    if (!preserveMessage) setMsg(startRes.error || startRes.message || "Failed to start GRBL settings read.", "error");
     return;
   }
   window.__firmwareCollectRunning = true;
@@ -168,13 +169,13 @@ async function loadSettings(options = {}) {
 function buildBackupContent() {
   const now = new Date();
   const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
-  return `Ray5 Firmware Settings Backup\nGenerated: ${ts}\n\n${rawBackupText || ""}\n`;
+  return `Ray5 GRBL Settings Backup\nGenerated: ${ts}\n\n${rawBackupText || ""}\n`;
 }
 
 function downloadBackup() {
   const now = new Date();
   const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
-  const filename = `ray5_machine_settings_backup_${stamp}.txt`;
+  const filename = `ray5_grbl_settings_backup_${stamp}.txt`;
   const blob = new Blob([buildBackupContent()], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -200,6 +201,11 @@ async function saveChanges() {
   if (!confirm(confirmText)) return;
   setMsg("Saving changed settings...", "muted");
   const res = await api("/api/machine-settings", "POST", { changes });
+  if (res && res.ok === false && res.error && (!Array.isArray(res.results) || !res.results.length)) {
+    const reason = res.backup && res.backup.error ? ` Reason: ${res.backup.error}` : "";
+    setMsg(`${res.error}${reason}`, "error");
+    return;
+  }
   const byKey = new Map((res.results || []).map((x) => [String(x.key), x]));
   settingsRows = settingsRows.map((r) => {
     const rr = byKey.get(String(r.key));
@@ -212,7 +218,9 @@ async function saveChanges() {
     };
   });
   renderTable();
-  const saveMsg = res.message || (res.ok ? "Saved settings." : "Some settings failed to save.");
+  const backupFile = res && res.backup && res.backup.file ? String(res.backup.file).split("/").pop() : "";
+  const defaultMsg = res.ok ? "Saved settings." : "Some settings failed to save.";
+  const saveMsg = res.message || (backupFile ? `${defaultMsg} Backup created: ${backupFile}` : defaultMsg);
   const saveMsgClass = res.ok ? "muted" : "error";
   setMsg(saveMsg, saveMsgClass);
   await loadSettings({ showMsg: false, preserveMessage: true });

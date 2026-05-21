@@ -216,5 +216,15 @@
     "console":  {
                     "raw_command_enabled":  true,
                     "confirm_dangerous_raw_commands":  true
+                },
+    "backups":  {
+                    "backup_root":  "backups",
+                    "esp32_backup_dir":  "backups/esp32",
+                    "grbl_backup_dir":  "backups/grbl",
+                    "update_backup_dir":  "backups/updates",
+                    "max_keep_backups":  15
+                },
+    "esp32_page":  {
+                       "esp_command_param":  "auto"
                 }
 }

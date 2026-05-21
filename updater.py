@@ -143,7 +143,23 @@ def _rotate_old_entries(root: Path, keep: int, is_candidate, log) -> None:
         return
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     for old in candidates[keep:]:
+        log(f"[BACKUP RETENTION DELETE] file={old}")
         _remove_path_safe(old, log)
+
+
+def _read_max_keep_backups(project_root: Path) -> int:
+    cfg_path = project_root / "config.json"
+    default_keep = 15
+    try:
+        if cfg_path.exists():
+            obj = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+            backups = obj.get("backups", {}) if isinstance(obj, dict) else {}
+            if isinstance(backups, dict):
+                keep = int(backups.get("max_keep_backups", default_keep))
+                return keep
+    except Exception:
+        return default_keep
+    return default_keep
 
 
 def _run(argv: argparse.Namespace) -> int:
@@ -152,9 +168,10 @@ def _run(argv: argparse.Namespace) -> int:
     source_url = str(argv.source_url).strip()
     expected_sha256 = str(argv.expected_sha256 or "").strip().lower()
     stamp = _now_stamp()
+    max_keep_backups = _read_max_keep_backups(project_root)
 
     work_dir = project_root / "update_work"
-    backups_root = project_root / "update_backups"
+    backups_root = project_root / "backups" / "updates"
     logs_root = project_root / "update_logs"
     backup_dir = backups_root / f"update_{stamp}"
     log_path = logs_root / f"update_{stamp}.log"
@@ -284,11 +301,20 @@ def _run(argv: argparse.Namespace) -> int:
         log(f"Update status written: update_logs/update_status.json")
         # Conservative cleanup/rotation after status is written.
         _remove_path_safe(work_dir, log)
+        if max_keep_backups <= 0:
+            log("[BACKUP RETENTION SKIP] reason=disabled")
         _rotate_old_entries(
             backups_root,
-            keep=5,
+            keep=max_keep_backups if max_keep_backups > 0 else 10_000_000,
             is_candidate=lambda p: p.is_dir() and p.name.startswith("update_"),
             log=log,
+        )
+        try:
+            matched_updates = len([p for p in backups_root.iterdir() if p.is_dir() and p.name.startswith("update_")])
+        except Exception:
+            matched_updates = 0
+        log(
+            f"[BACKUP RETENTION] folder={backups_root} max_keep={max_keep_backups} matched={matched_updates} deleted={max(0, matched_updates - max_keep_backups) if max_keep_backups > 0 else 0}"
         )
         _rotate_old_entries(
             logs_root,

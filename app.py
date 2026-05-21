@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import re
 import shutil
@@ -9,6 +10,7 @@ import sys
 import threading
 import time
 import webbrowser
+from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -2044,6 +2046,11 @@ def machine_settings_page() -> str:
     return render_template("machine_settings.html")
 
 
+@app.get("/esp32")
+def esp32_page() -> str:
+    return render_template("esp32.html")
+
+
 @app.get("/api/status")
 def api_status() -> Any:
     global _last_logged_status_source, _status_error_logged
@@ -2448,6 +2455,838 @@ def api_console_command() -> Any:
     )
 
 
+def _contains_sensitive_text(*values: Any) -> bool:
+    joined = " ".join(str(v or "") for v in values).lower()
+    return any(k in joined for k in ("password", "pass", "token", "key", "secret"))
+
+
+def _mask_if_sensitive(value: Any, *, group: Any, path: Any, label: Any) -> Any:
+    if _contains_sensitive_text(group, path, label):
+        console.add("info", f"[ESP3D MASKED] path={path}")
+        return "******"
+    return value
+
+
+def _mask_sensitive_text_for_log(value: Any, *, sensitive: bool = False) -> str:
+    text = str(value or "")
+    masked = re.sub(
+        r"(?i)(password|pass|token|key|secret)(\s*[:=]\s*)([^,\s\]\}]+)",
+        r"\1\2******",
+        text,
+    )
+    if sensitive and masked and masked != "******":
+        return "******"
+    return masked
+
+
+def _backup_root_dir() -> Path:
+    with app_state_lock:
+        active_cfg = cfg
+    backups_cfg = active_cfg.get("backups", {}) if isinstance(active_cfg.get("backups"), dict) else {}
+    root_rel = str(backups_cfg.get("backup_root") or "backups").strip() or "backups"
+    d = (BASE_DIR / root_rel).resolve()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _backup_subdir(config_key: str, fallback_leaf: str, kind: str) -> Path:
+    with app_state_lock:
+        active_cfg = cfg
+    backups_cfg = active_cfg.get("backups", {}) if isinstance(active_cfg.get("backups"), dict) else {}
+    configured = str(backups_cfg.get(config_key) or "").strip()
+    if configured:
+        d = (BASE_DIR / configured).resolve()
+    else:
+        d = (_backup_root_dir() / fallback_leaf).resolve()
+    d.mkdir(parents=True, exist_ok=True)
+    console.add("info", f"[BACKUP PATH] kind={kind} path={d}")
+    return d
+
+
+def _esp32_backup_dir() -> Path:
+    return _backup_subdir("esp32_backup_dir", "esp32", "esp32")
+
+
+def _grbl_backup_dir() -> Path:
+    return _backup_subdir("grbl_backup_dir", "grbl", "grbl")
+
+
+def _updates_backup_dir() -> Path:
+    return _backup_subdir("update_backup_dir", "updates", "updates")
+
+
+def _backup_max_keep() -> int:
+    with app_state_lock:
+        active_cfg = cfg
+    backups_cfg = active_cfg.get("backups", {}) if isinstance(active_cfg.get("backups"), dict) else {}
+    try:
+        return int(backups_cfg.get("max_keep_backups", 15))
+    except Exception:
+        return 15
+
+
+def _apply_backup_retention(folder: Path, patterns: tuple[str, ...]) -> None:
+    max_keep = _backup_max_keep()
+    if max_keep <= 0:
+        console.add("info", "[BACKUP RETENTION SKIP] reason=disabled")
+        return
+    try:
+        matched: list[Path] = []
+        for pat in patterns:
+            matched.extend([p for p in folder.glob(pat) if p.is_file()])
+        # Deduplicate by resolved path and keep newest first.
+        seen: set[str] = set()
+        ordered = sorted(matched, key=lambda p: p.stat().st_mtime, reverse=True)
+        unique: list[Path] = []
+        for p in ordered:
+            key = str(p.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(p)
+        to_delete = unique[max_keep:]
+        deleted = 0
+        for p in to_delete:
+            try:
+                p.unlink(missing_ok=True)
+                deleted += 1
+                console.add("info", f"[BACKUP RETENTION DELETE] file={p}")
+            except Exception as exc:
+                console.add("warn", f"[BACKUP RETENTION DELETE FAILED] file={p} error={exc}")
+        console.add(
+            "info",
+            f"[BACKUP RETENTION] folder={folder} max_keep={max_keep} matched={len(unique)} deleted={deleted}",
+        )
+    except Exception as exc:
+        console.add("warn", f"[BACKUP RETENTION] folder={folder} max_keep={max_keep} matched=0 deleted=0 error={exc}")
+
+
+def _read_backup_metadata(p: Path) -> dict[str, Any]:
+    created_at = None
+    setting_count = None
+    backup_type = None
+    source = None
+    try:
+        obj = json.loads(p.read_text(encoding="utf-8-sig"))
+        if isinstance(obj, dict):
+            created_at = obj.get("created_at")
+            backup_type = obj.get("backup_type")
+            source = obj.get("source")
+            if isinstance(obj.get("settings"), list):
+                setting_count = len(obj.get("settings", []))
+    except Exception:
+        pass
+    return {
+        "name": p.name,
+        "created_at": created_at,
+        "modified_at": datetime.fromtimestamp(p.stat().st_mtime).astimezone().isoformat(),
+        "size": p.stat().st_size,
+        "setting_count": setting_count,
+        "backup_type": backup_type,
+        "source": source,
+    }
+
+
+def _create_esp32_auto_backup() -> tuple[bool, dict[str, Any]]:
+    try:
+        console.add("info", "[ESP32 EEPROM AUTO BACKUP START]")
+        result, parsed, settings, raw_text = _fetch_esp32_eeprom_payload()
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"esp32_eeprom_autobackup_{ts}.json"
+        backup_dir = _esp32_backup_dir()
+        path = backup_dir / filename
+        ray_cfg = cfg.get("ray5", {}) if isinstance(cfg.get("ray5"), dict) else {}
+        payload = {
+            "created_at": datetime.now().astimezone().isoformat(),
+            "backup_type": "auto_before_save",
+            "source": "esp32_save_changes",
+            "host": ray_cfg.get("host"),
+            "http_port": ray_cfg.get("port", 8848),
+            "settings_before_save": settings,
+            "raw": raw_text,
+            "parsed": parsed,
+            "result": result,
+        }
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        rel = str(path.relative_to(BASE_DIR)).replace("\\", "/")
+        _apply_backup_retention(
+            backup_dir,
+            ("esp32_eeprom_backup_*.json", "esp32_eeprom_autobackup_*.json"),
+        )
+        console.add("info", f"[ESP32 EEPROM AUTO BACKUP OK] file={rel}")
+        return True, {"ok": True, "file": rel}
+    except Exception as exc:
+        console.add("error", f"[ESP32 EEPROM AUTO BACKUP FAILED] error={exc}")
+        return False, {"ok": False, "error": str(exc)}
+
+
+def _create_grbl_auto_backup() -> tuple[bool, dict[str, Any]]:
+    backup_dir: Path | None = None
+    try:
+        console.add("info", "[GRBL AUTO BACKUP START]")
+        raw_text = ""
+        settings: list[dict[str, Any]] = []
+        source = "fetch_$$"
+        snap = _firmware_settings_collect_snapshot()
+        snap_settings = snap.get("settings") if isinstance(snap, dict) else None
+        snap_raw = snap.get("raw") if isinstance(snap, dict) else None
+        if isinstance(snap_settings, list) and snap_settings:
+            source = "loaded_settings"
+            settings = [s for s in snap_settings if isinstance(s, dict)]
+            raw_text = str(snap_raw or "")
+        else:
+            raw_text, _, _timed_out, _initial_message = _read_machine_settings_raw(timeout_seconds=6.0)
+            settings = _parse_machine_settings_raw(raw_text)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"grbl_settings_autobackup_{ts}.json"
+        backup_dir = _grbl_backup_dir()
+        console.add("info", f"[GRBL AUTO BACKUP PATH] path={backup_dir}")
+        console.add("info", f"[GRBL AUTO BACKUP SOURCE] using={source}")
+        path = backup_dir / filename
+        ray_cfg = cfg.get("ray5", {}) if isinstance(cfg.get("ray5"), dict) else {}
+        payload = {
+            "created_at": datetime.now().astimezone().isoformat(),
+            "backup_type": "auto_before_save",
+            "source": "grbl_save_changed_settings",
+            "host": ray_cfg.get("host"),
+            "http_port": ray_cfg.get("port", 8848),
+            "raw_settings": raw_text,
+            "settings": settings,
+        }
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        try:
+            rel = str(path.relative_to(BASE_DIR)).replace("\\", "/")
+        except ValueError:
+            rel = str(path).replace("\\", "/")
+        _apply_backup_retention(
+            backup_dir,
+            ("grbl_settings_backup_*.json", "grbl_settings_autobackup_*.json"),
+        )
+        console.add("info", f"[GRBL AUTO BACKUP OK] file={rel}")
+        return True, {"ok": True, "file": rel}
+    except Exception as exc:
+        logging.exception("[GRBL AUTO BACKUP FAILED]")
+        console.add("error", f"[GRBL AUTO BACKUP FAILED] error={exc}")
+        return False, {
+            "ok": False,
+            "path": str((backup_dir or _grbl_backup_dir())).replace("\\", "/"),
+            "error": str(exc),
+        }
+
+
+def _normalize_esp32_settings(parsed: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if isinstance(parsed, dict):
+        if isinstance(parsed.get("data"), list):
+            items = [x for x in parsed.get("data", []) if isinstance(x, dict)]
+        elif isinstance(parsed.get("EEPROM"), list):
+            items = [x for x in parsed.get("EEPROM", []) if isinstance(x, dict)]
+    settings: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        group = item.get("F")
+        path = item.get("P")
+        label = item.get("H")
+        value = _mask_if_sensitive(item.get("V"), group=group, path=path, label=label)
+        settings.append(
+            {
+                "index": index,
+                "group": group,
+                "path": path,
+                "label": label,
+                "type": item.get("T"),
+                "value": value,
+                "raw_value": item.get("V"),
+                "size_or_max": item.get("S"),
+                "min": item.get("M"),
+                "options": item.get("O") if isinstance(item.get("O"), list) else [],
+            }
+        )
+    return settings
+
+
+def _fetch_esp32_eeprom_payload() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], str]:
+    cmd = "[ESP400]json=yes"
+    console.add("info", f"[ESP3D EEPROM FETCH] command={cmd}")
+    result = ray5.get_esp3d_eeprom()
+    for attempt in result.get("attempts", []) if isinstance(result, dict) else []:
+        param = attempt.get("param")
+        console.add("info", f"[ESP32 ESPCMD TRY] param={param} cmd={cmd}")
+        if attempt.get("invalid"):
+            console.add("warn", f"[ESP32 ESPCMD INVALID] param={param} response={attempt.get('raw_preview','')[:120]}")
+    if result.get("selected_param"):
+        console.add("info", f"[ESP32 ESPCMD MODE SELECTED] param={result.get('selected_param')}")
+    raw_text = str(result.get("raw", "") or "")
+    parsed: dict[str, Any] = {}
+    try:
+        parsed = json.loads(raw_text) if raw_text.strip() else {}
+    except Exception:
+        parsed = {}
+    settings = _normalize_esp32_settings(parsed)
+    console.add("info", f"[ESP3D EEPROM SETTINGS] count={len(settings)}")
+    return result, parsed, settings, raw_text
+
+
+NETWORK_CHANGING_PATHS = {
+    "Http/Port",
+    "Sta/IPMode",
+    "Sta/IP",
+    "Sta/Gateway",
+    "Sta/Netmask",
+    "Radio/Mode",
+    "AP/IP",
+}
+
+
+def _validate_esp32_change(setting: dict[str, Any], new_value: Any) -> str | None:
+    stype = str(setting.get("type") or "").upper()
+    s_raw = setting.get("size_or_max")
+    m_raw = setting.get("min")
+    sval = str(new_value)
+    if stype == "S":
+        min_len = int(float(m_raw)) if str(m_raw or "").strip() not in {"", "None"} else None
+        max_len = int(float(s_raw)) if str(s_raw or "").strip() not in {"", "None"} else None
+        if min_len is not None and len(sval) < min_len:
+            return f"value too short (min {min_len})"
+        if max_len is not None and len(sval) > max_len:
+            return f"value too long (max {max_len})"
+        return None
+    if stype in {"I", "B"}:
+        try:
+            iv = float(sval)
+        except ValueError:
+            return "value must be numeric"
+        min_v = float(m_raw) if str(m_raw or "").strip() not in {"", "None"} else None
+        max_v = float(s_raw) if str(s_raw or "").strip() not in {"", "None"} else None
+        if min_v is not None and iv < min_v:
+            return f"value below min {min_v:g}"
+        if max_v is not None and iv > max_v:
+            return f"value above max {max_v:g}"
+        if stype == "B":
+            options = setting.get("options") if isinstance(setting.get("options"), list) else []
+            allowed: set[str] = set()
+            for opt in options:
+                if isinstance(opt, dict):
+                    for _, val in opt.items():
+                        allowed.add(str(val))
+            if allowed and str(int(iv) if iv.is_integer() else iv) not in allowed and str(sval) not in allowed:
+                return "value not in allowed options"
+        return None
+    if stype == "A":
+        try:
+            ipaddress.ip_address(sval)
+            return None
+        except ValueError:
+            return "invalid IP address"
+    return None
+
+
+def _parse_esp800_raw_text(raw_text: str) -> dict[str, Any]:
+    text = str(raw_text or "").strip()
+    out: dict[str, Any] = {
+        "fw_version": "",
+        "fw_target": "",
+        "fw_hw": "",
+        "primary_sd": "",
+        "secondary_sd": "",
+        "authentication": "",
+        "web_communication": "",
+        "websocket_port": "",
+        "websocket_ips": [],
+        "hostname": "",
+        "axis": "",
+    }
+    if not text:
+        return out
+    parts = [p.strip() for p in text.split("#") if p.strip()]
+    for part in parts:
+        if ":" not in part:
+            continue
+        k, v = part.split(":", 1)
+        key = k.strip().lower()
+        val = v.strip()
+        if key.startswith("fw version"):
+            out["fw_version"] = val
+        elif key.startswith("fw target"):
+            out["fw_target"] = val
+        elif key.startswith("fw hw"):
+            out["fw_hw"] = val
+        elif key.startswith("primary sd"):
+            out["primary_sd"] = val
+        elif key.startswith("secondary sd"):
+            out["secondary_sd"] = val
+        elif key.startswith("authentication"):
+            out["authentication"] = val
+        elif key.startswith("hostname"):
+            out["hostname"] = val
+        elif key.startswith("axis"):
+            out["axis"] = val
+        elif key.startswith("webcommunication"):
+            # Expected style: Sync: <port>:<ip1>,<ip2>
+            wc_parts = [x.strip() for x in val.split(":")]
+            if wc_parts:
+                out["web_communication"] = wc_parts[0]
+            if len(wc_parts) >= 2:
+                out["websocket_port"] = wc_parts[1]
+            if len(wc_parts) >= 3:
+                ips = [ip.strip() for ip in ":".join(wc_parts[2:]).split(",") if ip.strip()]
+                out["websocket_ips"] = ips
+    return out
+
+
+@app.get("/api/esp32/info")
+def api_esp32_info() -> Any:
+    blocked = _require_ray5_configured()
+    if blocked:
+        return blocked
+    now = datetime.now().astimezone()
+    iso_time = now.replace(microsecond=0).isoformat()
+    tz = now.strftime("%z")
+    tz_fmt = f"{tz[:3]}:{tz[3:]}" if len(tz) == 5 else "+00:00"
+    cmd = f"[ESP800]json=yes time={iso_time} tz={tz_fmt} version=3.0.0"
+    console.add("info", f"[ESP3D INFO FETCH] command={cmd}")
+    result = ray5.get_esp3d_info(webui_version="3.0.0")
+    for attempt in result.get("attempts", []) if isinstance(result, dict) else []:
+        param = attempt.get("param")
+        console.add("info", f"[ESP32 ESPCMD TRY] param={param} cmd={cmd}")
+        if attempt.get("invalid"):
+            console.add("warn", f"[ESP32 ESPCMD INVALID] param={param} response={attempt.get('raw_preview','')[:120]}")
+    if result.get("selected_param"):
+        console.add("info", f"[ESP32 ESPCMD MODE SELECTED] param={result.get('selected_param')}")
+    raw_text = str(result.get("raw", "") or "")
+    parsed: dict[str, Any] = {}
+    try:
+        parsed = json.loads(raw_text) if raw_text.strip() else {}
+    except Exception:
+        parsed = {}
+    data = parsed.get("data", parsed) if isinstance(parsed, dict) else {}
+    if not isinstance(data, dict):
+        data = {}
+    parsed_from_raw = _parse_esp800_raw_text(raw_text)
+    ray_cfg = cfg.get("ray5", {}) if isinstance(cfg.get("ray5"), dict) else {}
+    return jsonify(
+        {
+            "ok": bool(result.get("ok")),
+            "error": (None if result.get("ok") else (result.get("message") or "Invalid command")),
+            "raw": parsed if parsed else raw_text,
+            "fw_version": data.get("FWVersion") or data.get("fw_version") or data.get("version") or parsed_from_raw.get("fw_version") or "",
+            "fw_target": data.get("FWTarget") or data.get("fw_target") or parsed_from_raw.get("fw_target") or "",
+            "fw_target_id": data.get("FWTargetID") or data.get("fw_target_id") or "",
+            "fw_hw": data.get("FWHW") or data.get("fw_hw") or parsed_from_raw.get("fw_hw") or "",
+            "sd_connection": data.get("SDConnection") or data.get("sd_connection") or parsed_from_raw.get("primary_sd") or "",
+            "primary_sd": parsed_from_raw.get("primary_sd") or "",
+            "secondary_sd": parsed_from_raw.get("secondary_sd") or "",
+            "authentication": parsed_from_raw.get("authentication") or "",
+            "serial_protocol": data.get("SerialProtocol") or data.get("serial_protocol") or "",
+            "web_communication": data.get("WebCommunication") or data.get("web_communication") or parsed_from_raw.get("web_communication") or "",
+            "websocket_ip": data.get("WebsocketIP") or data.get("websocket_ip") or ",".join(parsed_from_raw.get("websocket_ips", [])),
+            "websocket_ips": parsed_from_raw.get("websocket_ips", []),
+            "websocket_port": data.get("WebsocketPort") or data.get("websocket_port") or parsed_from_raw.get("websocket_port") or "",
+            "hostname": data.get("Hostname") or data.get("hostname") or parsed_from_raw.get("hostname") or "",
+            "axis": parsed_from_raw.get("axis") or "",
+            "wifi_mode": data.get("WiFiMode") or data.get("wifi_mode") or "",
+            "http_host": ray_cfg.get("host", ""),
+            "http_port": int(ray_cfg.get("port", 8848)),
+            "esp_param_used": result.get("selected_param"),
+            "esp_attempts": result.get("attempts", []),
+        }
+    )
+
+
+@app.get("/api/esp32/eeprom")
+def api_esp32_eeprom() -> Any:
+    blocked = _require_ray5_configured()
+    if blocked:
+        return blocked
+    result, parsed, settings, raw_text = _fetch_esp32_eeprom_payload()
+    return jsonify(
+        {
+            "ok": bool(result.get("ok")),
+            "error": (None if result.get("ok") else (result.get("message") or "Invalid command")),
+            "settings": settings,
+            "raw": parsed if parsed else raw_text,
+            "esp_param_used": result.get("selected_param"),
+            "esp_attempts": result.get("attempts", []),
+        }
+    )
+
+
+@app.post("/api/esp32/eeprom/backup")
+def api_esp32_eeprom_backup() -> Any:
+    blocked = _require_ray5_configured()
+    if blocked:
+        return blocked
+    result, parsed, settings, raw_text = _fetch_esp32_eeprom_payload()
+    if not result.get("ok"):
+        return jsonify({"ok": False, "error": result.get("message") or "EEPROM fetch failed", "raw": raw_text}), 502
+    backup_dir = _esp32_backup_dir()
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"esp32_eeprom_backup_{ts}.json"
+    path = backup_dir / filename
+    ray_cfg = cfg.get("ray5", {}) if isinstance(cfg.get("ray5"), dict) else {}
+    payload = {
+        "created_at": datetime.now().astimezone().isoformat(),
+        "host": ray_cfg.get("host", ""),
+        "http_port": int(ray_cfg.get("port", 8848)),
+        "source_command": "[ESP400]json=yes",
+        "raw": parsed if parsed else raw_text,
+        "settings": settings,
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    _apply_backup_retention(
+        backup_dir,
+        ("esp32_eeprom_backup_*.json", "esp32_eeprom_autobackup_*.json"),
+    )
+    return jsonify({"ok": True, "backup_file": filename, "setting_count": len(settings)})
+
+
+@app.get("/api/esp32/eeprom/backups")
+def api_esp32_eeprom_backups() -> Any:
+    backup_dir = _esp32_backup_dir()
+    files: list[dict[str, Any]] = []
+    patterns = ("esp32_eeprom_backup_*.json", "esp32_eeprom_autobackup_*.json")
+    candidates: list[Path] = []
+    for pat in patterns:
+        candidates.extend([p for p in backup_dir.glob(pat) if p.is_file()])
+    seen: set[str] = set()
+    ordered = sorted(candidates, key=lambda x: x.stat().st_mtime, reverse=True)
+    for p in ordered:
+        if p.name in seen:
+            continue
+        seen.add(p.name)
+        files.append(_read_backup_metadata(p))
+    latest = files[0]["name"] if files else None
+    return jsonify({"ok": True, "backups": files, "latest": latest})
+
+
+@app.get("/api/machine-settings/backups")
+def api_machine_settings_backups() -> Any:
+    backup_dir = _grbl_backup_dir()
+    files: list[dict[str, Any]] = []
+    patterns = ("grbl_settings_backup_*.json", "grbl_settings_autobackup_*.json")
+    candidates: list[Path] = []
+    for pat in patterns:
+        candidates.extend([p for p in backup_dir.glob(pat) if p.is_file()])
+    seen: set[str] = set()
+    ordered = sorted(candidates, key=lambda x: x.stat().st_mtime, reverse=True)
+    for p in ordered:
+        if p.name in seen:
+            continue
+        seen.add(p.name)
+        files.append(_read_backup_metadata(p))
+    latest = files[0]["name"] if files else None
+    return jsonify({"ok": True, "backups": files, "latest": latest})
+
+
+@app.get("/api/esp32/eeprom/backups/<path:filename>")
+def api_esp32_eeprom_backup_view(filename: str) -> Any:
+    p = (_esp32_backup_dir() / Path(filename).name).resolve()
+    if not p.exists() or not p.is_file():
+        return jsonify({"ok": False, "error": "backup not found"}), 404
+    try:
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return jsonify({"ok": False, "error": "backup file is invalid"}), 400
+    return jsonify({"ok": True, "name": p.name, "data": data})
+
+
+@app.get("/api/esp32/eeprom/backups/<path:filename>/download")
+def api_esp32_eeprom_backup_download(filename: str) -> Any:
+    p = (_esp32_backup_dir() / Path(filename).name).resolve()
+    if not p.exists() or not p.is_file():
+        return jsonify({"ok": False, "error": "backup not found"}), 404
+    return send_file(
+        str(p),
+        mimetype="application/json",
+        as_attachment=True,
+        download_name=p.name,
+    )
+
+
+@app.get("/api/esp32/eeprom/compare")
+def api_esp32_eeprom_compare() -> Any:
+    backup_name = str(request.args.get("backup", "")).strip()
+    if not backup_name:
+        return jsonify({"ok": False, "error": "backup query parameter is required"}), 400
+    p = (_esp32_backup_dir() / Path(backup_name).name).resolve()
+    if not p.exists() or not p.is_file():
+        return jsonify({"ok": False, "error": "backup not found"}), 404
+    try:
+        backup_obj = json.loads(p.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return jsonify({"ok": False, "error": "backup file is invalid"}), 400
+    backup_settings = backup_obj.get("settings", []) if isinstance(backup_obj.get("settings"), list) else []
+    _, _, current_settings, _ = _fetch_esp32_eeprom_payload()
+    cur_map = {str(x.get("path")): x for x in current_settings}
+    bkp_map = {str(x.get("path")): x for x in backup_settings if isinstance(x, dict)}
+    all_paths = sorted(set(cur_map.keys()) | set(bkp_map.keys()))
+    diffs: list[dict[str, Any]] = []
+    for path_key in all_paths:
+        cur = cur_map.get(path_key)
+        bkp = bkp_map.get(path_key)
+        cur_val = cur.get("raw_value") if isinstance(cur, dict) else None
+        bkp_val = bkp.get("raw_value") if isinstance(bkp, dict) else (bkp.get("value") if isinstance(bkp, dict) else None)
+        if str(cur_val) != str(bkp_val):
+            diffs.append({"path": path_key, "current": cur_val, "backup": bkp_val})
+    return jsonify({"ok": True, "backup": backup_name, "difference_count": len(diffs), "differences": diffs})
+
+
+@app.post("/api/esp32/eeprom/save")
+def api_esp32_eeprom_save() -> Any:
+    blocked = _require_ray5_configured()
+    if blocked:
+        return blocked
+    body = request.get_json(silent=True) or {}
+    changes = body.get("changes", [])
+    backup_required = bool(body.get("backup_required", True))
+    allow_network = bool(body.get("allow_network_changes", False))
+    if not isinstance(changes, list) or not changes:
+        return jsonify({"ok": False, "error": "changes must be a non-empty list"}), 400
+    backup_ok, backup_info = _create_esp32_auto_backup()
+    if not backup_ok:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Automatic backup failed; save was not performed.",
+                    "backup": backup_info,
+                    "results": [],
+                    "failed": [],
+                    "ok_count": 0,
+                    "failed_count": 0,
+                }
+            ),
+            500,
+        )
+
+    _, _, settings, _ = _fetch_esp32_eeprom_payload()
+    path_map = {str(s.get("path")): s for s in settings}
+    index_map = {str(s.get("path")): int(s.get("index", 0)) for s in settings}
+    errors: list[str] = []
+    failed: list[dict[str, Any]] = []
+    prepared: list[dict[str, Any]] = []
+    for ch in changes:
+        if not isinstance(ch, dict):
+            errors.append("invalid change entry")
+            continue
+        path = str(ch.get("path", "")).strip()
+        ctype = str(ch.get("type", "")).strip()
+        value = ch.get("value")
+        if not path:
+            errors.append("change.path is required")
+            continue
+        if path not in path_map:
+            errors.append(f"unknown setting path: {path}")
+            continue
+        setting = path_map[path]
+        if ctype and str(setting.get("type", "")) != ctype:
+            errors.append(f"type mismatch for {path}")
+            continue
+        if path in NETWORK_CHANGING_PATHS and not allow_network:
+            msg = "Network-changing settings require confirmation."
+            errors.append(msg)
+            failed.append(
+                {
+                    "path": path,
+                    "label": setting.get("label"),
+                    "ok": False,
+                    "mode": "validation",
+                    "index": index_map.get(path, 0),
+                    "command": "",
+                    "response": msg,
+                    "message": msg,
+                    "status": "blocked",
+                }
+            )
+            continue
+        validation_error = _validate_esp32_change(setting, value)
+        if validation_error:
+            errors.append(f"{path}: {validation_error}")
+            failed.append(
+                {
+                    "path": path,
+                    "label": setting.get("label"),
+                    "ok": False,
+                    "mode": "validation",
+                    "index": index_map.get(path, 0),
+                    "command": "",
+                    "response": validation_error,
+                    "message": validation_error,
+                    "status": "validation_error",
+                }
+            )
+            continue
+        prepared.append(
+            {
+                "path": path,
+                "label": setting.get("label"),
+                "type": str(setting.get("type", "")),
+                "value": value,
+                "index": index_map.get(path, 0),
+            }
+        )
+    if errors:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Validation failed",
+                    "validation_errors": errors,
+                    "backup": backup_info,
+                    "ok_count": 0,
+                    "failed_count": len(failed),
+                    "results": failed,
+                    "failed": failed,
+                }
+            ),
+            400,
+        )
+
+    console.add("info", f"[ESP32 EEPROM SAVE START] count={len(prepared)}")
+    results: list[dict[str, Any]] = []
+    failed = []
+    for item in prepared:
+        path = item["path"]
+        label = item.get("label")
+        stype = item["type"]
+        value = str(item["value"])
+        sensitive_value = _contains_sensitive_text(path, label)
+        masked_value = _mask_sensitive_text_for_log(value, sensitive=sensitive_value)
+        cmd_path = f"[ESP401]P={path} T={stype} V={value} json=yes"
+        cmd_path_masked = f"[ESP401]P={path} T={stype} V={masked_value} json=yes"
+        console.add(
+            "info",
+            f"[ESP32 EEPROM SAVE TRY] path={path} mode=path type={stype} value={masked_value}",
+        )
+        r_path = ray5.send_gcode(cmd_path)
+        raw_path = str(r_path.get("raw", "") or "")
+        raw_path_masked = _mask_sensitive_text_for_log(raw_path, sensitive=sensitive_value)
+        invalid_path = (not r_path.get("ok")) or ("invalid command" in raw_path.lower())
+        attempts: list[dict[str, Any]] = [
+            {"mode": "path", "ok": not invalid_path, "response": raw_path_masked}
+        ]
+        if not invalid_path:
+            console.add(
+                "info",
+                f"[ESP32 EEPROM SAVE OK] path={path} mode=path response={raw_path_masked[:200]}",
+            )
+            results.append(
+                {
+                    "path": path,
+                    "label": label,
+                    "ok": True,
+                    "mode": "path",
+                    "index": int(item["index"]),
+                    "command": cmd_path_masked,
+                    "response": raw_path_masked,
+                    "message": "Saved",
+                    "status": "saved",
+                    "attempts": attempts,
+                }
+            )
+            continue
+        idx = int(item["index"])
+        cmd_idx = f"[ESP401]P={idx} T={stype} V={value} json=yes"
+        cmd_idx_masked = f"[ESP401]P={idx} T={stype} V={masked_value} json=yes"
+        console.add(
+            "info",
+            f"[ESP32 EEPROM SAVE TRY] path={path} mode=index index={idx} type={stype} value={masked_value}",
+        )
+        r_idx = ray5.send_gcode(cmd_idx)
+        raw_idx = str(r_idx.get("raw", "") or "")
+        raw_idx_masked = _mask_sensitive_text_for_log(raw_idx, sensitive=sensitive_value)
+        invalid_idx = (not r_idx.get("ok")) or ("invalid command" in raw_idx.lower())
+        attempts.append({"mode": "index", "ok": not invalid_idx, "response": raw_idx_masked})
+        if not invalid_idx:
+            console.add(
+                "info",
+                f"[ESP32 EEPROM SAVE OK] path={path} mode=index response={raw_idx_masked[:200]}",
+            )
+            results.append(
+                {
+                    "path": path,
+                    "label": label,
+                    "ok": True,
+                    "mode": "index",
+                    "index": idx,
+                    "command": cmd_idx_masked,
+                    "response": raw_idx_masked,
+                    "message": "Saved",
+                    "status": "saved",
+                    "attempts": attempts,
+                }
+            )
+        else:
+            fail_resp = raw_idx or raw_path or str(r_idx.get("message") or r_path.get("message") or "unknown")
+            fail_resp_masked = _mask_sensitive_text_for_log(fail_resp, sensitive=sensitive_value)
+            fail_error = str(r_idx.get("message") or r_path.get("message") or "write failed")
+            console.add(
+                "warn",
+                f"[ESP32 EEPROM SAVE FAILED] path={path} mode=index response={fail_resp_masked[:160]} error={_mask_sensitive_text_for_log(fail_error, sensitive=sensitive_value)[:160]}",
+            )
+            entry = {
+                "path": path,
+                "label": label,
+                "ok": False,
+                "mode": "index",
+                "index": idx,
+                "command": cmd_idx_masked,
+                "response": fail_resp_masked,
+                "message": fail_error,
+                "status": "failed",
+                "attempts": attempts,
+            }
+            results.append(entry)
+            failed.append(entry)
+    ok_count = len(results) - len(failed)
+    failed_count = len(failed)
+    console.add("info", f"[ESP32 EEPROM SAVE COMPLETE] ok_count={ok_count} failed_count={failed_count}")
+    return jsonify(
+        {
+            "ok": failed_count == 0,
+            "backup": backup_info,
+            "ok_count": ok_count,
+            "failed_count": failed_count,
+            "results": results,
+            "failed": failed,
+        }
+    )
+
+
+@app.post("/api/esp32/command")
+def api_esp32_command() -> Any:
+    blocked = _require_ray5_configured()
+    if blocked:
+        return blocked
+    body = request.get_json(silent=True) or {}
+    command = str(body.get("command", "")).strip()
+    if not command:
+        return jsonify({"ok": False, "message": "command is required"}), 400
+    console.add("info", f"[ESP32 COMMANDTEXT] command={command}")
+    result = ray5.send_gcode(command)
+    return jsonify({"ok": bool(result.get("ok")), "result": result})
+
+
+@app.post("/api/esp32/esp-command")
+def api_esp32_esp_command() -> Any:
+    blocked = _require_ray5_configured()
+    if blocked:
+        return blocked
+    body = request.get_json(silent=True) or {}
+    cmd = str(body.get("cmd", "")).strip()
+    if not cmd:
+        return jsonify({"ok": False, "message": "cmd is required"}), 400
+    console.add("info", f"[ESP32 ESPCMD] cmd={cmd}")
+    result = ray5.send_esp3d_command(cmd)
+    for attempt in result.get("attempts", []) if isinstance(result, dict) else []:
+        param = attempt.get("param")
+        console.add("info", f"[ESP32 ESPCMD TRY] param={param} cmd={cmd}")
+        if attempt.get("invalid"):
+            console.add("warn", f"[ESP32 ESPCMD INVALID] param={param} response={attempt.get('raw_preview','')[:120]}")
+    if result.get("selected_param"):
+        console.add("info", f"[ESP32 ESPCMD MODE SELECTED] param={result.get('selected_param')}")
+    return jsonify({"ok": bool(result.get("ok")), "result": result})
+
+
 GRBL_SETTING_INFO: dict[str, dict[str, str]] = {
     "0": {"description": "Step pulse time", "unit": "microseconds", "notes": ""},
     "1": {"description": "Step idle delay", "unit": "milliseconds", "notes": ""},
@@ -2724,6 +3563,21 @@ def api_machine_settings_post() -> Any:
     changes = body.get("changes")
     if not isinstance(changes, list) or not changes:
         return jsonify({"ok": False, "error": "changes must be a non-empty list"}), 400
+    backup_ok, backup_info = _create_grbl_auto_backup()
+    if not backup_ok:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Automatic GRBL backup failed; save was not performed.",
+                    "backup": backup_info,
+                    "results": [],
+                    "message": "Automatic GRBL backup failed; save was not performed.",
+                }
+            ),
+            500,
+        )
+    console.add("info", f"[GRBL SAVE START] count={len(changes)}")
     results: list[dict[str, Any]] = []
     success_count = 0
     for item in changes:
@@ -2747,9 +3601,11 @@ def api_machine_settings_post() -> Any:
         )
     total = len(changes)
     all_ok = success_count == total
-    msg = f"Saved {success_count} setting(s)." if all_ok else f"Saved {success_count} setting(s), {total - success_count} failed."
+    backup_name = Path(str(backup_info.get("file", ""))).name if isinstance(backup_info, dict) else ""
+    msg_base = f"Saved {success_count} setting(s)." if all_ok else f"Saved {success_count} setting(s), {total - success_count} failed."
+    msg = f"{msg_base} Backup created: {backup_name}" if backup_name else msg_base
     status = 200 if all_ok else 207
-    return jsonify({"ok": all_ok, "results": results, "message": msg}), status
+    return jsonify({"ok": all_ok, "results": results, "message": msg, "backup": backup_info}), status
 
 
 @app.get("/api/camera/video-enabled")

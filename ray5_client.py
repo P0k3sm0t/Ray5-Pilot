@@ -26,6 +26,7 @@ class Ray5Client:
             "error": "",
         }
         self._page_id_getter = None
+        self._esp_param_mode_cache: str | None = None
 
     def set_page_id_getter(self, getter: Any) -> None:
         self._page_id_getter = getter
@@ -183,6 +184,139 @@ class Ray5Client:
                 "error": str(exc),
             }
             return {"ok": False, "message": str(exc), "raw": "", "endpoint": endpoint, "param": "plain", "count": 1}
+
+    @staticmethod
+    def _esp_invalid_response(text: str, *, expect_json: bool) -> bool:
+        s = str(text or "").strip()
+        lower = s.lower()
+        if not s:
+            return True
+        if lower in {"error", "invalid command"} or "invalid command" in lower:
+            return True
+        if expect_json:
+            try:
+                parsed = json.loads(s)
+                return not isinstance(parsed, (dict, list))
+            except Exception:
+                return True
+        return False
+
+    def _request_esp3d_cmd_with_param(self, cmd: str, *, param_name: str) -> dict[str, Any]:
+        ray = self.cfg.get("ray5", {})
+        endpoint = str(ray.get("command_endpoint", "/command"))
+        url = self._base() + endpoint
+        params = {param_name: cmd}
+        try:
+            resp = self.session.get(url, params=params, timeout=self._timeout())
+            text = (resp.text or "").strip()
+            ok = bool(resp.status_code == 200 and "invalid command" not in text.lower())
+            self.last_debug = {
+                "endpoint": endpoint,
+                "method": "GET",
+                "url": url,
+                "params": {param_name: "<payload>"},
+                "status_code": resp.status_code,
+                "success": ok,
+                "preview": (resp.text or "")[:220].replace("\n", "\\n").replace("\r", ""),
+                "error": "" if ok else (text or f"http {resp.status_code}"),
+            }
+            return {
+                "ok": ok,
+                "message": "ok" if ok else (text or f"http {resp.status_code}"),
+                "raw": resp.text or "",
+                "endpoint": endpoint,
+                "param": param_name,
+                "count": 1,
+            }
+        except requests.RequestException as exc:
+            self.last_debug = {
+                "endpoint": endpoint,
+                "method": "GET",
+                "url": url,
+                "params": {param_name: "<payload>"},
+                "status_code": None,
+                "success": False,
+                "preview": "",
+                "error": str(exc),
+            }
+            return {"ok": False, "message": str(exc), "raw": "", "endpoint": endpoint, "param": param_name, "count": 1}
+
+    def _request_esp3d_cmd(self, cmd: str, *, expect_json: bool = False) -> dict[str, Any]:
+        command = str(cmd or "").strip()
+        if not command:
+            return {"ok": False, "message": "empty esp command", "raw": "", "endpoint": "/command", "param": "", "count": 0}
+        page_cfg = self.cfg.get("esp32_page", {}) if isinstance(self.cfg.get("esp32_page"), dict) else {}
+        mode = str(page_cfg.get("esp_command_param", "auto")).strip()
+        mode = mode if mode in {"cmd", "commandText", "auto"} else "auto"
+
+        if mode == "cmd":
+            modes = ["cmd"]
+        elif mode == "commandText":
+            modes = ["commandText"]
+        else:
+            modes = []
+            if self._esp_param_mode_cache in {"cmd", "commandText"}:
+                modes.append(self._esp_param_mode_cache)
+            for candidate in ("cmd", "commandText"):
+                if candidate not in modes:
+                    modes.append(candidate)
+
+        attempts: list[dict[str, Any]] = []
+        last_result: dict[str, Any] | None = None
+        for param_name in modes:
+            result = self._request_esp3d_cmd_with_param(command, param_name=param_name)
+            raw = str(result.get("raw", "") or "")
+            invalid = self._esp_invalid_response(raw, expect_json=expect_json) or (not bool(result.get("ok")))
+            attempts.append(
+                {
+                    "param": param_name,
+                    "ok": bool(result.get("ok")) and not invalid,
+                    "invalid": invalid,
+                    "raw_preview": raw[:220],
+                }
+            )
+            if not invalid:
+                if mode == "auto":
+                    self._esp_param_mode_cache = param_name
+                result["attempts"] = attempts
+                result["selected_param"] = param_name
+                return result
+            last_result = result
+
+        fail = dict(last_result or {"ok": False, "message": "Invalid command", "raw": "Invalid command", "endpoint": "/command", "param": modes[0] if modes else ""})
+        fail["ok"] = False
+        fail["attempts"] = attempts
+        fail["selected_param"] = None
+        return fail
+
+    def send_esp3d_command(self, cmd: str) -> dict[str, Any]:
+        return self._request_esp3d_cmd(str(cmd or "").strip(), expect_json=False)
+
+    def get_esp3d_info(self, *, webui_version: str = "3.0.0") -> dict[str, Any]:
+        from datetime import datetime
+
+        now = datetime.now().astimezone()
+        iso_time = now.replace(microsecond=0).isoformat()
+        tz = now.strftime("%z")
+        tz_fmt = f"{tz[:3]}:{tz[3:]}" if len(tz) == 5 else "+00:00"
+        cmd = f"[ESP800]json=yes time={iso_time} tz={tz_fmt} version={webui_version}"
+        result = self._request_esp3d_cmd(cmd, expect_json=True)
+        if not result.get("ok"):
+            fallback = self._request_esp3d_cmd("[ESP800]", expect_json=False)
+            fallback["attempts"] = list(result.get("attempts", [])) + list(fallback.get("attempts", []))
+            result = fallback
+        return result
+
+    def get_esp3d_eeprom(self) -> dict[str, Any]:
+        result = self._request_esp3d_cmd("[ESP400]json=yes", expect_json=True)
+        if not result.get("ok"):
+            fallback = self._request_esp3d_cmd("[ESP400]", expect_json=True)
+            fallback["attempts"] = list(result.get("attempts", [])) + list(fallback.get("attempts", []))
+            result = fallback
+        return result
+
+    def scan_wifi(self) -> dict[str, Any]:
+        return self._request_esp3d_cmd("[ESP410]json=yes", expect_json=True)
 
     def trigger_live_status(self, page_id: str | None = None) -> dict[str, Any]:
         ray = self.cfg.get("ray5", {})
