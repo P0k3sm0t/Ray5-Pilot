@@ -8,8 +8,6 @@ import zipfile
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DIST_DIR = PROJECT_ROOT / "dist"
-OUTPUT_ZIP = DIST_DIR / "Ray5-Pilot-release.zip"
-CHECKSUM_FILE = DIST_DIR / "Ray5-Pilot-release.zip.sha256.txt"
 
 INCLUDE_PATHS = [
     "VERSION",
@@ -123,33 +121,45 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest().lower()
 
 
+def _release_version() -> str:
+    try:
+        version = (PROJECT_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    except Exception:
+        version = "unknown"
+    return version or "unknown"
+
+
 def main() -> int:
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     included, skipped = _iter_included_files()
     exe_src = _pick_executable()
+    release_version = _release_version()
+    package_root = f"Ray5-Pilot-v{release_version}"
+    output_zip = DIST_DIR / f"{package_root}.zip"
+    checksum_file = DIST_DIR / f"{package_root}.zip.sha256.txt"
 
-    print(f"[RELEASE ZIP] writing {OUTPUT_ZIP}")
-    with zipfile.ZipFile(OUTPUT_ZIP, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    print(f"[RELEASE ZIP] writing {output_zip}")
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for src in included:
-            arcname = src.relative_to(PROJECT_ROOT).as_posix()
+            arcname = f"{package_root}/{src.relative_to(PROJECT_ROOT).as_posix()}"
             zf.write(src, arcname)
         if exe_src is not None:
-            zf.write(exe_src, "Ray5 Pilot.exe")
-            print(f"[RELEASE ZIP] including executable: {exe_src} -> Ray5 Pilot.exe")
+            zf.write(exe_src, f"{package_root}/Ray5 Pilot.exe")
+            print(f"[RELEASE ZIP] including executable: {exe_src} -> {package_root}/Ray5 Pilot.exe")
         else:
             print("[RELEASE ZIP] warning: Ray5 Pilot.exe not found; zip will be source-only")
 
-    sha256 = _sha256_file(OUTPUT_ZIP)
-    checksum_line = f"{sha256}  {OUTPUT_ZIP.name}\n"
+    sha256 = _sha256_file(output_zip)
+    checksum_line = f"{sha256}  {output_zip.name}\n"
     try:
-        CHECKSUM_FILE.write_text(checksum_line, encoding="utf-8")
+        checksum_file.write_text(checksum_line, encoding="utf-8")
     except Exception as exc:
-        raise RuntimeError(f"Failed to write checksum file {CHECKSUM_FILE}: {exc}") from exc
+        raise RuntimeError(f"Failed to write checksum file {checksum_file}: {exc}") from exc
 
     print(f"[RELEASE ZIP] included={len(included)} skipped={skipped}")
     print(f"[RELEASE ZIP] sha256: {sha256}")
-    print(f"[RELEASE ZIP] checksum file: {CHECKSUM_FILE}")
-    print(f"[RELEASE ZIP] done: {OUTPUT_ZIP}")
+    print(f"[RELEASE ZIP] checksum file: {checksum_file}")
+    print(f"[RELEASE ZIP] done: {output_zip}")
     return 0
 
 

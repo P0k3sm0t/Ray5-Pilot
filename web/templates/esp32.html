@@ -205,10 +205,15 @@ const NETWORK_SENSITIVE_PATHS = new Set([
 async function api(url, method='GET', body=null){
   const opt={method,headers:{'Content-Type':'application/json'}};
   if(body!==null) opt.body=JSON.stringify(body);
-  const r=await fetch(url,opt);
-  const j=await r.json();
-  if(!r.ok) throw new Error(j.error||j.message||('HTTP '+r.status));
-  return j;
+  try{
+    const r=await fetch(url,opt);
+    let j={};
+    try{ j=await r.json(); }catch(_){ j={ok:false,error:`HTTP ${r.status}`}; }
+    j._http_status=r.status;
+    return j;
+  }catch(e){
+    return {ok:false,offline:true,error:`Request failed: ${e.message||e}`,_http_status:0};
+  }
 }
 function esc(v){return JSON.stringify(v,null,2)}
 function setMsg(t){document.getElementById('msg').textContent=t;}
@@ -345,6 +350,17 @@ function renderEeprom(){
 }
 async function loadInfo(){
   const d=await api('/api/esp32/info');
+  if(!d.ok){
+    renderInfoGrid(document.getElementById('espInfoGrid'),[
+      ['Firmware Version',''],['Firmware Target',''],['Hardware',''],['Hostname',''],['Axis',''],
+      ['Web Communication',''],['WebSocket Port',''],['WebSocket IPs',''],
+      ['Primary SD',''],['Secondary SD',''],['Authentication',''],['HTTP Host',''],['HTTP Port','']
+    ]);
+    document.getElementById('espInfoRaw').textContent=maskSensitiveText(typeof d.raw==='string'?d.raw:esc(d.raw||{}));
+    logRaw('ESP3D Info Offline', d);
+    setMsg('Timed out waiting for ESP32 info response. Ray5 may be offline or unreachable.');
+    return;
+  }
   renderInfoGrid(document.getElementById('espInfoGrid'),[
     ['Firmware Version',d.fw_version||''],['Firmware Target',d.fw_target||''],['Hardware',d.fw_hw||''],['Hostname',d.hostname||''],['Axis',d.axis||''],
     ['Web Communication',d.web_communication||''],['WebSocket Port',d.websocket_port||''],['WebSocket IPs',Array.isArray(d.websocket_ips)?d.websocket_ips.join(', '):(d.websocket_ip||'')],
@@ -355,12 +371,30 @@ async function loadInfo(){
 }
 async function loadEeprom(){
   const d=await api('/api/esp32/eeprom');
+  if(!d.ok){
+    eepromSettings=[];
+    dirty={};
+    renderEeprom();
+    logRaw('EEPROM Offline', d);
+    setMsg('Timed out waiting for ESP32 EEPROM response. Ray5 may be offline or unreachable.');
+    return;
+  }
   eepromSettings=d.settings||[];
   renderEeprom();
   logRaw('EEPROM', d);
 }
 async function loadWsStatus(){
   const d=await api('/api/status/debug');
+  if(!d.ok){
+    renderInfoGrid(document.getElementById('wsInfoGrid'),[
+      ['WebSocket Connected','false'],['PAGEID',''],['Active ID',''],
+      ['State',''],['MPos',''],['WPos',''],
+      ['Feed',''],['Spindle',''],['Last Raw Status','WebSocket disconnected or no status received.'],['Last Message Age',''],['Reconnect Count','']
+    ]);
+    document.getElementById('wsAdvanced').textContent=esc(d);
+    logRaw('WS Offline', d);
+    return;
+  }
   const latest=d.latest_status||{}; const parsed=latest.parsed||{};
   renderInfoGrid(document.getElementById('wsInfoGrid'),[
     ['WebSocket Connected',String(d.websocket_connected??'')],['PAGEID',d.page_id??d.websocket_page_id??''],['Active ID',d.active_id??''],
@@ -371,6 +405,13 @@ async function loadWsStatus(){
 }
 async function loadBackups(){
   const d=await api('/api/esp32/eeprom/backups');
+  if(!d.ok){
+    backupList=[]; latestBackup=null;
+    const sel=document.getElementById('backupSelect'); sel.innerHTML='';
+    document.getElementById('backupStatus').textContent='No backups available.';
+    logRaw('EEPROM Backups Offline', d);
+    return;
+  }
   backupList=d.backups||[]; latestBackup=d.latest||null;
   const sel=document.getElementById('backupSelect'); sel.innerHTML='';
   backupList.forEach(b=>{const o=document.createElement('option');o.value=b.name;o.textContent=`${b.name} (${b.setting_count??'?'} settings)`;sel.appendChild(o);});
@@ -396,6 +437,10 @@ function triggerBackupDownload(filename){
   a.remove();
 }
 async function saveChanges(){
+  if(!Array.isArray(eepromSettings) || !eepromSettings.length){
+    setMsg('Cannot save ESP32 settings because EEPROM settings are not loaded.');
+    return;
+  }
   const changes=[];
   const changedPaths=[];
   for(const s of eepromSettings){
@@ -483,11 +528,11 @@ async function saveChanges(){
   setMsg('');
 }
 
-document.getElementById('refreshAll').onclick=async()=>{try{setMsg('Refreshing...');await loadInfo();await loadEeprom();await loadWsStatus();await loadBackups();setMsg('Refreshed.');}catch(e){setMsg('Refresh failed: '+e.message)}};
+document.getElementById('refreshAll').onclick=async()=>{setMsg('Refreshing...'); await loadInfo(); await loadEeprom(); await loadWsStatus(); await loadBackups(); setMsg('Loaded.');};
 document.getElementById('refreshInfo').onclick=async()=>{try{setMsg('Loading ESP3D info...');await loadInfo();setMsg('ESP3D info loaded.');}catch(e){setMsg('Info failed: '+e.message)}};
 document.getElementById('refreshEeprom').onclick=async()=>{try{setMsg('Loading EEPROM...');await loadEeprom();setMsg('EEPROM loaded.');}catch(e){setMsg('EEPROM failed: '+e.message)}};
 document.getElementById('refreshWs').onclick=async()=>{try{await loadWsStatus();setMsg('WS status loaded.');}catch(e){setMsg('WS status failed: '+e.message)}};
-document.getElementById('openNative').onclick=async()=>{try{const i=await api('/api/esp32/info');window.open(`http://${i.http_host||'127.0.0.1'}:${i.http_port||8848}/#`,'_blank','noopener');}catch(e){setMsg('Open native failed: '+e.message)}};
+document.getElementById('openNative').onclick=async()=>{const i=await api('/api/esp32/info'); if(!i.ok){ setMsg('Open native failed: Ray5 may be offline or unreachable.'); return; } window.open(`http://${i.http_host||'127.0.0.1'}:${i.http_port||8848}/#`,'_blank','noopener');};
 
 document.getElementById('sendGcode').onclick=async()=>{const c=document.getElementById('gcodeCmd').value.trim();if(!c)return;try{const d=await api('/api/esp32/command','POST',{command:c});document.getElementById('gcodeLast').textContent=maskSensitiveText(esc(d));logRaw('GCODE '+c,d);setMsg('G-code sent.');}catch(e){setMsg('G-code failed: '+e.message)}};
 document.getElementById('sendEsp').onclick=async()=>{const c=document.getElementById('espCmd').value.trim();if(!c)return;try{const d=await api('/api/esp32/esp-command','POST',{cmd:c});document.getElementById('espLast').textContent=maskSensitiveText(esc(d));logRaw('ESP '+c,d);setMsg('ESP cmd sent.');}catch(e){setMsg('ESP cmd failed: '+e.message)}};
@@ -509,7 +554,7 @@ document.getElementById('saveChanges').onclick=async()=>{try{await saveChanges()
 document.getElementById('eepromFilter').oninput=()=>renderEeprom();
 document.getElementById('clearRawLog').onclick=()=>{document.getElementById('rawLog').textContent='';};
 
-(async()=>{try{await loadInfo();await loadEeprom();await loadWsStatus();await loadBackups();updateDirtyBadge();setMsg('Loaded.');}catch(e){setMsg('Load failed: '+e.message)}})();
+(async()=>{await loadInfo();await loadEeprom();await loadWsStatus();await loadBackups();updateDirtyBadge(); if(!eepromSettings.length){ setMsg('ESP32 page loaded. Some sections are offline.'); } else { setMsg('Loaded.'); }})();
 </script>
 </body>
 </html>

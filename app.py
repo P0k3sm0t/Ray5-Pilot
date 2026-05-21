@@ -19,7 +19,8 @@ from urllib import request as urlrequest
 from urllib.parse import urlsplit
 
 import cv2
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, jsonify, render_template, render_template_string, request, send_file
+from jinja2 import TemplateNotFound
 
 from camera_manager import CameraCaptureError, CameraManager, mask_camera_url, mjpeg_generator
 from config_manager import ConfigManager
@@ -30,6 +31,570 @@ from ray5_status_monitor import Ray5StatusMonitor
 
 BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__, template_folder=str(BASE_DIR / "web" / "templates"), static_folder=str(BASE_DIR / "web" / "static"))
+
+ESP32_TEMPLATE_FALLBACK = r"""
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ray5 Pilot ESP32</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="alternate icon" href="/static/favicon.ico">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    :root{
+      --esp-bg:#101622;
+      --esp-bg-soft:#151c2b;
+      --esp-border:#2b364d;
+      --esp-text:#d6deef;
+      --esp-muted:#9fb0cf;
+      --esp-focus:#3ea6ff;
+      --esp-amber-bg:#2a2111;
+      --esp-green-bg:#162a1f;
+      --esp-red-bg:#2a181b;
+      --esp-orange-bg:#2c2114;
+    }
+    .esp-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .esp-info-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+    .cmd-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .edit-controls-grid{display:grid;grid-template-columns:2fr 1fr;gap:12px;align-items:start}
+    .edit-controls-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    .edit-controls-meta{display:flex;flex-direction:column;gap:8px}
+    .checkbox-group{display:flex;flex-direction:column;gap:6px}
+    .checkbox-group label{display:flex;align-items:center;gap:8px}
+    .action-row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+    .action-main{display:flex;gap:8px;flex-wrap:wrap}
+    .kv{border:1px solid var(--esp-border);border-radius:8px;padding:8px;background:var(--esp-bg-soft)}
+    .kv .k{font-size:12px;color:var(--esp-muted)}
+    .kv .v{font-weight:600;word-break:break-word;color:var(--esp-text)}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#1b2740;color:#b8c8ea;font-size:12px;border:1px solid #2f436c}
+    .unsaved-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;border:1px solid var(--esp-border);background:#182136;color:var(--esp-muted)}
+    .unsaved-badge.has-changes{background:var(--esp-amber-bg);border-color:#5a4420;color:#f0c37a}
+    .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+    .table-wrap{max-height:60vh;overflow:auto;border:1px solid var(--esp-border);border-radius:8px;width:100%}
+    .table-wrap table{margin:0;width:100%;table-layout:auto}
+    .table-wrap thead th{position:sticky;top:0;background:#141c2c;z-index:1}
+    .table-wrap th,.table-wrap td{background:transparent;color:var(--esp-text)}
+    td.compact-cell{white-space:nowrap}
+    .value-input{height:30px;padding:4px 8px;line-height:1.2;background:#0f1726;color:var(--esp-text);border:1px solid var(--esp-border);border-radius:6px}
+    .value-input:focus{outline:none;border-color:var(--esp-focus);box-shadow:0 0 0 1px color-mix(in srgb, var(--esp-focus) 45%, transparent)}
+    .value-input.text{min-width:200px}
+    .value-input.number{width:120px}
+    .value-input.ip{width:160px}
+    .value-input.select{min-width:170px}
+    .sensitive-wrap{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .sensitive-note{font-size:12px;color:var(--esp-muted)}
+    .options-muted{font-size:12px;color:var(--esp-muted)}
+    .row-changed td{background:var(--esp-amber-bg)!important}
+    .row-changed .value-input,.row-changed .edit-input{border-color:#6a4d23}
+    .muted-line{color:var(--esp-muted);font-size:12px}
+    .status-badge{font-size:12px;padding:2px 6px;border-radius:6px;display:inline-block}
+    .status-changed{background:var(--esp-amber-bg);color:#f0c37a;border:1px solid #5a4420}
+    .status-saved{background:var(--esp-green-bg);color:#8fd6a8;border:1px solid #2f5f40}
+    .status-failed{background:var(--esp-red-bg);color:#f1a3a3;border:1px solid #6a2e34}
+    .status-blocked{background:var(--esp-orange-bg);color:#efb66d;border:1px solid #6b4a1f}
+    .status-validation{background:#2b1c15;color:#efaf7e;border:1px solid #724028}
+    .status-cancelled{background:#2a2233;color:#c5b4ec;border:1px solid #57457a}
+    .save-summary{margin-top:8px;font-size:13px;padding:8px 10px;border-radius:8px;background:#162338;border:1px solid #2c4062;color:#c4d6f6;display:none}
+    .save-summary.show{display:block}
+    .save-warning{margin-top:8px;font-size:12px;padding:8px 10px;border-radius:8px;background:#1d2230;border:1px solid #3a445d;color:#b9c7e8}
+    .details-group summary{cursor:pointer;color:var(--esp-muted)}
+    .details-group[open] summary{color:var(--esp-text)}
+    .path-col{display:flex;align-items:center;gap:6px}
+    .group-chip{font-size:10px;border:1px solid var(--esp-border);background:#1a2437;border-radius:999px;padding:1px 6px;color:var(--esp-muted)}
+    input,select,textarea{background:#0f1726;color:var(--esp-text);border:1px solid var(--esp-border);border-radius:6px}
+    input:focus,select:focus,textarea:focus{outline:none;border-color:var(--esp-focus);box-shadow:0 0 0 1px color-mix(in srgb, var(--esp-focus) 45%, transparent)}
+    @media (max-width:980px){.esp-grid,.esp-info-grid,.cmd-grid,.edit-controls-grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<header>
+  <div class="brand brand-logo-only"><img src="/static/logo.svg" alt="Ray5 Pilot" class="brand-logo-main"></div>
+  <nav><a href="/">Dashboard</a><a href="/setup">Settings</a><a href="/machine-settings">GRBL</a><a href="/esp32">ESP32</a></nav>
+</header>
+<main>
+  <section class="card">
+    <h2>ESP32 / ESP3D</h2>
+    <div class="action-row">
+      <div class="action-main">
+        <button id="refreshAll">Refresh All</button>
+        <button id="openNative">Open Native ESP32 Page</button>
+      </div>
+      <details class="details-group">
+        <summary>More actions</summary>
+        <div class="button-row" style="margin-top:8px;">
+          <button id="refreshInfo">Refresh ESP3D Info</button>
+          <button id="refreshEeprom">Refresh EEPROM</button>
+          <button id="refreshWs">Refresh WS Status</button>
+        </div>
+      </details>
+    </div>
+    <div id="msg" class="muted small"></div>
+  </section>
+
+  <div class="esp-grid">
+    <section class="card">
+      <h2>ESP3D Info</h2>
+      <div id="espInfoGrid" class="esp-info-grid"></div>
+      <details class="details-group" style="margin-top:10px;"><summary>Raw ESP3D Info</summary><pre id="espInfoRaw" class="muted small mono"></pre></details>
+    </section>
+
+    <section class="card">
+      <h2>WebSocket Status</h2>
+      <div id="wsInfoGrid" class="esp-info-grid"></div>
+      <details class="details-group" style="margin-top:10px;"><summary>Advanced WebSocket JSON</summary><pre id="wsAdvanced" class="muted small mono"></pre></details>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>EEPROM Settings</h2>
+    <section class="card" style="margin-bottom:10px;">
+      <h3 style="margin-top:0;">Edit Controls</h3>
+      <div class="edit-controls-grid">
+        <div>
+          <div class="edit-controls-actions">
+            <button id="backupEeprom">Download Backup</button>
+            <button id="saveChanges" disabled>Save Changes</button>
+            <button id="discardChanges" disabled>Discard Changes</button>
+          </div>
+          <div id="backupStatus" class="muted small" style="margin-top:8px;"></div>
+          <div id="saveSummary" class="save-summary"></div>
+        </div>
+        <div class="edit-controls-meta">
+          <span id="changedBadge" class="unsaved-badge">Unsaved: 0</span>
+        </div>
+      </div>
+      <div class="save-warning">Changing ESP32 settings can affect Wi-Fi, network access, and controller behavior. Download a backup before saving.</div>
+    </section>
+    <div class="button-row" style="margin-top:8px; margin-bottom:8px;">
+      <input id="eepromFilter" placeholder="Search path/label/value" style="min-width:280px;width:100%;max-width:420px;">
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Path</th><th>Label</th><th>Type</th><th>Value</th><th>Range</th><th>Options</th><th>Status</th></tr></thead>
+        <tbody id="eepromBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Backup List / Compare</h2>
+    <div class="button-row">
+      <select id="backupSelect" style="min-width:280px;"></select>
+      <button id="loadBackup">View Backup</button>
+      <button id="compareBackup">Compare To Current</button>
+    </div>
+    <pre id="backupView" class="muted small mono"></pre>
+    <pre id="backupDiff" class="muted small mono"></pre>
+  </section>
+
+  <section class="card">
+    <h2>Command Box</h2>
+    <div class="cmd-grid">
+      <div>
+        <h3>G-code (commandText)</h3>
+        <input id="gcodeCmd" placeholder="e.g. ?" style="width:100%">
+        <div class="button-row" style="margin-top:8px;"><button id="sendGcode">Send G-code</button></div>
+        <div id="gcodeLast" class="muted-line mono"></div>
+      </div>
+      <div>
+        <h3>ESP command (cmd / commandText auto)</h3>
+        <input id="espCmd" placeholder="e.g. [ESP800]json=yes" style="width:100%">
+        <div class="button-row" style="margin-top:8px;"><button id="sendEsp">Send ESP cmd</button></div>
+        <div id="espLast" class="muted-line mono"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <details class="details-group">
+      <summary>Raw Log</summary>
+      <div class="button-row" style="margin:8px 0;"><button id="clearRawLog">Clear Log</button></div>
+      <pre id="rawLog" class="muted small mono"></pre>
+    </details>
+  </section>
+</main>
+<script>
+let eepromSettings=[];
+let backupList=[];
+let dirty={};
+let rowStatus={};
+let hasSessionBackup=false;
+let sessionBackupDownloaded=false;
+let latestBackup=null;
+const NETWORK_SENSITIVE_PATHS = new Set([
+  'Sta/SSID',
+  'Sta/Password',
+  'Sta/IPMode',
+  'Sta/IP',
+  'Sta/Gateway',
+  'Sta/Netmask',
+  'AP/SSID',
+  'AP/Password',
+  'AP/IP',
+  'Http/Port',
+  'Radio/Mode'
+]);
+
+async function api(url, method='GET', body=null){
+  const opt={method,headers:{'Content-Type':'application/json'}};
+  if(body!==null) opt.body=JSON.stringify(body);
+  try{
+    const r=await fetch(url,opt);
+    let j={};
+    try{ j=await r.json(); }catch(_){ j={ok:false,error:`HTTP ${r.status}`}; }
+    j._http_status=r.status;
+    return j;
+  }catch(e){
+    return {ok:false,offline:true,error:`Request failed: ${e.message||e}`,_http_status:0};
+  }
+}
+function esc(v){return JSON.stringify(v,null,2)}
+function setMsg(t){document.getElementById('msg').textContent=t;}
+function setSaveSummary(t){
+  const el=document.getElementById('saveSummary');
+  if(!t){el.textContent='';el.classList.remove('show');return;}
+  el.textContent=t;
+  el.classList.add('show');
+}
+function maskSensitiveText(text){
+  return String(text||'').replace(/(password|pass|token|key|secret)\s*[:=]\s*[^\s,#\]]+/ig,'$1=******');
+}
+function logRaw(label,data){
+  const el=document.getElementById('rawLog');
+  const t='['+new Date().toLocaleTimeString()+'] '+label+'\n'+maskSensitiveText(esc(data))+'\n\n';
+  el.textContent=t+el.textContent;
+}
+function renderInfoGrid(el, rows){
+  el.innerHTML='';
+  rows.forEach(([k,v])=>{
+    const d=document.createElement('div');d.className='kv';
+    d.innerHTML=`<div class="k">${k}</div><div class="v">${v??''}</div>`;
+    el.appendChild(d);
+  });
+}
+function fmtOptions(options){
+  if(!Array.isArray(options)||!options.length) return '';
+  const parts=[];
+  for(const o of options){
+    if(o && typeof o==='object' && !Array.isArray(o)){
+      for(const [k,v] of Object.entries(o)) parts.push(`${k} = ${v}`);
+    } else parts.push(String(o));
+  }
+  return parts.join(', ');
+}
+function optionLabelForValue(options,value){
+  if(!Array.isArray(options)) return null;
+  const val=String(value??'');
+  for(const o of options){
+    if(o && typeof o==='object' && !Array.isArray(o)){
+      for(const [k,v] of Object.entries(o)) if(String(v)===val) return `${k} (${val})`;
+    }
+  }
+  return null;
+}
+function rangeText(minv,maxv){
+  const hasMin=minv!==undefined&&minv!==null&&String(minv)!=='';
+  const hasMax=maxv!==undefined&&maxv!==null&&String(maxv)!=='';
+  if(hasMin&&hasMax) return `${minv}\u2013${maxv}`;
+  if(hasMax) return String(maxv);
+  if(hasMin) return String(minv);
+  return '';
+}
+function statusMarkup(status){
+  if(!status) return '';
+  if(status.state==='Changed') return '<span class="status-badge status-changed">Changed</span>';
+  if(status.state==='Saved') return `<span class="status-badge status-saved" title="${status.message||''}">Saved${status.mode?` via ${status.mode}`:''}</span>`;
+  if(status.state==='Failed') return `<span class="status-badge status-failed" title="${status.message||''}">Failed</span>`;
+  if(status.state==='Blocked') return `<span class="status-badge status-blocked" title="${status.message||''}">Blocked</span>`;
+  if(status.state==='Validation error') return `<span class="status-badge status-validation" title="${status.message||''}">Validation error</span>`;
+  if(status.state==='Cancelled') return `<span class="status-badge status-cancelled" title="${status.message||''}">Cancelled</span>`;
+  return '';
+}
+function updateDirtyBadge(){
+  const c=Object.keys(dirty).length;
+  const badge=document.getElementById('changedBadge');
+  badge.textContent=`Unsaved: ${c}`;
+  badge.classList.toggle('has-changes', c>0);
+  const saveBtn=document.getElementById('saveChanges');
+  const canSave=c>0;
+  saveBtn.disabled=!canSave;
+  document.getElementById('discardChanges').disabled=(c===0);
+}
+function isSensitive(setting){
+  const s=((setting.path||'')+' '+(setting.label||'')).toLowerCase();
+  return /(password|pass|token|key|secret)/.test(s);
+}
+function renderValueEditor(setting, key){
+  const original = setting.raw_value ?? setting.value ?? '';
+  const current = (dirty[key]!==undefined)?dirty[key]:original;
+  if(isSensitive(setting)){
+    const changed = dirty[key]!==undefined;
+    return `<div class="sensitive-wrap"><label><input type="checkbox" data-k="${key}" class="sens-enable" ${changed?'checked':''}> Change password</label>${changed?`<input data-k="${key}" class="sens-input value-input text" type="password" placeholder="New value">`:'<span class="sensitive-note">Leave unchanged</span>'}</div>`;
+  }
+  const t=String(setting.type||'').toUpperCase();
+  if((t==='B' || (Array.isArray(setting.options)&&setting.options.length))){
+    const opts=[];
+    for(const o of (setting.options||[])) if(o&&typeof o==='object') for(const [k,v] of Object.entries(o)) opts.push({label:k,val:String(v)});
+    const html=opts.map(o=>`<option value="${o.val}" ${String(current)===o.val?'selected':''}>${o.label} (${o.val})</option>`).join('');
+    return `<select data-k="${key}" class="edit-input value-input select">${html}</select>`;
+  }
+  const inputType = t==='I'?'number':'text';
+  let inputClass='value-input text';
+  if(t==='I') inputClass='value-input number';
+  if(t==='A') inputClass='value-input ip';
+  return `<input data-k="${key}" class="edit-input ${inputClass}" type="${inputType}" value="${String(current).replace(/"/g,'&quot;')}">`;
+}
+function renderEeprom(){
+  const body=document.getElementById('eepromBody');
+  const q=document.getElementById('eepromFilter').value.trim().toLowerCase();
+  body.innerHTML='';
+  eepromSettings.forEach(s=>{
+    const key=s.path||`idx:${s.index}`;
+    const orig=s.raw_value ?? s.value ?? '';
+    const hay=(`${s.group||''} ${s.path||''} ${s.label||''} ${orig}`).toLowerCase();
+    if(q && !hay.includes(q)) return;
+    const changed = dirty[key]!==undefined;
+    const status = changed ? {state:'Changed'} : (rowStatus[key] || null);
+    const tr=document.createElement('tr');
+    if(changed) tr.classList.add('row-changed');
+    tr.innerHTML=`
+      <td class="mono"><div class="path-col"><span class="group-chip">${s.group??''}</span><span>${s.path??''}</span></div></td>
+      <td>${s.label??''}</td>
+      <td>${s.type??''}</td>
+      <td>${renderValueEditor(s,key)}</td>
+      <td class="compact-cell">${rangeText(s.min,s.size_or_max)}</td>
+      <td><span class="options-muted">${fmtOptions(s.options||[])}</span></td>
+      <td>${statusMarkup(status)}</td>`;
+    body.appendChild(tr);
+  });
+  body.querySelectorAll('.edit-input').forEach(el=>{
+    el.addEventListener('change', ()=>{dirty[el.dataset.k]=el.value; rowStatus[el.dataset.k]={state:'Changed'}; updateDirtyBadge(); renderEeprom();});
+  });
+  body.querySelectorAll('.sens-enable').forEach(el=>{
+    el.addEventListener('change', ()=>{
+      const k=el.dataset.k;
+      if(!el.checked){ delete dirty[k]; delete rowStatus[k]; } else { dirty[k]=''; rowStatus[k]={state:'Changed'}; }
+      updateDirtyBadge(); renderEeprom();
+    });
+  });
+  body.querySelectorAll('.sens-input').forEach(el=>{
+    el.addEventListener('change', ()=>{dirty[el.dataset.k]=el.value; rowStatus[el.dataset.k]={state:'Changed'}; updateDirtyBadge();});
+  });
+}
+async function loadInfo(){
+  const d=await api('/api/esp32/info');
+  if(!d.ok){
+    renderInfoGrid(document.getElementById('espInfoGrid'),[
+      ['Firmware Version',''],['Firmware Target',''],['Hardware',''],['Hostname',''],['Axis',''],
+      ['Web Communication',''],['WebSocket Port',''],['WebSocket IPs',''],
+      ['Primary SD',''],['Secondary SD',''],['Authentication',''],['HTTP Host',''],['HTTP Port','']
+    ]);
+    document.getElementById('espInfoRaw').textContent=maskSensitiveText(typeof d.raw==='string'?d.raw:esc(d.raw||{}));
+    logRaw('ESP3D Info Offline', d);
+    setMsg('Timed out waiting for ESP32 info response. Ray5 may be offline or unreachable.');
+    return;
+  }
+  renderInfoGrid(document.getElementById('espInfoGrid'),[
+    ['Firmware Version',d.fw_version||''],['Firmware Target',d.fw_target||''],['Hardware',d.fw_hw||''],['Hostname',d.hostname||''],['Axis',d.axis||''],
+    ['Web Communication',d.web_communication||''],['WebSocket Port',d.websocket_port||''],['WebSocket IPs',Array.isArray(d.websocket_ips)?d.websocket_ips.join(', '):(d.websocket_ip||'')],
+    ['Primary SD',d.primary_sd||''],['Secondary SD',d.secondary_sd||''],['Authentication',d.authentication||''],['HTTP Host',d.http_host||''],['HTTP Port',d.http_port||'']
+  ]);
+  document.getElementById('espInfoRaw').textContent=maskSensitiveText(typeof d.raw==='string'?d.raw:esc(d.raw));
+  logRaw('ESP3D Info', d);
+}
+async function loadEeprom(){
+  const d=await api('/api/esp32/eeprom');
+  if(!d.ok){
+    eepromSettings=[];
+    dirty={};
+    renderEeprom();
+    logRaw('EEPROM Offline', d);
+    setMsg('Timed out waiting for ESP32 EEPROM response. Ray5 may be offline or unreachable.');
+    return;
+  }
+  eepromSettings=d.settings||[];
+  renderEeprom();
+  logRaw('EEPROM', d);
+}
+async function loadWsStatus(){
+  const d=await api('/api/status/debug');
+  if(!d.ok){
+    renderInfoGrid(document.getElementById('wsInfoGrid'),[
+      ['WebSocket Connected','false'],['PAGEID',''],['Active ID',''],
+      ['State',''],['MPos',''],['WPos',''],
+      ['Feed',''],['Spindle',''],['Last Raw Status','WebSocket disconnected or no status received.'],['Last Message Age',''],['Reconnect Count','']
+    ]);
+    document.getElementById('wsAdvanced').textContent=esc(d);
+    logRaw('WS Offline', d);
+    return;
+  }
+  const latest=d.latest_status||{}; const parsed=latest.parsed||{};
+  renderInfoGrid(document.getElementById('wsInfoGrid'),[
+    ['WebSocket Connected',String(d.websocket_connected??'')],['PAGEID',d.page_id??d.websocket_page_id??''],['Active ID',d.active_id??''],
+    ['State',parsed.state??latest.state??''],['MPos',Array.isArray(parsed.mpos)?parsed.mpos.join(', '):''],['WPos',Array.isArray(parsed.wpos)?parsed.wpos.join(', '):''],
+    ['Feed',parsed.feed??''],['Spindle',parsed.spindle??''],['Last Raw Status',d.last_raw_status??latest.raw??''],['Last Message Age',d.last_status_age_seconds??''],['Reconnect Count',d.reconnect_count??'']
+  ]);
+  document.getElementById('wsAdvanced').textContent=esc(d);
+}
+async function loadBackups(){
+  const d=await api('/api/esp32/eeprom/backups');
+  if(!d.ok){
+    backupList=[]; latestBackup=null;
+    const sel=document.getElementById('backupSelect'); sel.innerHTML='';
+    document.getElementById('backupStatus').textContent='No backups available.';
+    logRaw('EEPROM Backups Offline', d);
+    return;
+  }
+  backupList=d.backups||[]; latestBackup=d.latest||null;
+  const sel=document.getElementById('backupSelect'); sel.innerHTML='';
+  backupList.forEach(b=>{const o=document.createElement('option');o.value=b.name;o.textContent=`${b.name} (${b.setting_count??'?'} settings)`;sel.appendChild(o);});
+  hasSessionBackup = backupList.length>0;
+  document.getElementById('backupStatus').textContent = backupList.length ? `Latest backup: ${backupList[0].name}` : 'No backups yet for this folder.';
+  updateDirtyBadge();
+}
+async function doBackup(){
+  const d=await api('/api/esp32/eeprom/backup','POST',{});
+  hasSessionBackup=true;
+  sessionBackupDownloaded=true;
+  document.getElementById('backupStatus').textContent=`Backup created: ${d.backup_file} (${d.setting_count} settings)`;
+  await loadBackups();
+  logRaw('EEPROM Backup', d);
+  return d;
+}
+function triggerBackupDownload(filename){
+  const a=document.createElement('a');
+  a.href=`/api/esp32/eeprom/backups/${encodeURIComponent(filename)}/download`;
+  a.style.display='none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+async function saveChanges(){
+  if(!Array.isArray(eepromSettings) || !eepromSettings.length){
+    setMsg('Cannot save ESP32 settings because EEPROM settings are not loaded.');
+    return;
+  }
+  const changes=[];
+  const changedPaths=[];
+  for(const s of eepromSettings){
+    const key=s.path||`idx:${s.index}`;
+    if(dirty[key]===undefined) continue;
+    changes.push({path:s.path,type:s.type,value:dirty[key]});
+    changedPaths.push(s.path);
+  }
+  if(!changes.length) return;
+  const networkTouched = changedPaths.filter((p)=>NETWORK_SENSITIVE_PATHS.has(String(p||'')));
+  if(networkTouched.length){
+    const confirmedNetwork = confirm('You are changing network-related ESP32 settings. This could disconnect Ray5 Pilot from the laser. Continue?');
+    if(!confirmedNetwork){
+      networkTouched.forEach((p)=>{ rowStatus[p] = {state:'Cancelled', message:'network warning cancelled'}; });
+      renderEeprom();
+      logRaw('EEPROM Save Cancelled', {reason:'network warning cancelled', paths: networkTouched});
+      setMsg('Save cancelled.');
+      return;
+    }
+  }
+  if(!sessionBackupDownloaded){
+    const confirmedNoBackup = confirm('No current EEPROM backup has been downloaded this session. It is recommended to download a backup first. Continue anyway?');
+    if(!confirmedNoBackup){
+      changedPaths.forEach((p)=>{ rowStatus[p] = {state:'Cancelled', message:'backup warning cancelled'}; });
+      renderEeprom();
+      logRaw('EEPROM Save Cancelled', {reason:'backup warning cancelled', paths: changedPaths});
+      setMsg('Save cancelled.');
+      return;
+    }
+  }
+  const payload={
+    changes,
+    backup_required: false,
+    allow_network_changes: true
+  };
+  const resp = await fetch('/api/esp32/eeprom/save',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  let d={};
+  try{ d=await resp.json(); }catch(_){ d={ok:false,error:`HTTP ${resp.status}`}; }
+  logRaw('EEPROM Save', d);
+  const results = Array.isArray(d.results) ? d.results : [];
+  let savedAny = false;
+  for(const r of results){
+    const k = r.path || '';
+    if(!k) continue;
+    if(r.ok){
+      savedAny = true;
+      rowStatus[k] = {state:'Saved', mode:r.mode||'', message:r.response||r.message||''};
+    } else {
+      rowStatus[k] = {state:'Failed', mode:r.mode||'', message:r.response||r.message||''};
+    }
+  }
+  if(Array.isArray(d.failed)){
+    for(const f of d.failed){
+      const k = f.path || '';
+      if(!k) continue;
+      const msg = String(f.response||f.message||'');
+      const lower = msg.toLowerCase();
+      if(lower.includes('network-changing settings require confirmation')){
+        rowStatus[k] = {state:'Blocked', mode:f.mode||'', message:msg};
+      } else if(lower.includes('validation')){
+        rowStatus[k] = {state:'Validation error', mode:f.mode||'', message:msg};
+      } else {
+        rowStatus[k] = {state:'Failed', mode:f.mode||'', message:msg};
+      }
+    }
+  }
+  const okCount = Number(d.ok_count||0);
+  const failedCount = Number(d.failed_count||0);
+  const backupFile = d && d.backup && d.backup.file ? String(d.backup.file).split('/').pop() : '';
+  if(okCount>0 && failedCount===0){
+    setSaveSummary(`Saved ${okCount} setting${okCount===1?'':'s'}.${backupFile?` Backup created: ${backupFile}.`:''}`);
+  } else if(okCount>0 && failedCount>0){
+    setSaveSummary(`Saved ${okCount} setting${okCount===1?'':'s'}, ${failedCount} failed.${backupFile?` Backup created: ${backupFile}.`:''}`);
+  } else {
+    setSaveSummary(`Save failed. ${okCount} settings saved.`);
+  }
+  if(!resp.ok || !d.ok){ renderEeprom(); throw new Error((d.failed||[]).map(x=>x.path+': '+(x.response||x.message||'failed')).join('; ')||d.error||'Save failed'); }
+  dirty={}; updateDirtyBadge();
+  if(savedAny){ await loadEeprom(); }
+  renderEeprom();
+  setMsg('');
+}
+
+document.getElementById('refreshAll').onclick=async()=>{setMsg('Refreshing...'); await loadInfo(); await loadEeprom(); await loadWsStatus(); await loadBackups(); setMsg('Loaded.');};
+document.getElementById('refreshInfo').onclick=async()=>{try{setMsg('Loading ESP3D info...');await loadInfo();setMsg('ESP3D info loaded.');}catch(e){setMsg('Info failed: '+e.message)}};
+document.getElementById('refreshEeprom').onclick=async()=>{try{setMsg('Loading EEPROM...');await loadEeprom();setMsg('EEPROM loaded.');}catch(e){setMsg('EEPROM failed: '+e.message)}};
+document.getElementById('refreshWs').onclick=async()=>{try{await loadWsStatus();setMsg('WS status loaded.');}catch(e){setMsg('WS status failed: '+e.message)}};
+document.getElementById('openNative').onclick=async()=>{const i=await api('/api/esp32/info'); if(!i.ok){ setMsg('Open native failed: Ray5 may be offline or unreachable.'); return; } window.open(`http://${i.http_host||'127.0.0.1'}:${i.http_port||8848}/#`,'_blank','noopener');};
+
+document.getElementById('sendGcode').onclick=async()=>{const c=document.getElementById('gcodeCmd').value.trim();if(!c)return;try{const d=await api('/api/esp32/command','POST',{command:c});document.getElementById('gcodeLast').textContent=maskSensitiveText(esc(d));logRaw('GCODE '+c,d);setMsg('G-code sent.');}catch(e){setMsg('G-code failed: '+e.message)}};
+document.getElementById('sendEsp').onclick=async()=>{const c=document.getElementById('espCmd').value.trim();if(!c)return;try{const d=await api('/api/esp32/esp-command','POST',{cmd:c});document.getElementById('espLast').textContent=maskSensitiveText(esc(d));logRaw('ESP '+c,d);setMsg('ESP cmd sent.');}catch(e){setMsg('ESP cmd failed: '+e.message)}};
+
+document.getElementById('backupEeprom').onclick=async()=>{
+  try{
+    const d=await doBackup();
+    if(!d || !d.backup_file) throw new Error('Backup file not returned');
+    triggerBackupDownload(d.backup_file);
+    setMsg('Backup downloaded.');
+  }catch(e){setMsg('Download backup failed: '+e.message)}
+};
+
+document.getElementById('loadBackup').onclick=async()=>{try{const n=document.getElementById('backupSelect').value;if(!n) throw new Error('Select a backup');const d=await api('/api/esp32/eeprom/backups/'+encodeURIComponent(n));document.getElementById('backupView').textContent=maskSensitiveText(esc(d));}catch(e){setMsg('View backup failed: '+e.message)}};
+document.getElementById('compareBackup').onclick=async()=>{try{const n=document.getElementById('backupSelect').value;if(!n) throw new Error('Select a backup');const d=await api('/api/esp32/eeprom/compare?backup='+encodeURIComponent(n));document.getElementById('backupDiff').textContent=maskSensitiveText(esc(d));}catch(e){setMsg('Compare failed: '+e.message)}};
+
+document.getElementById('discardChanges').onclick=()=>{dirty={};rowStatus={};updateDirtyBadge();renderEeprom();setSaveSummary('');setMsg('Unsaved changes discarded.');};
+document.getElementById('saveChanges').onclick=async()=>{try{await saveChanges();}catch(e){setMsg('Save failed: '+e.message)}};
+document.getElementById('eepromFilter').oninput=()=>renderEeprom();
+document.getElementById('clearRawLog').onclick=()=>{document.getElementById('rawLog').textContent='';};
+
+(async()=>{await loadInfo();await loadEeprom();await loadWsStatus();await loadBackups();updateDirtyBadge(); if(!eepromSettings.length){ setMsg('ESP32 page loaded. Some sections are offline.'); } else { setMsg('Loaded.'); }})();
+</script>
+</body>
+</html>
+
+"""
 
 cfg_mgr = ConfigManager(BASE_DIR)
 cfg = cfg_mgr.ensure_config()
@@ -2048,7 +2613,11 @@ def machine_settings_page() -> str:
 
 @app.get("/esp32")
 def esp32_page() -> str:
-    return render_template("esp32.html")
+    try:
+        return render_template("esp32.html")
+    except TemplateNotFound:
+        console.add("warn", "[ESP32 TEMPLATE FALLBACK] web/templates/esp32.html missing; using embedded fallback")
+        return render_template_string(ESP32_TEMPLATE_FALLBACK)
 
 
 @app.get("/api/status")
@@ -2726,6 +3295,18 @@ def _fetch_esp32_eeprom_payload() -> tuple[dict[str, Any], dict[str, Any], list[
     return result, parsed, settings, raw_text
 
 
+def _esp32_offline_payload(route: str, error: Any, **extra: Any) -> dict[str, Any]:
+    err_text = str(error or "Timed out waiting for ESP32 response.")
+    console.add("warn", f"[ESP32 OFFLINE] route={route} error={err_text}")
+    payload: dict[str, Any] = {
+        "ok": False,
+        "offline": True,
+        "error": err_text,
+    }
+    payload.update(extra)
+    return payload
+
+
 NETWORK_CHANGING_PATHS = {
     "Http/Port",
     "Sta/IPMode",
@@ -2844,7 +3425,39 @@ def api_esp32_info() -> Any:
     tz_fmt = f"{tz[:3]}:{tz[3:]}" if len(tz) == 5 else "+00:00"
     cmd = f"[ESP800]json=yes time={iso_time} tz={tz_fmt} version=3.0.0"
     console.add("info", f"[ESP3D INFO FETCH] command={cmd}")
-    result = ray5.get_esp3d_info(webui_version="3.0.0")
+    try:
+        result = ray5.get_esp3d_info(webui_version="3.0.0")
+    except Exception as exc:
+        return (
+            jsonify(
+                _esp32_offline_payload(
+                    "info",
+                    f"Timed out waiting for ESP32 info response. Ray5 may be offline or unreachable. ({exc})",
+                    raw=None,
+                    fw_version="",
+                    fw_target="",
+                    fw_target_id="",
+                    fw_hw="",
+                    sd_connection="",
+                    primary_sd="",
+                    secondary_sd="",
+                    authentication="",
+                    serial_protocol="",
+                    web_communication="",
+                    websocket_ip="",
+                    websocket_ips=[],
+                    websocket_port="",
+                    hostname="",
+                    axis="",
+                    wifi_mode="",
+                    http_host="",
+                    http_port=8848,
+                    esp_param_used=None,
+                    esp_attempts=[],
+                )
+            ),
+            503,
+        )
     for attempt in result.get("attempts", []) if isinstance(result, dict) else []:
         param = attempt.get("param")
         console.add("info", f"[ESP32 ESPCMD TRY] param={param} cmd={cmd}")
@@ -2863,6 +3476,37 @@ def api_esp32_info() -> Any:
         data = {}
     parsed_from_raw = _parse_esp800_raw_text(raw_text)
     ray_cfg = cfg.get("ray5", {}) if isinstance(cfg.get("ray5"), dict) else {}
+    if not result.get("ok"):
+        return (
+            jsonify(
+                _esp32_offline_payload(
+                    "info",
+                    result.get("message") or "Timed out waiting for ESP32 info response. Ray5 may be offline or unreachable.",
+                    raw=parsed if parsed else raw_text,
+                    fw_version="",
+                    fw_target="",
+                    fw_target_id="",
+                    fw_hw="",
+                    sd_connection="",
+                    primary_sd="",
+                    secondary_sd="",
+                    authentication="",
+                    serial_protocol="",
+                    web_communication="",
+                    websocket_ip="",
+                    websocket_ips=[],
+                    websocket_port="",
+                    hostname="",
+                    axis="",
+                    wifi_mode="",
+                    http_host=ray_cfg.get("host", ""),
+                    http_port=int(ray_cfg.get("port", 8848)),
+                    esp_param_used=result.get("selected_param"),
+                    esp_attempts=result.get("attempts", []),
+                )
+            ),
+            503,
+        )
     return jsonify(
         {
             "ok": bool(result.get("ok")),
@@ -2897,7 +3541,36 @@ def api_esp32_eeprom() -> Any:
     blocked = _require_ray5_configured()
     if blocked:
         return blocked
-    result, parsed, settings, raw_text = _fetch_esp32_eeprom_payload()
+    try:
+        result, parsed, settings, raw_text = _fetch_esp32_eeprom_payload()
+    except Exception as exc:
+        return (
+            jsonify(
+                _esp32_offline_payload(
+                    "eeprom",
+                    f"Timed out waiting for ESP32 EEPROM response. Ray5 may be offline or unreachable. ({exc})",
+                    raw=None,
+                    settings=[],
+                    esp_param_used=None,
+                    esp_attempts=[],
+                )
+            ),
+            503,
+        )
+    if not result.get("ok"):
+        return (
+            jsonify(
+                _esp32_offline_payload(
+                    "eeprom",
+                    result.get("message") or "Timed out waiting for ESP32 EEPROM response. Ray5 may be offline or unreachable.",
+                    raw=parsed if parsed else raw_text,
+                    settings=[],
+                    esp_param_used=result.get("selected_param"),
+                    esp_attempts=result.get("attempts", []),
+                )
+            ),
+            503,
+        )
     return jsonify(
         {
             "ok": bool(result.get("ok")),
@@ -2915,9 +3588,12 @@ def api_esp32_eeprom_backup() -> Any:
     blocked = _require_ray5_configured()
     if blocked:
         return blocked
-    result, parsed, settings, raw_text = _fetch_esp32_eeprom_payload()
+    try:
+        result, parsed, settings, raw_text = _fetch_esp32_eeprom_payload()
+    except Exception as exc:
+        return jsonify(_esp32_offline_payload("backup", f"Timed out waiting for ESP32 EEPROM response. ({exc})", raw=None, settings=[])), 503
     if not result.get("ok"):
-        return jsonify({"ok": False, "error": result.get("message") or "EEPROM fetch failed", "raw": raw_text}), 502
+        return jsonify(_esp32_offline_payload("backup", result.get("message") or "Timed out waiting for ESP32 EEPROM response.", raw=raw_text, settings=[])), 503
     backup_dir = _esp32_backup_dir()
     ts = time.strftime("%Y%m%d_%H%M%S")
     filename = f"esp32_eeprom_backup_{ts}.json"
@@ -3041,6 +3717,14 @@ def api_esp32_eeprom_save() -> Any:
     allow_network = bool(body.get("allow_network_changes", False))
     if not isinstance(changes, list) or not changes:
         return jsonify({"ok": False, "error": "changes must be a non-empty list"}), 400
+    if not isinstance(settings := body.get("changes", []), list):
+        settings = []
+    try:
+        _, _, current_settings, _ = _fetch_esp32_eeprom_payload()
+    except Exception as exc:
+        return jsonify(_esp32_offline_payload("save", f"Cannot save ESP32 settings because EEPROM settings are not loaded. ({exc})", results=[], failed=[])), 503
+    if not current_settings:
+        return jsonify(_esp32_offline_payload("save", "Cannot save ESP32 settings because EEPROM settings are not loaded.", results=[], failed=[])), 503
     backup_ok, backup_info = _create_esp32_auto_backup()
     if not backup_ok:
         return (
@@ -3048,6 +3732,7 @@ def api_esp32_eeprom_save() -> Any:
                 {
                     "ok": False,
                     "error": "Automatic backup failed; save was not performed.",
+                    "offline": True,
                     "backup": backup_info,
                     "results": [],
                     "failed": [],
@@ -3058,7 +3743,10 @@ def api_esp32_eeprom_save() -> Any:
             500,
         )
 
-    _, _, settings, _ = _fetch_esp32_eeprom_payload()
+    try:
+        _, _, settings, _ = _fetch_esp32_eeprom_payload()
+    except Exception as exc:
+        return jsonify(_esp32_offline_payload("save", f"Cannot save ESP32 settings because EEPROM settings are not loaded. ({exc})", results=[], failed=[])), 503
     path_map = {str(s.get("path")): s for s in settings}
     index_map = {str(s.get("path")): int(s.get("index", 0)) for s in settings}
     errors: list[str] = []
@@ -3262,7 +3950,12 @@ def api_esp32_command() -> Any:
     if not command:
         return jsonify({"ok": False, "message": "command is required"}), 400
     console.add("info", f"[ESP32 COMMANDTEXT] command={command}")
-    result = ray5.send_gcode(command)
+    try:
+        result = ray5.send_gcode(command)
+    except Exception as exc:
+        return jsonify(_esp32_offline_payload("command", f"Timed out waiting for ESP32 command response. ({exc})", result={})), 503
+    if not result.get("ok"):
+        return jsonify(_esp32_offline_payload("command", result.get("message") or "Timed out waiting for ESP32 command response.", result=result)), 503
     return jsonify({"ok": bool(result.get("ok")), "result": result})
 
 
@@ -3276,7 +3969,10 @@ def api_esp32_esp_command() -> Any:
     if not cmd:
         return jsonify({"ok": False, "message": "cmd is required"}), 400
     console.add("info", f"[ESP32 ESPCMD] cmd={cmd}")
-    result = ray5.send_esp3d_command(cmd)
+    try:
+        result = ray5.send_esp3d_command(cmd)
+    except Exception as exc:
+        return jsonify(_esp32_offline_payload("esp-command", f"Timed out waiting for ESP32 command response. ({exc})", result={})), 503
     for attempt in result.get("attempts", []) if isinstance(result, dict) else []:
         param = attempt.get("param")
         console.add("info", f"[ESP32 ESPCMD TRY] param={param} cmd={cmd}")
@@ -3284,6 +3980,8 @@ def api_esp32_esp_command() -> Any:
             console.add("warn", f"[ESP32 ESPCMD INVALID] param={param} response={attempt.get('raw_preview','')[:120]}")
     if result.get("selected_param"):
         console.add("info", f"[ESP32 ESPCMD MODE SELECTED] param={result.get('selected_param')}")
+    if not result.get("ok"):
+        return jsonify(_esp32_offline_payload("esp-command", result.get("message") or "Timed out waiting for ESP32 command response.", result=result)), 503
     return jsonify({"ok": bool(result.get("ok")), "result": result})
 
 

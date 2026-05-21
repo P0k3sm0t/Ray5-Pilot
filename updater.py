@@ -34,6 +34,7 @@ ALLOWED_UPDATE_PATHS: tuple[str, ...] = (
     "web/templates/setup.html",
     "web/templates/camera_calibration.html",
     "web/templates/machine_settings.html",
+    "web/templates/esp32.html",
     "web/static/app.js",
     "web/static/setup.js",
     "web/static/machine_settings.js",
@@ -44,6 +45,12 @@ ALLOWED_UPDATE_PATHS: tuple[str, ...] = (
 )
 PARENT_EXIT_WAIT_TIMEOUT_SECONDS = 30.0
 REQUIRED_SOURCE_ROOT_ENTRIES: tuple[str, ...] = ("app.py", "VERSION", "config.example.json", "web")
+REQUIRED_TEMPLATE_PATHS: tuple[str, ...] = (
+    "web/templates/index.html",
+    "web/templates/setup.html",
+    "web/templates/machine_settings.html",
+    "web/templates/esp32.html",
+)
 
 
 def _sha256_file(path: Path) -> str:
@@ -306,6 +313,18 @@ def _run(argv: argparse.Namespace) -> int:
                 copied.append(rel)
                 log(f"Updated: {rel}")
 
+            missing_required_templates = [
+                rel for rel in REQUIRED_TEMPLATE_PATHS
+                if not (project_root / rel).exists()
+            ]
+            if missing_required_templates:
+                for rel in missing_required_templates:
+                    log(f"ERROR: required template missing after update copy: {rel}")
+                raise RuntimeError(
+                    "Update failed: required template missing after copy: "
+                    + ", ".join(missing_required_templates)
+                )
+
             pip_ok = True
             try:
                 py_exe_path = Path(python_exe)
@@ -386,6 +405,8 @@ def _run(argv: argparse.Namespace) -> int:
         )
 
         restart_cmd = [python_exe, "app.py"]
+        if not update_ok:
+            log("Update failed; restarting existing app version.")
         if os.name == "nt":
             log("Restarting Ray5 Pilot in a new console so CTRL+C works normally.")
         else:
