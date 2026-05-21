@@ -43,6 +43,7 @@ ALLOWED_UPDATE_PATHS: tuple[str, ...] = (
     "web/static/camera_placeholder.svg",
 )
 PARENT_EXIT_WAIT_TIMEOUT_SECONDS = 30.0
+REQUIRED_SOURCE_ROOT_ENTRIES: tuple[str, ...] = ("app.py", "VERSION", "config.example.json", "web")
 
 
 def _sha256_file(path: Path) -> str:
@@ -147,6 +148,61 @@ def _rotate_old_entries(root: Path, keep: int, is_candidate, log) -> None:
         _remove_path_safe(old, log)
 
 
+def _is_valid_source_root(path: Path) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    for entry in REQUIRED_SOURCE_ROOT_ENTRIES:
+        p = path / entry
+        if entry == "web":
+            if not p.exists() or not p.is_dir():
+                return False
+        else:
+            if not p.exists() or not p.is_file():
+                return False
+    return True
+
+
+def _source_root_score(path: Path) -> int:
+    score = 0
+    for entry in REQUIRED_SOURCE_ROOT_ENTRIES:
+        p = path / entry
+        if entry == "web":
+            if p.exists() and p.is_dir():
+                score += 3
+        else:
+            if p.exists() and p.is_file():
+                score += 3
+    # Bonus for classic project markers.
+    if (path / "web" / "templates" / "index.html").exists():
+        score += 1
+    if (path / "tools").exists():
+        score += 1
+    return score
+
+
+def _detect_source_root(extract_dir: Path, log) -> Path:
+    candidates: list[Path] = [extract_dir]
+    try:
+        candidates.extend([p for p in extract_dir.iterdir() if p.is_dir()])
+    except Exception:
+        pass
+
+    scored: list[tuple[int, Path]] = []
+    for c in candidates:
+        score = _source_root_score(c)
+        log(f"[UPDATE SOURCE ROOT CANDIDATE] path={c} score={score}")
+        scored.append((score, c))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    for score, candidate in scored:
+        if score <= 0:
+            continue
+        if _is_valid_source_root(candidate):
+            log(f"[UPDATE SOURCE ROOT SELECTED] path={candidate}")
+            return candidate
+    raise RuntimeError("Invalid update package: could not find Ray5 Pilot app root.")
+
+
 def _read_max_keep_backups(project_root: Path) -> int:
     cfg_path = project_root / "config.json"
     default_keep = 15
@@ -221,13 +277,17 @@ def _run(argv: argparse.Namespace) -> int:
 
         log(f"Extracting ZIP to {extract_dir}")
         with zipfile.ZipFile(download_zip, "r") as zf:
+            entries = zf.namelist()
+            log(f"[UPDATE ZIP] entries={len(entries)}")
+            log(f"[UPDATE ZIP] contains_app_py={any(x.endswith('/app.py') or x == 'app.py' for x in entries)}")
+            log(f"[UPDATE ZIP] contains_VERSION={any(x.endswith('/VERSION') or x == 'VERSION' for x in entries)}")
+            log(f"[UPDATE ZIP] contains_web={any('/web/' in x or x.startswith('web/') for x in entries)}")
             zf.extractall(extract_dir)
 
         try:
-            roots = [p for p in extract_dir.iterdir() if p.is_dir()]
-            if not roots:
-                raise RuntimeError("No extracted root folder found.")
-            source_root = roots[0]
+            source_root = _detect_source_root(extract_dir, log)
+            if not _is_valid_source_root(source_root):
+                raise RuntimeError("Invalid update package: could not find Ray5 Pilot app root.")
             log(f"Using extracted source root: {source_root}")
 
             backed_up: list[str] = []
@@ -278,6 +338,8 @@ def _run(argv: argparse.Namespace) -> int:
 
             log(f"Backed up files: {len(backed_up)}")
             log(f"Copied files: {len(copied)}")
+            if len(backed_up) == 0 and len(copied) == 0:
+                raise RuntimeError("Update aborted: no files were copied.")
             if not pip_ok:
                 log("Update completed with pip warning.")
             else:

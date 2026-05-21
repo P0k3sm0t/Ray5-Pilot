@@ -12,6 +12,7 @@ OUTPUT_ZIP = DIST_DIR / "Ray5-Pilot-release.zip"
 CHECKSUM_FILE = DIST_DIR / "Ray5-Pilot-release.zip.sha256.txt"
 
 INCLUDE_PATHS = [
+    "VERSION",
     "app.py",
     "ray5_client.py",
     "config_manager.py",
