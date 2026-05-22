@@ -258,6 +258,7 @@ let rowStatus={};
 let hasSessionBackup=false;
 let sessionBackupDownloaded=false;
 let latestBackup=null;
+const NATIVE_ESP32_URL = {{ (native_esp32_url or '')|tojson }};
 const NETWORK_SENSITIVE_PATHS = new Set([
   'Sta/SSID',
   'Sta/Password',
@@ -602,7 +603,17 @@ document.getElementById('refreshAll').onclick=async()=>{setMsg('Refreshing...');
 document.getElementById('refreshInfo').onclick=async()=>{try{setMsg('Loading ESP3D info...');await loadInfo();setMsg('ESP3D info loaded.');}catch(e){setMsg('Info failed: '+e.message)}};
 document.getElementById('refreshEeprom').onclick=async()=>{try{setMsg('Loading EEPROM...');await loadEeprom();setMsg('EEPROM loaded.');}catch(e){setMsg('EEPROM failed: '+e.message)}};
 document.getElementById('refreshWs').onclick=async()=>{try{await loadWsStatus();setMsg('WS status loaded.');}catch(e){setMsg('WS status failed: '+e.message)}};
-document.getElementById('openNative').onclick=async()=>{const i=await api('/api/esp32/info'); if(!i.ok){ setMsg('Open native failed: Ray5 may be offline or unreachable.'); return; } window.open(`http://${i.http_host||'127.0.0.1'}:${i.http_port||8848}/#`,'_blank','noopener');};
+document.getElementById('openNative').onclick=async()=>{
+  const i=await api('/api/esp32/info');
+  const configuredNative=String((i&&i.native_url)||NATIVE_ESP32_URL||'').trim();
+  const fallbackNative=`http://${(i&&i.http_host)||'127.0.0.1'}:${(i&&i.http_port)||8848}`;
+  const targetUrl=configuredNative||fallbackNative;
+  if(!targetUrl){
+    setMsg('Open native failed: no native URL configured.');
+    return;
+  }
+  window.open(targetUrl,'_blank','noopener,noreferrer');
+};
 
 document.getElementById('sendGcode').onclick=async()=>{const c=document.getElementById('gcodeCmd').value.trim();if(!c)return;try{const d=await api('/api/esp32/command','POST',{command:c});document.getElementById('gcodeLast').textContent=maskSensitiveText(esc(d));logRaw('GCODE '+c,d);setMsg('G-code sent.');}catch(e){setMsg('G-code failed: '+e.message)}};
 document.getElementById('sendEsp').onclick=async()=>{const c=document.getElementById('espCmd').value.trim();if(!c)return;try{const d=await api('/api/esp32/esp-command','POST',{cmd:c});document.getElementById('espLast').textContent=maskSensitiveText(esc(d));logRaw('ESP '+c,d);setMsg('ESP cmd sent.');}catch(e){setMsg('ESP cmd failed: '+e.message)}};
@@ -639,6 +650,11 @@ camera = CameraManager(cfg, BASE_DIR)
 jobs = JobManager(BASE_DIR, cfg)
 _cached_status: dict[str, Any] = {"state": "UNKNOWN", "x": None, "y": None, "z": None, "raw": "", "source": "synthetic"}
 _last_logged_status_source: str | None = None
+_last_logged_job_progress_payload_signature: tuple[Any, ...] | None = None
+_last_logged_job_progress_raw_override_signature: tuple[Any, ...] | None = None
+_last_logged_job_progress_source_signature: tuple[Any, ...] | None = None
+_last_logged_laser_power_signature: tuple[Any, ...] | None = None
+_last_logged_laser_display_signature: tuple[Any, ...] | None = None
 _status_error_logged = False
 _watch_stop = threading.Event()
 _watch_thread: threading.Thread | None = None
@@ -704,14 +720,59 @@ ray5_comm_safety_state: dict[str, Any] = {
     "last_known_machine_state": "",
     "last_job_start_time": None,
     "last_comm_ok_time": None,
+    "job_start_sent": False,
     "message": "",
     "entered_at": None,
     "last_skip_log_at": None,
+    "last_suppressed_log_at": None,
+}
+upload_transfer_state: dict[str, Any] = {
+    "upload_in_progress": False,
+    "upload_kind": "",
+    "upload_filename": "",
+    "upload_started_at": None,
 }
 air_pump_state: dict[str, Any] = {
     "state": "unknown",
     "source": "unknown",
     "updated_at": None,
+    "last_accessory_flags": "",
+}
+laser_runtime_state: dict[str, Any] = {
+    "instant_value": 0.0,
+    "active": False,
+    "state_label": "Off",
+    "last_nonzero_value": None,
+    "last_nonzero_at": None,
+    "peak_recent_value": None,
+    "recent_window_seconds": 3.0,
+    "source": "unknown",
+}
+laser_power_state: dict[str, Any] = {
+    "commanded_s": None,
+    "source": "unknown",
+    "updated_at": None,
+    "fire_test_active_until": None,
+    "fire_test_s": None,
+    "last_active_at": None,
+    "last_active_power_percent": None,
+    "last_active_s": None,
+    "hold_seconds": 3.0,
+}
+laser_job_power_cache: dict[str, dict[str, Any]] = {}
+job_progress_state: dict[str, Any] = {
+    "active": False,
+    "complete": False,
+    "aborted": False,
+    "last_state": "",
+    "last_file": "",
+    "last_progress_percent": None,
+    "last_time_seconds": None,
+    "run_started_at": None,
+    "pause_started_at": None,
+    "paused_total_seconds": 0.0,
+    "controller_time_seconds": None,
+    "source": None,
 }
 github_update_status: dict[str, Any] = {
     "checked": False,
@@ -1604,10 +1665,29 @@ def _wait_for_ray5_http_reachable(max_wait_seconds: float = 20.0, interval_secon
     deadline = time.time() + max(2.0, float(max_wait_seconds))
     while time.time() < deadline:
         probe = ray5.probe_http()
-        if bool(probe.get("ok")):
+        status_code = probe.get("status_code")
+        # Some Ray5-compatible targets (including emulator) return 404 on "/"
+        # while still fully supporting /command and /files.
+        if bool(probe.get("ok")) or isinstance(status_code, int):
             return True
         time.sleep(max(0.5, float(interval_seconds)))
     return False
+
+
+def _upload_response_indicates_success(upload_detail: dict[str, Any]) -> bool:
+    if bool(upload_detail.get("ok")):
+        return True
+    status = upload_detail.get("upload_status_code")
+    if not isinstance(status, int) or status < 200 or status >= 300:
+        return False
+    text = str(upload_detail.get("upload_response", "") or "").strip().lower()
+    if not text:
+        return True
+    if any(marker in text for marker in ("error", "failed", "exception", "not found")):
+        return False
+    if any(marker in text for marker in ("ok", "success", "upload done")):
+        return True
+    return True
 
 
 def _set_ray5_comm_busy(reason: str, filename: str = "", seconds: float = 45.0, message: str = "") -> None:
@@ -1655,6 +1735,63 @@ def _ray5_comm_busy_snapshot() -> dict[str, Any]:
 
 def _is_ray5_comm_busy() -> bool:
     return bool(_ray5_comm_busy_snapshot().get("active", False))
+
+
+def _upload_safety_suppression_max_seconds() -> float:
+    with app_state_lock:
+        active_cfg = cfg
+    status_cfg = active_cfg.get("status", {}) if isinstance(active_cfg.get("status"), dict) else {}
+    try:
+        value = float(status_cfg.get("upload_safety_suppression_max_seconds", 1800))
+    except Exception:
+        value = 1800.0
+    return max(60.0, value)
+
+
+def _set_upload_in_progress(kind: str, filename: str = "") -> None:
+    now = time.time()
+    with app_state_lock:
+        upload_transfer_state["upload_in_progress"] = True
+        upload_transfer_state["upload_kind"] = str(kind or "").strip()
+        upload_transfer_state["upload_filename"] = str(filename or "").strip()
+        upload_transfer_state["upload_started_at"] = now
+    console.add("info", f"[UPLOAD STATE] started kind={str(kind or '').strip() or 'unknown'}")
+
+
+def _clear_upload_in_progress(kind: str = "", ok: bool = False) -> None:
+    with app_state_lock:
+        was_active = bool(upload_transfer_state.get("upload_in_progress", False))
+        prev_kind = str(upload_transfer_state.get("upload_kind", "") or "")
+        upload_transfer_state["upload_in_progress"] = False
+        upload_transfer_state["upload_kind"] = ""
+        upload_transfer_state["upload_filename"] = ""
+        upload_transfer_state["upload_started_at"] = None
+    if was_active:
+        console.add("info", f"[UPLOAD STATE] finished kind={str(kind or prev_kind or 'unknown')} ok={str(bool(ok)).lower()}")
+
+
+def _snapshot_upload_transfer_state() -> dict[str, Any]:
+    now = time.time()
+    timed_out = False
+    with app_state_lock:
+        snap = dict(upload_transfer_state)
+        if bool(snap.get("upload_in_progress", False)):
+            started = snap.get("upload_started_at")
+            if isinstance(started, (int, float)) and ((now - float(started)) > _upload_safety_suppression_max_seconds()):
+                upload_transfer_state["upload_in_progress"] = False
+                upload_transfer_state["upload_kind"] = ""
+                upload_transfer_state["upload_filename"] = ""
+                upload_transfer_state["upload_started_at"] = None
+                snap = dict(upload_transfer_state)
+                timed_out = True
+    if timed_out:
+        console.add("warn", "[UPLOAD STATE] auto-cleared reason=timeout")
+    return {
+        "upload_in_progress": bool(snap.get("upload_in_progress", False)),
+        "upload_kind": str(snap.get("upload_kind", "") or ""),
+        "upload_filename": str(snap.get("upload_filename", "") or ""),
+        "upload_started_at": snap.get("upload_started_at"),
+    }
 
 
 def _verify_uploaded_file_present_after_timeout(
@@ -1742,6 +1879,9 @@ def _update_comm_safety_state(status_source: str, online: bool, state_base: str)
     state = str(state_base or "").strip()
     state_norm = state.lower().split(":", 1)[0] if state else ""
     entered = False
+    suppressed = False
+    suppressed_age = None
+    upload_snap = _snapshot_upload_transfer_state()
     with app_state_lock:
         if source == "live_websocket" and bool(online):
             ray5_comm_safety_state["last_comm_ok_time"] = now
@@ -1749,11 +1889,20 @@ def _update_comm_safety_state(status_source: str, online: bool, state_base: str)
                 ray5_comm_safety_state["last_known_machine_state"] = state
             if state_norm == "idle":
                 ray5_comm_safety_state["last_job_start_time"] = None
+                ray5_comm_safety_state["job_start_sent"] = False
         comm_lost = bool(ray5_comm_safety_state.get("comm_lost_during_job", False))
         last_known = str(ray5_comm_safety_state.get("last_known_machine_state", "") or "")
+        job_start_sent = bool(ray5_comm_safety_state.get("job_start_sent", False))
         active_or_recent = _is_machine_active_state(last_known) or _is_recent_job_activity(now)
         comm_unavailable = (source in {"offline", "fallback_offline", "synthetic"} or not bool(online)) and (not _is_ray5_comm_busy())
-        if (not comm_lost) and comm_unavailable and active_or_recent:
+        upload_suppressed = bool(upload_snap.get("upload_in_progress", False)) and (not active_or_recent) and (not _is_machine_active_state(state)) and (not job_start_sent)
+        if (not comm_lost) and comm_unavailable and upload_suppressed:
+            suppressed = True
+            last_comm_ok = ray5_comm_safety_state.get("last_comm_ok_time")
+            if isinstance(last_comm_ok, (int, float)):
+                suppressed_age = max(0.0, now - float(last_comm_ok))
+            ray5_comm_safety_state["message"] = "Upload in progress; status polling may be delayed."
+        elif (not comm_lost) and comm_unavailable and active_or_recent:
             ray5_comm_safety_state["comm_lost_during_job"] = True
             ray5_comm_safety_state["message"] = (
                 "Communication was lost while a job may have been active. "
@@ -1762,20 +1911,35 @@ def _update_comm_safety_state(status_source: str, online: bool, state_base: str)
             ray5_comm_safety_state["entered_at"] = now
             entered = True
     if entered:
-        console.add("warn", "Communication-loss safety lockout entered (job may have been active).")
+        console.add("warn", "[SAFETY LOCKOUT ACTIVE] reason=communication_lost_during_possible_job")
+    elif suppressed:
+        with app_state_lock:
+            last_log = ray5_comm_safety_state.get("last_suppressed_log_at")
+            if (last_log is None) or ((now - float(last_log)) >= 30.0):
+                ray5_comm_safety_state["last_suppressed_log_at"] = now
+                stale_txt = f"{suppressed_age:.1f}s" if isinstance(suppressed_age, (int, float)) else "unknown"
+                console.add("info", f"[SAFETY LOCKOUT SUPPRESSED] reason=upload_in_progress stale_age={stale_txt}")
 
 
 def _snapshot_comm_safety_state() -> dict[str, Any]:
     with app_state_lock:
         snap = dict(ray5_comm_safety_state)
+    upload_snap = _snapshot_upload_transfer_state()
+    suppressed_reason = ""
+    if bool(upload_snap.get("upload_in_progress", False)) and (not bool(snap.get("comm_lost_during_job", False))):
+        suppressed_reason = "upload_in_progress"
     return {
         "comm_lost_during_job": bool(snap.get("comm_lost_during_job", False)),
         "last_known_machine_state": str(snap.get("last_known_machine_state", "") or ""),
         "last_job_start_time": snap.get("last_job_start_time"),
         "last_comm_ok_time": snap.get("last_comm_ok_time"),
+        "job_start_sent": bool(snap.get("job_start_sent", False)),
         "message": str(snap.get("message", "") or ""),
         "entered_at": snap.get("entered_at"),
         "requires_ack": bool(snap.get("comm_lost_during_job", False)),
+        "upload_in_progress": bool(upload_snap.get("upload_in_progress", False)),
+        "upload_kind": str(upload_snap.get("upload_kind", "") or ""),
+        "safety_lockout_suppressed_reason": suppressed_reason,
     }
 
 
@@ -2701,16 +2865,17 @@ def machine_settings_page() -> str:
 
 @app.get("/esp32")
 def esp32_page() -> str:
+    native_url = _get_native_esp32_url()
     try:
-        return render_template("esp32.html")
+        return render_template("esp32.html", native_esp32_url=native_url)
     except TemplateNotFound:
         console.add("warn", "[ESP32 TEMPLATE FALLBACK] web/templates/esp32.html missing; using embedded fallback")
-        return render_template_string(ESP32_TEMPLATE_FALLBACK)
+        return render_template_string(ESP32_TEMPLATE_FALLBACK, native_esp32_url=native_url)
 
 
 @app.get("/api/status")
 def api_status() -> Any:
-    global _last_logged_status_source, _status_error_logged
+    global _last_logged_status_source, _status_error_logged, _last_logged_job_progress_payload_signature, _last_logged_job_progress_raw_override_signature, _last_logged_job_progress_source_signature
     with app_state_lock:
         active_cfg = cfg
         active_monitor = status_monitor
@@ -2725,6 +2890,13 @@ def api_status() -> Any:
     monitor_status = active_monitor.get_latest_status() if (active_monitor and prefer_live) else None
     monitor_age = None
     monitor_ws_connected = False
+    job_progress_percent = None
+    job_file = ""
+    job_time_seconds = None
+    controller_time_seconds = None
+    job_progress_source = None
+    accessory_state = ""
+    accessory_flags: list[str] = []
     if isinstance(monitor_status, dict):
         monitor_age = monitor_status.get("age_seconds")
         monitor_ws_connected = bool(monitor_status.get("websocket_connected", False))
@@ -2771,6 +2943,14 @@ def api_status() -> Any:
         ws_page_id = monitor_status.get("websocket_page_id")
         last_error = None
         alarm_message = monitor_status.get("alarm_message")
+        job_progress_percent = monitor_status.get("job_progress_percent")
+        job_file = str(monitor_status.get("job_file", "") or "")
+        controller_time_seconds = monitor_status.get("controller_time_seconds", monitor_status.get("job_time_seconds"))
+        job_progress_source = monitor_status.get("job_progress_source")
+        accessory_state = str(monitor_status.get("accessory_state", "") or "")
+        accessory_flags = monitor_status.get("accessory_flags") if isinstance(monitor_status.get("accessory_flags"), list) else []
+        if accessory_state:
+            _track_air_pump_from_accessory_state(accessory_state)
     elif busy_snap.get("active", False):
         source = "upload_busy"
         state = "Busy / Uploading"
@@ -2786,6 +2966,14 @@ def api_status() -> Any:
         ws_page_id = monitor_status.get("websocket_page_id") if monitor_status else None
         last_error = monitor_status.get("last_error") if monitor_status else None
         alarm_message = monitor_status.get("alarm_message") if monitor_status else None
+        job_progress_percent = monitor_status.get("job_progress_percent") if monitor_status else None
+        job_file = str(monitor_status.get("job_file", "") or "") if monitor_status else ""
+        controller_time_seconds = monitor_status.get("controller_time_seconds", monitor_status.get("job_time_seconds")) if monitor_status else None
+        job_progress_source = monitor_status.get("job_progress_source") if monitor_status else None
+        accessory_state = str(monitor_status.get("accessory_state", "") or "") if monitor_status else ""
+        accessory_flags = monitor_status.get("accessory_flags") if (monitor_status and isinstance(monitor_status.get("accessory_flags"), list)) else []
+        if accessory_state:
+            _track_air_pump_from_accessory_state(accessory_state)
         online = True
     elif monitor_status:
         source = "fallback_offline"
@@ -2949,13 +3137,160 @@ def api_status() -> Any:
     app_version_value = _read_local_version() or "unknown"
     update_status_cached = _snapshot_startup_update_status()
     comm_safety = _snapshot_comm_safety_state()
+    monitor_debug_info = active_monitor.get_debug_info() if active_monitor is not None else {}
+    run_sd_percent_dbg = monitor_debug_info.get("last_run_sd_percent") if isinstance(monitor_debug_info, dict) else None
+    run_sd_file_dbg = str(monitor_debug_info.get("last_run_sd_file") or "") if isinstance(monitor_debug_info, dict) else ""
+    run_sd_time_dbg = monitor_debug_info.get("last_run_sd_time_seconds") if isinstance(monitor_debug_info, dict) else None
+    run_sd_age_dbg = monitor_debug_info.get("last_run_sd_status_age_seconds") if isinstance(monitor_debug_info, dict) else None
+    run_sd_raw_dbg = str(monitor_debug_info.get("last_run_sd_status_raw") or "") if isinstance(monitor_debug_info, dict) else ""
+    run_sd_fresh = (
+        isinstance(run_sd_percent_dbg, (int, float))
+        and isinstance(run_sd_age_dbg, (int, float))
+        and float(run_sd_age_dbg) <= 10.0
+    )
+    tracked_progress = _update_job_progress_tracking(
+        state_base=state_base,
+        alarm_status=alarm_status,
+        comm_safety_locked=bool(comm_safety.get("comm_lost_during_job", False)),
+        job_progress_percent=job_progress_percent,
+        job_file=job_file,
+        controller_time_seconds=controller_time_seconds,
+    )
+    live_run_progress_present = (
+        str(state_base or "").strip().lower() == "run"
+        and isinstance(job_progress_percent, (int, float))
+    )
+    live_run_progress_percent = float(job_progress_percent) if live_run_progress_present else None
+    live_run_progress_file = str(job_file or "")
+    live_run_progress_time = float(controller_time_seconds) if isinstance(controller_time_seconds, (int, float)) else controller_time_seconds
+    raw_sd = _parse_sd_progress_from_status(raw_status)
+    raw_time = _parse_time_from_status(raw_status)
+    raw_run_progress_present = str(state_base or "").strip().lower() == "run" and isinstance(raw_sd, dict) and isinstance(raw_sd.get("percent"), (int, float))
+    selected_source = "unknown"
+
+    if bool(tracked_progress.get("complete", False)):
+        job_progress_percent = 100.0
+        job_file = str(tracked_progress.get("last_file") or job_file or "")
+        job_progress_source = "completion_inferred"
+        selected_source = "completion_inferred"
+    elif bool(tracked_progress.get("active", False)):
+        if tracked_progress.get("last_progress_percent") is not None:
+            job_progress_percent = tracked_progress.get("last_progress_percent")
+        job_file = str(tracked_progress.get("last_file") or job_file or "")
+        job_progress_source = str(tracked_progress.get("source") or job_progress_source or "websocket_status")
+        selected_source = "tracker"
+    elif bool(tracked_progress.get("aborted", False)):
+        if tracked_progress.get("last_progress_percent") is not None:
+            job_progress_percent = tracked_progress.get("last_progress_percent")
+        job_file = str(tracked_progress.get("last_file") or job_file or "")
+        job_progress_source = str(tracked_progress.get("source") or job_progress_source or "websocket_status")
+        selected_source = "tracker"
+    if live_run_progress_present:
+        job_progress_percent = live_run_progress_percent
+        job_file = live_run_progress_file
+        job_progress_source = "websocket_status"
+        selected_source = "monitor_status"
+    if run_sd_fresh and str(state_base or "").strip().lower() == "run":
+        job_progress_percent = float(run_sd_percent_dbg)
+        if run_sd_file_dbg:
+            job_file = run_sd_file_dbg
+        if isinstance(run_sd_time_dbg, (int, float)):
+            controller_time_seconds = float(run_sd_time_dbg)
+        job_progress_source = "live_websocket_run_sd"
+        selected_source = "live_websocket_run_sd"
+    elif raw_run_progress_present:
+        job_progress_percent = float(raw_sd.get("percent"))
+        if str(raw_sd.get("file") or "").strip():
+            job_file = str(raw_sd.get("file") or "").strip()
+        if isinstance(raw_time, (int, float)):
+            controller_time_seconds = float(raw_time)
+        job_progress_source = "websocket_raw_status"
+        selected_source = "latest_status_raw"
+        raw_override_sig = (
+            round(float(job_progress_percent), 4),
+            str(job_file or ""),
+            round(float(controller_time_seconds), 4) if isinstance(controller_time_seconds, (int, float)) else None,
+        )
+        if raw_override_sig != _last_logged_job_progress_raw_override_signature:
+            _last_logged_job_progress_raw_override_signature = raw_override_sig
+            console.add(
+                "info",
+                f"[JOB PROGRESS RAW OVERRIDE] state=Run raw_sd={job_progress_percent} "
+                f"output_percent={job_progress_percent} file={job_file}",
+            )
+    elif isinstance(raw_time, (int, float)):
+        controller_time_seconds = float(raw_time)
+    if run_sd_fresh and raw_run_progress_present and isinstance(raw_sd, dict) and isinstance(raw_sd.get("percent"), (int, float)):
+        if abs(float(raw_sd.get("percent")) - float(run_sd_percent_dbg)) >= 5.0:
+            console.add(
+                "warn",
+                f"[JOB PROGRESS SOURCE MISMATCH] latest={float(raw_sd.get('percent'))} live_run_sd={float(run_sd_percent_dbg)}",
+            )
+    if isinstance(job_progress_percent, (int, float)):
+        job_progress_percent = max(0.0, min(100.0, float(job_progress_percent)))
+    if isinstance(tracked_progress.get("last_time_seconds"), (int, float)):
+        job_time_seconds = float(tracked_progress.get("last_time_seconds"))
+    else:
+        job_time_seconds = None
+    laser_info = _update_laser_runtime_state(
+        instant_value=spindle,
+        accessory_flags=accessory_flags if isinstance(accessory_flags, list) else [],
+        source="accessory_state" if str(accessory_state or "").strip() else "websocket_status",
+    )
+    laser_power_info = _build_laser_power_info(
+        laser_info=laser_info,
+        state_base=str(state_base or ""),
+        job_file=str(job_file or ""),
+        spindle_value=spindle,
+    )
+    payload_signature = (
+        str(state_base or "").strip(),
+        round(float(raw_sd.get("percent")), 4) if isinstance(raw_sd, dict) and isinstance(raw_sd.get("percent"), (int, float)) else None,
+        round(float(live_run_progress_percent), 4) if isinstance(live_run_progress_percent, (int, float)) else None,
+        round(float(tracked_progress.get("last_progress_percent")), 4) if isinstance(tracked_progress.get("last_progress_percent"), (int, float)) else None,
+        round(float(job_progress_percent), 4) if isinstance(job_progress_percent, (int, float)) else None,
+        str(job_file or ""),
+        bool(tracked_progress.get("complete", False)),
+    )
+    if payload_signature != _last_logged_job_progress_payload_signature:
+        _last_logged_job_progress_payload_signature = payload_signature
+        if str(state_base or "").strip().lower() == "run" and (job_progress_percent is not None):
+            console.add(
+                "info",
+                f"[JOB PROGRESS PAYLOAD] state=Run "
+                f"run_sd={run_sd_percent_dbg if isinstance(run_sd_percent_dbg, (int, float)) else 'none'} "
+                f"raw_sd={raw_sd.get('percent') if isinstance(raw_sd, dict) else 'none'} "
+                f"live_percent={live_run_progress_percent if live_run_progress_present else 'none'} "
+                f"tracker_percent={tracked_progress.get('last_progress_percent')} "
+                f"output_percent={job_progress_percent} file={job_file}",
+            )
+        elif str(state_base or "").strip().lower() == "idle":
+            console.add(
+                "info",
+                f"[JOB PROGRESS PAYLOAD] state=Idle complete={str(bool(tracked_progress.get('complete', False))).lower()} "
+                f"output_percent={job_progress_percent if job_progress_percent is not None else 'none'} file={job_file}",
+            )
+    source_signature = (
+        str(state_base or "").strip().lower(),
+        selected_source,
+        round(float(job_progress_percent), 4) if isinstance(job_progress_percent, (int, float)) else None,
+        round(float(run_sd_age_dbg), 3) if isinstance(run_sd_age_dbg, (int, float)) else None,
+    )
+    if source_signature != _last_logged_job_progress_source_signature:
+        _last_logged_job_progress_source_signature = source_signature
+        if str(state_base or "").strip().lower() == "run" and isinstance(job_progress_percent, (int, float)):
+            console.add(
+                "info",
+                f"[JOB PROGRESS SOURCE SELECTED] source={selected_source} percent={job_progress_percent} age={run_sd_age_dbg if isinstance(run_sd_age_dbg, (int, float)) else 'none'}",
+            )
+    upload_state = _snapshot_upload_transfer_state()
     with app_state_lock:
         pump_state = str(air_pump_state.get("state") or "unknown").strip().lower()
         pump_source = str(air_pump_state.get("source") or "unknown").strip().lower()
         pump_updated_at = air_pump_state.get("updated_at")
     if pump_state not in {"on", "off", "unknown"}:
         pump_state = "unknown"
-    if pump_source not in {"command", "parser_state", "unknown"}:
+    if pump_source not in {"command", "parser_state", "websocket_status", "accessory_state", "unknown"}:
         pump_source = "unknown"
     pump_label = "On" if pump_state == "on" else ("Off" if pump_state == "off" else "Unknown")
     pump_stale = bool((not online) and isinstance(pump_updated_at, (int, float)))
@@ -2976,6 +3311,27 @@ def api_status() -> Any:
             "wpos_calculated": bool(wpos_calculated and source == "live_websocket"),
             "feed": feed,
             "spindle": spindle,
+            "laser_value": spindle,
+            "laser_instant_value": laser_info.get("laser_instant_value"),
+            "laser_active": laser_power_info.get("laser_active", laser_info.get("laser_active")),
+            "laser_state_label": laser_power_info.get("laser_state_label", laser_info.get("laser_state_label")),
+            "laser_commanded_s": laser_power_info.get("laser_commanded_s"),
+            "laser_power_percent": laser_power_info.get("laser_power_percent"),
+            "laser_power_label": laser_power_info.get("laser_power_label"),
+            "laser_power_source": laser_power_info.get("laser_power_source"),
+            "laser_power_max": laser_power_info.get("laser_power_max"),
+            "laser_power_max_source": laser_power_info.get("laser_power_max_source"),
+            "laser_job_max_s": laser_power_info.get("laser_job_max_s"),
+            "laser_job_max_power_percent": laser_power_info.get("laser_job_max_power_percent"),
+            "laser_active_hold_seconds": laser_power_info.get("laser_active_hold_seconds"),
+            "laser_display_active": laser_power_info.get("laser_display_active"),
+            "laser_display_power_percent": laser_power_info.get("laser_display_power_percent"),
+            "laser_display_power_label": laser_power_info.get("laser_display_power_label"),
+            "laser_hold_active": laser_power_info.get("laser_hold_active"),
+            "laser_last_nonzero_value": laser_info.get("laser_last_nonzero_value"),
+            "laser_last_nonzero_age_seconds": laser_info.get("laser_last_nonzero_age_seconds"),
+            "laser_peak_recent_value": laser_info.get("laser_peak_recent_value"),
+            "laser_recent_window_seconds": laser_info.get("laser_recent_window_seconds"),
             "raw": raw_status,
             "raw_status": raw_status,
             "status_source": source,
@@ -3018,7 +3374,26 @@ def api_status() -> Any:
             "air_pump_source": pump_source,
             "air_pump_label": pump_label,
             "air_pump_stale": pump_stale,
+            "job_progress_percent": job_progress_percent,
+            "job_file": job_file,
+            "job_time_seconds": job_time_seconds,
+            "job_elapsed_seconds": job_time_seconds,
+            "job_elapsed_source": "pilot_run_timer",
+            "controller_time_seconds": controller_time_seconds,
+            "job_progress_source": job_progress_source,
+            "job_progress_complete": bool(tracked_progress.get("complete", False)),
+            "job_progress_active": bool(tracked_progress.get("active", False)),
+            "accessory_state": accessory_state,
+            "accessory_flags": accessory_flags,
             "comm_safety": comm_safety,
+            "upload_in_progress": bool(upload_state.get("upload_in_progress", False)),
+            "upload_kind": str(upload_state.get("upload_kind", "") or "") or None,
+            "safety_lockout_suppressed_reason": (
+                "upload_in_progress"
+                if bool(upload_state.get("upload_in_progress", False))
+                and (not bool(comm_safety.get("comm_lost_during_job", False)))
+                else None
+            ),
             "system_check": {
                 "ray5_host_configured": bool(_is_ray5_host_configured(active_cfg)),
                 "ray5_http_reachable": http_ok,
@@ -3086,6 +3461,75 @@ def api_status_live() -> Any:
             }
         )
     info = active_monitor.get_debug_info() or {}
+    latest = info.get("latest_status") if isinstance(info.get("latest_status"), dict) else {}
+    progress_snap = _snapshot_job_progress_state()
+    live_progress_percent = latest.get("job_progress_percent")
+    live_job_file = latest.get("job_file")
+    live_job_time = progress_snap.get("last_time_seconds")
+    controller_time_seconds = latest.get("job_time_seconds")
+    live_progress_source = latest.get("job_progress_source")
+    latest_state = str(latest.get("state") or "").strip().lower()
+    latest_raw_status = str(latest.get("raw_status") or info.get("last_raw_status") or "")
+    latest_raw_sd = _parse_sd_progress_from_status(latest_raw_status)
+    latest_raw_time = _parse_time_from_status(latest_raw_status)
+    run_sd_percent_dbg = info.get("last_run_sd_percent")
+    run_sd_file_dbg = str(info.get("last_run_sd_file") or "")
+    run_sd_time_dbg = info.get("last_run_sd_time_seconds")
+    run_sd_age_dbg = info.get("last_run_sd_status_age_seconds")
+    run_sd_fresh = (
+        latest_state == "run"
+        and isinstance(run_sd_percent_dbg, (int, float))
+        and isinstance(run_sd_age_dbg, (int, float))
+        and float(run_sd_age_dbg) <= 10.0
+    )
+    if run_sd_fresh:
+        live_progress_percent = float(run_sd_percent_dbg)
+        if run_sd_file_dbg:
+            live_job_file = run_sd_file_dbg
+        if isinstance(run_sd_time_dbg, (int, float)):
+            controller_time_seconds = float(run_sd_time_dbg)
+        live_progress_source = "live_websocket_run_sd"
+    elif latest_state == "run" and isinstance(latest_raw_sd, dict) and isinstance(latest_raw_sd.get("percent"), (int, float)):
+        live_progress_percent = float(latest_raw_sd.get("percent"))
+        if str(latest_raw_sd.get("file") or "").strip():
+            live_job_file = str(latest_raw_sd.get("file") or "").strip()
+        if isinstance(latest_raw_time, (int, float)):
+            controller_time_seconds = float(latest_raw_time)
+        live_progress_source = "websocket_raw_status"
+    elif latest_state == "run" and isinstance(latest_raw_time, (int, float)):
+        controller_time_seconds = float(latest_raw_time)
+    if bool(progress_snap.get("complete", False)):
+        live_progress_percent = 100.0
+        live_job_file = progress_snap.get("last_file") or live_job_file
+        live_job_time = progress_snap.get("last_time_seconds") if progress_snap.get("last_time_seconds") is not None else live_job_time
+        live_progress_source = "completion_inferred"
+    elif (latest_state != "run") and (bool(progress_snap.get("active", False)) or bool(progress_snap.get("aborted", False))):
+        if progress_snap.get("last_progress_percent") is not None:
+            live_progress_percent = progress_snap.get("last_progress_percent")
+        live_job_file = progress_snap.get("last_file") or live_job_file
+        if progress_snap.get("last_time_seconds") is not None:
+            live_job_time = progress_snap.get("last_time_seconds")
+        live_progress_source = progress_snap.get("source") or live_progress_source
+    if isinstance(live_progress_percent, (int, float)):
+        live_progress_percent = max(0.0, min(100.0, float(live_progress_percent)))
+    latest_spindle = latest.get("spindle")
+    latest_accessory_flags = latest.get("accessory_flags") if isinstance(latest.get("accessory_flags"), list) else []
+    latest_accessory_state = str(latest.get("accessory_state") or "")
+    laser_info_live = _update_laser_runtime_state(
+        instant_value=latest_spindle,
+        accessory_flags=latest_accessory_flags,
+        source="accessory_state" if latest_accessory_state.strip() else "websocket_status",
+    )
+    laser_power_info_live = _build_laser_power_info(
+        laser_info=laser_info_live,
+        state_base=str(latest_state or ""),
+        job_file=str(live_job_file or ""),
+        spindle_value=latest_spindle,
+    )
+    with app_state_lock:
+        pump_state_live = str(air_pump_state.get("state") or "unknown").strip().lower()
+        pump_source_live = str(air_pump_state.get("source") or "unknown").strip().lower()
+    pump_label_live = "On" if pump_state_live == "on" else ("Off" if pump_state_live == "off" else "Unknown")
     return jsonify(
         {
             "ok": True,
@@ -3096,7 +3540,48 @@ def api_status_live() -> Any:
             "last_raw_status": info.get("last_raw_status"),
             "last_status_age_seconds": info.get("last_status_age_seconds"),
             "latest_status": info.get("latest_status"),
+            "job_progress_percent": live_progress_percent,
+            "job_file": live_job_file,
+            "job_time_seconds": live_job_time,
+            "job_elapsed_seconds": live_job_time,
+            "job_elapsed_source": "pilot_run_timer",
+            "controller_time_seconds": controller_time_seconds,
+            "job_progress_source": live_progress_source,
+            "job_progress_complete": bool(progress_snap.get("complete", False)),
+            "job_progress_active": bool(progress_snap.get("active", False)),
+            "accessory_state": latest.get("accessory_state"),
+            "accessory_flags": latest.get("accessory_flags"),
+            "spindle": latest_spindle,
+            "laser_value": latest_spindle,
+            "laser_instant_value": laser_info_live.get("laser_instant_value"),
+            "laser_active": laser_power_info_live.get("laser_active", laser_info_live.get("laser_active")),
+            "laser_state_label": laser_power_info_live.get("laser_state_label", laser_info_live.get("laser_state_label")),
+            "laser_commanded_s": laser_power_info_live.get("laser_commanded_s"),
+            "laser_power_percent": laser_power_info_live.get("laser_power_percent"),
+            "laser_power_label": laser_power_info_live.get("laser_power_label"),
+            "laser_power_source": laser_power_info_live.get("laser_power_source"),
+            "laser_power_max": laser_power_info_live.get("laser_power_max"),
+            "laser_power_max_source": laser_power_info_live.get("laser_power_max_source"),
+            "laser_job_max_s": laser_power_info_live.get("laser_job_max_s"),
+            "laser_job_max_power_percent": laser_power_info_live.get("laser_job_max_power_percent"),
+            "laser_active_hold_seconds": laser_power_info_live.get("laser_active_hold_seconds"),
+            "laser_display_active": laser_power_info_live.get("laser_display_active"),
+            "laser_display_power_percent": laser_power_info_live.get("laser_display_power_percent"),
+            "laser_display_power_label": laser_power_info_live.get("laser_display_power_label"),
+            "laser_hold_active": laser_power_info_live.get("laser_hold_active"),
+            "laser_last_nonzero_value": laser_info_live.get("laser_last_nonzero_value"),
+            "laser_last_nonzero_age_seconds": laser_info_live.get("laser_last_nonzero_age_seconds"),
+            "laser_peak_recent_value": laser_info_live.get("laser_peak_recent_value"),
+            "laser_recent_window_seconds": laser_info_live.get("laser_recent_window_seconds"),
+            "air_pump_state": pump_state_live,
+            "air_pump_label": pump_label_live,
+            "air_pump_source": pump_source_live,
             "reconnect_count": info.get("reconnect_count", 0),
+            "last_run_sd_status_raw": info.get("last_run_sd_status_raw"),
+            "last_run_sd_status_age_seconds": info.get("last_run_sd_status_age_seconds"),
+            "last_run_sd_percent": info.get("last_run_sd_percent"),
+            "last_run_sd_file": info.get("last_run_sd_file"),
+            "last_run_sd_time_seconds": info.get("last_run_sd_time_seconds"),
         }
     )
 
@@ -3141,6 +3626,7 @@ def api_console_command() -> Any:
             console.add("error", f"Raw command status query failed: {result.get('message') or result.get('raw') or 'unknown'}")
     else:
         _track_air_pump_from_command(command)
+        _track_laser_from_command(command)
         result = ray5.send_gcode(command_to_send)
         ok = bool(result.get("ok"))
         if ok:
@@ -3252,7 +3738,7 @@ def _set_air_pump_state(state: str, source: str) -> None:
     normalized_source = str(source or "").strip().lower()
     if normalized_state not in {"on", "off", "unknown"}:
         normalized_state = "unknown"
-    if normalized_source not in {"command", "parser_state", "unknown"}:
+    if normalized_source not in {"command", "parser_state", "websocket_status", "accessory_state", "job_complete", "unknown"}:
         normalized_source = "unknown"
     with app_state_lock:
         air_pump_state["state"] = normalized_state
@@ -3280,6 +3766,533 @@ def _track_air_pump_from_parser_state(raw_text: str) -> None:
         _set_air_pump_state("on", "parser_state")
     elif " M9 " in f" {merged} " or merged.endswith(" M9]"):
         _set_air_pump_state("off", "parser_state")
+
+
+def _track_air_pump_from_accessory_state(accessory_state: str) -> None:
+    flags = [ch for ch in str(accessory_state or "").strip().upper() if ch.isalpha()]
+    if not flags:
+        return
+    flags_text = "".join(flags)
+    with app_state_lock:
+        previous_flags = str(air_pump_state.get("last_accessory_flags", "") or "")
+        air_pump_state["last_accessory_flags"] = flags_text
+    if previous_flags == flags_text:
+        if "F" in flags:
+            _set_air_pump_state("on", "accessory_state")
+        else:
+            _set_air_pump_state("off", "accessory_state")
+        return
+    if "F" in flags:
+        _set_air_pump_state("on", "accessory_state")
+        console.add("info", f"[AIR PUMP STATUS PARSED] state=on source=accessory_state flags={flags_text}")
+    else:
+        _set_air_pump_state("off", "accessory_state")
+        console.add("info", f"[AIR PUMP STATUS PARSED] state=off source=accessory_state flags={flags_text}")
+
+
+def _normalize_laser_job_key(name: str) -> str:
+    text = str(name or "").strip().replace("\\", "/")
+    return text.lstrip("/").lower()
+
+
+def _record_laser_job_metadata(filename: str, content: str) -> None:
+    text = str(content or "")
+    if not text:
+        return
+    s_vals = [float(m.group(1)) for m in re.finditer(r"(?i)(?:^|[\s])S([+-]?\d+(?:\.\d+)?)\b", text)]
+    if not s_vals:
+        return
+    key = _normalize_laser_job_key(filename)
+    if not key:
+        return
+    max_s = max(s_vals)
+    last_nonzero = None
+    for s in s_vals:
+        if s > 0:
+            last_nonzero = s
+    with app_state_lock:
+        laser_job_power_cache[key] = {
+            "filename": str(filename or ""),
+            "max_s": float(max_s),
+            "last_nonzero_s": float(last_nonzero) if isinstance(last_nonzero, (int, float)) else None,
+            "has_laser_power": True,
+            "updated_at": time.time(),
+        }
+
+
+def _laser_power_max_info() -> tuple[float, str]:
+    default_max = 1000.0
+    try:
+        settings = _firmware_settings_collect_snapshot().get("settings", [])
+    except Exception:
+        settings = []
+    if isinstance(settings, list):
+        for item in settings:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip()
+            if key != "30":
+                continue
+            try:
+                value = float(item.get("value"))
+                if value > 0:
+                    return value, "grbl_setting"
+            except Exception:
+                pass
+    return default_max, "default"
+
+
+def _set_laser_commanded_s(s_value: Any, source: str) -> None:
+    try:
+        sval = float(s_value)
+    except Exception:
+        return
+    if sval < 0:
+        sval = 0.0
+    with app_state_lock:
+        laser_power_state["commanded_s"] = sval
+        laser_power_state["source"] = str(source or "unknown")
+        laser_power_state["updated_at"] = time.time()
+
+
+def _clear_laser_display_hold(reason: str) -> None:
+    with app_state_lock:
+        laser_power_state["last_active_at"] = None
+        laser_power_state["last_active_power_percent"] = None
+        laser_power_state["last_active_s"] = None
+    console.add("info", f"[LASER DISPLAY OFF] reason={reason}")
+
+
+def _set_laser_test_active(s_value: Any, duration_ms: Any) -> None:
+    try:
+        sval = float(s_value)
+        dur = float(duration_ms)
+    except Exception:
+        return
+    if dur < 0:
+        dur = 0.0
+    with app_state_lock:
+        laser_power_state["fire_test_s"] = max(0.0, sval)
+        laser_power_state["fire_test_active_until"] = time.time() + (dur / 1000.0) + 0.25
+
+
+def _track_laser_from_command(command_text: str) -> None:
+    cmd = str(command_text or "").strip()
+    if not cmd:
+        return
+    upper = cmd.upper()
+    if upper == "M5":
+        _set_laser_commanded_s(0.0, "command")
+        _clear_laser_display_hold("m5")
+        return
+    has_m3 = bool(re.search(r"(?i)\bM3\b", cmd))
+    has_m4 = bool(re.search(r"(?i)\bM4\b", cmd))
+    s_match = re.search(r"(?i)(?:^|[\s])S([+-]?\d+(?:\.\d+)?)\b", cmd)
+    if has_m3 or has_m4:
+        if s_match:
+            _set_laser_commanded_s(s_match.group(1), "command")
+        else:
+            _set_laser_commanded_s(1.0, "command")
+        return
+    if s_match and bool(re.search(r"(?i)\bG0\b|\bG1\b|\$J=", cmd)):
+        _set_laser_commanded_s(s_match.group(1), "command")
+
+
+def _build_laser_power_info(*, laser_info: dict[str, Any], state_base: str, job_file: str, spindle_value: Any) -> dict[str, Any]:
+    global _last_logged_laser_power_signature, _last_logged_laser_display_signature
+    max_s, max_source = _laser_power_max_info()
+    now = time.time()
+    state_key = str(state_base or "").strip().lower()
+    try:
+        instant = float(spindle_value) if spindle_value is not None else 0.0
+    except Exception:
+        instant = 0.0
+    with app_state_lock:
+        commanded_s = laser_power_state.get("commanded_s")
+        commanded_source = str(laser_power_state.get("source") or "unknown")
+        fire_until = laser_power_state.get("fire_test_active_until")
+        fire_s = laser_power_state.get("fire_test_s")
+        hold_seconds = float(laser_power_state.get("hold_seconds", 3.0) or 3.0)
+        last_active_at = laser_power_state.get("last_active_at")
+        held_power_percent = laser_power_state.get("last_active_power_percent")
+        held_s = laser_power_state.get("last_active_s")
+    laser_active = bool(laser_info.get("laser_active", False))
+    if isinstance(fire_until, (int, float)) and now < float(fire_until):
+        laser_active = True
+        laser_label = "On"
+    else:
+        laser_label = str(laser_info.get("laser_state_label") or ("On" if laser_active else "Off"))
+
+    power_s = None
+    power_source = "unknown"
+    if isinstance(fire_until, (int, float)) and now < float(fire_until) and isinstance(fire_s, (int, float)):
+        power_s = float(fire_s)
+        power_source = "test_fire"
+    elif isinstance(commanded_s, (int, float)) and commanded_s > 0:
+        power_s = float(commanded_s)
+        power_source = commanded_source or "command"
+    else:
+        key = _normalize_laser_job_key(job_file)
+        meta = laser_job_power_cache.get(key) if key else None
+        if isinstance(meta, dict) and isinstance(meta.get("last_nonzero_s"), (int, float)):
+            if str(state_base or "").strip().lower() == "run" and laser_active:
+                power_s = float(meta.get("last_nonzero_s"))
+                power_source = "job_gcode"
+
+    if not isinstance(power_s, (int, float)) and instant > 0:
+        power_s = float(instant)
+        power_source = "live_fs"
+
+    laser_power_percent = None
+    laser_power_label = "—"
+    if isinstance(power_s, (int, float)) and max_s > 0:
+        laser_power_percent = max(0.0, min(100.0, (float(power_s) / float(max_s)) * 100.0))
+        laser_power_label = f"{laser_power_percent:.0f}%"
+
+    hard_off = state_key in {"idle", "alarm"}
+    if hard_off:
+        laser_active = False
+        laser_label = "Off"
+        laser_power_percent = None
+        laser_power_label = "—"
+        with app_state_lock:
+            laser_power_state["last_active_at"] = None
+            laser_power_state["last_active_power_percent"] = None
+            laser_power_state["last_active_s"] = None
+        if state_key == "idle":
+            off_reason = "idle"
+        else:
+            off_reason = "alarm"
+        display_sig = (False, None, "off", off_reason)
+    else:
+        hold_active = False
+        hold_age = None
+        if isinstance(last_active_at, (int, float)):
+            hold_age = now - float(last_active_at)
+            hold_active = hold_age <= hold_seconds
+
+        if state_key == "run":
+            if laser_active and isinstance(laser_power_percent, (int, float)):
+                with app_state_lock:
+                    laser_power_state["last_active_at"] = now
+                    laser_power_state["last_active_power_percent"] = float(laser_power_percent)
+                    if isinstance(power_s, (int, float)):
+                        laser_power_state["last_active_s"] = float(power_s)
+                hold_active = True
+                hold_age = 0.0
+            elif (not laser_active) and hold_active:
+                laser_active = True
+                laser_label = "On"
+                if isinstance(held_power_percent, (int, float)):
+                    laser_power_percent = float(held_power_percent)
+                    laser_power_label = f"{laser_power_percent:.0f}%"
+                elif isinstance(held_s, (int, float)) and max_s > 0:
+                    laser_power_percent = max(0.0, min(100.0, (float(held_s) / float(max_s)) * 100.0))
+                    laser_power_label = f"{laser_power_percent:.0f}%"
+                display_sig = (True, round(float(laser_power_percent), 2) if isinstance(laser_power_percent, (int, float)) else None, "hold", round(float(hold_age or 0.0), 2))
+                if display_sig != _last_logged_laser_display_signature:
+                    _last_logged_laser_display_signature = display_sig
+                    console.add(
+                        "info",
+                        f"[LASER DISPLAY HOLD] active=true power={laser_power_percent if isinstance(laser_power_percent,(int,float)) else 'none'} age={float(hold_age or 0.0):.1f}",
+                    )
+            elif (not laser_active) and isinstance(last_active_at, (int, float)) and (not hold_active):
+                with app_state_lock:
+                    laser_power_state["last_active_at"] = None
+                    laser_power_state["last_active_power_percent"] = None
+                    laser_power_state["last_active_s"] = None
+                display_sig = (False, None, "off", "hold_expired")
+                if display_sig != _last_logged_laser_display_signature:
+                    _last_logged_laser_display_signature = display_sig
+                    console.add("info", "[LASER DISPLAY OFF] reason=hold_expired")
+        else:
+            if not laser_active:
+                laser_power_percent = None
+                laser_power_label = "—"
+            with app_state_lock:
+                laser_power_state["last_active_at"] = None
+                laser_power_state["last_active_power_percent"] = None
+                laser_power_state["last_active_s"] = None
+        if _last_logged_laser_display_signature is None:
+            _last_logged_laser_display_signature = (laser_active, round(float(laser_power_percent), 2) if isinstance(laser_power_percent, (int, float)) else None, "normal", state_key)
+
+    log_sig = (
+        str(power_source),
+        round(float(power_s), 3) if isinstance(power_s, (int, float)) else None,
+        round(float(laser_power_percent), 3) if isinstance(laser_power_percent, (int, float)) else None,
+        bool(laser_active),
+        str(laser_label),
+    )
+    if log_sig != _last_logged_laser_power_signature:
+        _last_logged_laser_power_signature = log_sig
+        if power_source == "unknown":
+            console.add("info", "[LASER POWER] source=unknown")
+        elif laser_power_percent is not None:
+            console.add(
+                "info",
+                f"[LASER POWER] source={power_source} s={float(power_s):g} max={float(max_s):g} percent={laser_power_percent:.1f}",
+            )
+
+    key = _normalize_laser_job_key(job_file)
+    meta = laser_job_power_cache.get(key) if key else None
+    with app_state_lock:
+        hold_seconds_out = float(laser_power_state.get("hold_seconds", 3.0) or 3.0)
+        last_active_at_out = laser_power_state.get("last_active_at")
+    hold_active_out = (
+        state_key == "run"
+        and isinstance(last_active_at_out, (int, float))
+        and (now - float(last_active_at_out) <= hold_seconds_out)
+    )
+    return {
+        "laser_active": laser_active,
+        "laser_state_label": laser_label,
+        "laser_commanded_s": float(commanded_s) if isinstance(commanded_s, (int, float)) else None,
+        "laser_power_percent": laser_power_percent,
+        "laser_power_label": laser_power_label,
+        "laser_power_source": power_source,
+        "laser_power_max": float(max_s),
+        "laser_power_max_source": max_source,
+        "laser_job_max_s": float(meta.get("max_s")) if isinstance(meta, dict) and isinstance(meta.get("max_s"), (int, float)) else None,
+        "laser_job_max_power_percent": (
+            max(0.0, min(100.0, (float(meta.get("max_s")) / float(max_s)) * 100.0))
+            if isinstance(meta, dict) and isinstance(meta.get("max_s"), (int, float)) and max_s > 0
+            else None
+        ),
+        "laser_active_hold_seconds": hold_seconds_out,
+        "laser_display_active": laser_active,
+        "laser_display_power_percent": laser_power_percent,
+        "laser_display_power_label": laser_power_label,
+        "laser_hold_active": hold_active_out,
+    }
+
+
+def _update_laser_runtime_state(*, instant_value: Any, accessory_flags: list[str] | None, source: str = "websocket_status") -> dict[str, Any]:
+    now = time.time()
+    try:
+        instant = float(instant_value) if instant_value is not None else 0.0
+    except Exception:
+        instant = 0.0
+    flags = [str(x).strip().upper() for x in (accessory_flags or []) if str(x).strip()]
+    has_flags = len(flags) > 0
+    if has_flags:
+        active = "S" in flags
+    else:
+        active = instant > 0.0
+    state_label = "On" if active else "Off"
+
+    with app_state_lock:
+        prev_active = bool(laser_runtime_state.get("active", False))
+        prev_instant = float(laser_runtime_state.get("instant_value", 0.0) or 0.0)
+        window = float(laser_runtime_state.get("recent_window_seconds", 3.0) or 3.0)
+
+        laser_runtime_state["instant_value"] = instant
+        laser_runtime_state["active"] = active
+        laser_runtime_state["state_label"] = state_label
+        laser_runtime_state["source"] = str(source or "unknown")
+
+        if instant > 0.0:
+            laser_runtime_state["last_nonzero_value"] = instant
+            laser_runtime_state["last_nonzero_at"] = now
+            peak = laser_runtime_state.get("peak_recent_value")
+            laser_runtime_state["peak_recent_value"] = instant if not isinstance(peak, (int, float)) else max(float(peak), instant)
+        else:
+            last_ts = laser_runtime_state.get("last_nonzero_at")
+            if isinstance(last_ts, (int, float)) and (now - float(last_ts) > window):
+                laser_runtime_state["peak_recent_value"] = None
+
+        last_nonzero_val = laser_runtime_state.get("last_nonzero_value")
+        last_nonzero_ts = laser_runtime_state.get("last_nonzero_at")
+        last_nonzero_age = (now - float(last_nonzero_ts)) if isinstance(last_nonzero_ts, (int, float)) else None
+        peak_recent = laser_runtime_state.get("peak_recent_value")
+
+    flags_text = "".join(flags)
+    if (prev_active != active) or (int(prev_instant) != int(instant)):
+        console.add("info", f"[LASER STATUS PARSED] active={str(active).lower()} instant={int(instant)} flags={flags_text or 'none'}")
+    elif (instant <= 0.0) and isinstance(last_nonzero_age, (int, float)) and last_nonzero_age <= window and isinstance(last_nonzero_val, (int, float)):
+        console.add("info", f"[LASER STATUS RECENT] instant=0 recent={int(float(last_nonzero_val))} age={last_nonzero_age:.1f}")
+
+    return {
+        "laser_instant_value": instant,
+        "laser_active": active,
+        "laser_state_label": state_label,
+        "laser_last_nonzero_value": float(last_nonzero_val) if isinstance(last_nonzero_val, (int, float)) else None,
+        "laser_last_nonzero_age_seconds": float(last_nonzero_age) if isinstance(last_nonzero_age, (int, float)) else None,
+        "laser_peak_recent_value": float(peak_recent) if isinstance(peak_recent, (int, float)) else None,
+        "laser_recent_window_seconds": float(window),
+    }
+
+
+def _mark_job_progress_aborted(reason: str = "stop_or_alarm") -> None:
+    with app_state_lock:
+        job_progress_state["aborted"] = True
+        job_progress_state["complete"] = False
+    snap = _snapshot_job_progress_state()
+    console.add(
+        "warn",
+        f"[JOB PROGRESS ABORTED] file={str(snap.get('last_file') or '')} "
+        f"last_percent={snap.get('last_progress_percent')} reason={reason}",
+    )
+
+
+def _snapshot_job_progress_state() -> dict[str, Any]:
+    with app_state_lock:
+        return dict(job_progress_state)
+
+
+def _parse_sd_progress_from_status(raw_status: str) -> dict[str, Any] | None:
+    text = str(raw_status or "").strip()
+    if not text:
+        return None
+    match = re.search(r"(?:^|\|)SD:([+-]?\d+(?:\.\d+)?)(?:,([^|>]*))?(?:\||>)", text)
+    if not match:
+        return None
+    try:
+        percent = float(match.group(1))
+    except Exception:
+        return None
+    percent = max(0.0, min(100.0, percent))
+    file_part = str(match.group(2) or "").strip()
+    return {"percent": percent, "file": file_part}
+
+
+def _parse_time_from_status(raw_status: str) -> float | None:
+    text = str(raw_status or "").strip()
+    if not text:
+        return None
+    match = re.search(r"(?:^|\|)time:([+-]?\d+(?:\.\d+)?)(?:\||>)", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except Exception:
+        return None
+
+
+def _update_job_progress_tracking(
+    *,
+    state_base: str,
+    alarm_status: str,
+    comm_safety_locked: bool,
+    job_progress_percent: Any,
+    job_file: str,
+    controller_time_seconds: Any,
+) -> dict[str, Any]:
+    state_key = str(state_base or "").strip().lower()
+    file_text = str(job_file or "").strip()
+    now_ts = time.time()
+    with app_state_lock:
+        prev_state = str(job_progress_state.get("last_state") or "").strip().lower()
+        was_active = bool(job_progress_state.get("active", False))
+        aborted = bool(job_progress_state.get("aborted", False))
+        run_started_at = job_progress_state.get("run_started_at")
+        pause_started_at = job_progress_state.get("pause_started_at")
+        paused_total_seconds = float(job_progress_state.get("paused_total_seconds") or 0.0)
+
+        if isinstance(controller_time_seconds, (int, float)):
+            job_progress_state["controller_time_seconds"] = float(controller_time_seconds)
+
+        if state_key == "run":
+            # Start/restart a local run timer when a new run begins or file changes.
+            new_run = (prev_state != "run") or (not was_active)
+            if file_text and str(job_progress_state.get("last_file") or "") and (file_text != str(job_progress_state.get("last_file") or "")):
+                new_run = True
+            if new_run or not isinstance(run_started_at, (int, float)):
+                run_started_at = now_ts
+                paused_total_seconds = 0.0
+                pause_started_at = None
+                job_progress_state["run_started_at"] = run_started_at
+                job_progress_state["paused_total_seconds"] = paused_total_seconds
+                job_progress_state["pause_started_at"] = None
+            elif prev_state == "hold" and isinstance(pause_started_at, (int, float)):
+                paused_total_seconds += max(0.0, now_ts - float(pause_started_at))
+                pause_started_at = None
+                job_progress_state["paused_total_seconds"] = paused_total_seconds
+                job_progress_state["pause_started_at"] = None
+            prev_file = str(job_progress_state.get("last_file") or "")
+            prev_percent = job_progress_state.get("last_progress_percent")
+            prev_time = job_progress_state.get("last_time_seconds")
+            if file_text:
+                job_progress_state["last_file"] = file_text
+            if isinstance(job_progress_percent, (int, float)):
+                job_progress_state["last_progress_percent"] = float(job_progress_percent)
+            if isinstance(run_started_at, (int, float)):
+                elapsed = max(0.0, now_ts - float(run_started_at) - paused_total_seconds)
+                job_progress_state["last_time_seconds"] = float(elapsed)
+            job_progress_state["active"] = True
+            job_progress_state["complete"] = False
+            job_progress_state["aborted"] = False
+            job_progress_state["source"] = "pilot_run_timer"
+            new_file = str(job_progress_state.get("last_file") or "")
+            new_percent = job_progress_state.get("last_progress_percent")
+            new_time = job_progress_state.get("last_time_seconds")
+            if (new_file != prev_file) or (new_percent != prev_percent) or (new_time != prev_time):
+                console.add(
+                    "info",
+                    f"[JOB PROGRESS TRACK] state=run percent={new_percent} file={new_file}",
+                )
+        elif state_key == "hold":
+            if was_active and isinstance(run_started_at, (int, float)):
+                if not isinstance(pause_started_at, (int, float)):
+                    pause_started_at = now_ts
+                    job_progress_state["pause_started_at"] = pause_started_at
+                elapsed_hold = max(0.0, float(pause_started_at) - float(run_started_at) - paused_total_seconds)
+                job_progress_state["last_time_seconds"] = float(elapsed_hold)
+                job_progress_state["active"] = True
+                job_progress_state["complete"] = False
+                job_progress_state["source"] = "pilot_run_timer"
+        elif prev_state == "run" and state_key == "idle" and was_active:
+            normal_completion = (
+                str(alarm_status or "").lower() != "active"
+                and not bool(comm_safety_locked)
+                and not bool(aborted)
+            )
+            if normal_completion:
+                job_progress_state["active"] = False
+                job_progress_state["complete"] = True
+                job_progress_state["aborted"] = False
+                job_progress_state["last_progress_percent"] = 100.0
+                if isinstance(run_started_at, (int, float)):
+                    if isinstance(pause_started_at, (int, float)):
+                        paused_total_seconds += max(0.0, now_ts - float(pause_started_at))
+                    elapsed_complete = max(0.0, now_ts - float(run_started_at) - paused_total_seconds)
+                    job_progress_state["last_time_seconds"] = float(elapsed_complete)
+                if file_text:
+                    job_progress_state["last_file"] = file_text
+                job_progress_state["source"] = "completion_inferred"
+                job_progress_state["pause_started_at"] = None
+                console.add(
+                    "info",
+                    f"[JOB PROGRESS COMPLETE] file={str(job_progress_state.get('last_file') or '')} "
+                    "final_percent=100 source=completion_inferred",
+                )
+                _set_air_pump_state("off", "job_complete")
+                console.add("info", "[AIR PUMP JOB COMPLETE] state=off source=job_complete")
+            else:
+                job_progress_state["active"] = False
+                job_progress_state["complete"] = False
+                if not bool(aborted):
+                    job_progress_state["aborted"] = True
+                console.add(
+                    "warn",
+                    f"[JOB PROGRESS ABORTED] file={str(job_progress_state.get('last_file') or '')} "
+                    f"last_percent={job_progress_state.get('last_progress_percent')} reason=stop_or_alarm",
+                )
+        elif state_key == "alarm" and prev_state != "alarm":
+            job_progress_state["active"] = False
+            job_progress_state["complete"] = False
+            job_progress_state["aborted"] = True
+            job_progress_state["pause_started_at"] = None
+            console.add(
+                "warn",
+                f"[JOB PROGRESS ABORTED] file={str(job_progress_state.get('last_file') or '')} "
+                f"last_percent={job_progress_state.get('last_progress_percent')} reason=alarm",
+            )
+
+        if state_key == "run":
+            job_progress_state["aborted"] = False
+        job_progress_state["last_state"] = state_key
+
+    return _snapshot_job_progress_state()
 
 
 def _backup_root_dir() -> Path:
@@ -3543,6 +4556,18 @@ def _esp32_offline_payload(route: str, error: Any, **extra: Any) -> dict[str, An
     return payload
 
 
+def _get_native_esp32_url(active_cfg: dict[str, Any] | None = None) -> str:
+    config_obj = active_cfg if isinstance(active_cfg, dict) else cfg
+    esp32_page_cfg = config_obj.get("esp32_page", {}) if isinstance(config_obj.get("esp32_page"), dict) else {}
+    native_url = str(esp32_page_cfg.get("native_url", "") or "").strip()
+    if native_url:
+        return native_url
+    ray_cfg = config_obj.get("ray5", {}) if isinstance(config_obj.get("ray5"), dict) else {}
+    host = str(ray_cfg.get("host", "") or "").strip() or "127.0.0.1"
+    port = int(ray_cfg.get("port", 8848) or 8848)
+    return f"http://{host}:{port}"
+
+
 NETWORK_CHANGING_PATHS = {
     "Http/Port",
     "Sta/IPMode",
@@ -3660,6 +4685,7 @@ def api_esp32_info() -> Any:
     tz = now.strftime("%z")
     tz_fmt = f"{tz[:3]}:{tz[3:]}" if len(tz) == 5 else "+00:00"
     cmd = f"[ESP800]json=yes time={iso_time} tz={tz_fmt} version=3.0.0"
+    native_url = _get_native_esp32_url(cfg)
     console.add("info", f"[ESP3D INFO FETCH] command={cmd}")
     try:
         result = ray5.get_esp3d_info(webui_version="3.0.0")
@@ -3688,6 +4714,7 @@ def api_esp32_info() -> Any:
                     wifi_mode="",
                     http_host="",
                     http_port=8848,
+                    native_url=native_url,
                     esp_param_used=None,
                     esp_attempts=[],
                 )
@@ -3737,6 +4764,7 @@ def api_esp32_info() -> Any:
                     wifi_mode="",
                     http_host=ray_cfg.get("host", ""),
                     http_port=int(ray_cfg.get("port", 8848)),
+                    native_url=native_url,
                     esp_param_used=result.get("selected_param"),
                     esp_attempts=result.get("attempts", []),
                 )
@@ -3766,6 +4794,7 @@ def api_esp32_info() -> Any:
             "wifi_mode": data.get("WiFiMode") or data.get("wifi_mode") or "",
             "http_host": ray_cfg.get("host", ""),
             "http_port": int(ray_cfg.get("port", 8848)),
+            "native_url": native_url,
             "esp_param_used": result.get("selected_param"),
             "esp_attempts": result.get("attempts", []),
         }
@@ -5343,11 +6372,16 @@ def api_jobs_upload() -> Any:
         console.add("warn", f"G-code safety scan warning: {filename} detected=unknown allowed_by_config=true")
     else:
         console.add("info", f"G-code safety scan passed: {filename} detected={safety.get('detected_type')}")
+    upload_ok = False
+    _set_upload_in_progress(kind="imported_upload", filename=filename)
     _set_ray5_comm_busy(reason="uploading_to_sd", filename=filename, seconds=55.0, message="Uploading to SD")
     try:
         detail = ray5.upload_file_detailed(p)
-    finally:
-        _clear_ray5_comm_busy(reason="upload_complete")
+    except Exception:
+        _clear_ray5_comm_busy(reason="upload_failed_exception")
+        _clear_upload_in_progress(kind="imported_upload", ok=False)
+        raise
+    _clear_ray5_comm_busy(reason="upload_complete")
     if detail.get("filename_shortened"):
         console.add(
             "info",
@@ -5368,6 +6402,8 @@ def api_jobs_upload() -> Any:
         f"file_field={detail.get('file_field')} size={detail.get('file_size')}",
     )
     if detail.get("ok"):
+        upload_ok = True
+        _clear_upload_in_progress(kind="imported_upload", ok=True)
         console.add(
             "info",
             f"Upload end: {filename} => ok status={detail.get('upload_status_code')} preview={str(detail.get('upload_response',''))[:120]}",
@@ -5383,6 +6419,7 @@ def api_jobs_upload() -> Any:
         f"Ray5 upload failed endpoint={detail.get('endpoint')} method={detail.get('method')} filename={detail.get('upload_filename')} "
         f"status={detail.get('upload_status_code')} body_preview={str(detail.get('upload_response',''))[:160]} error={detail.get('error','')}",
     )
+    _clear_upload_in_progress(kind="imported_upload", ok=False)
     return jsonify(detail), 502
 
 
@@ -5422,9 +6459,16 @@ def api_jobs_start() -> Any:
         console.add("warn", f"G-code safety scan warning: {filename} detected=unknown allowed_by_config=true")
     else:
         console.add("info", f"G-code safety scan passed: {filename} detected={safety.get('detected_type')}")
+    try:
+        _record_laser_job_metadata(filename, local_path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        pass
     console.add("info", f"Start request: {filename}")
+    console.add("info", f"[UPLOAD RUN] start file={filename}")
+    _set_upload_in_progress(kind="upload_and_run", filename=filename)
     _set_ray5_comm_busy(reason="uploading_to_sd", filename=filename, seconds=55.0, message="Upload+Run uploading to SD")
     busy_cleared = False
+    upload_phase_ok = False
     try:
         upload_detail = ray5.upload_file_detailed(local_path)
         if upload_detail.get("filename_shortened"):
@@ -5432,7 +6476,16 @@ def api_jobs_start() -> Any:
                 "info",
                 f"Ray5 upload filename shortened: original='{upload_detail.get('original_filename', filename)}' final='{upload_detail.get('upload_filename', '')}'",
             )
-        upload_ok = bool(upload_detail.get("ok"))
+        upload_ok = _upload_response_indicates_success(upload_detail)
+        upload_status = upload_detail.get("upload_status_code")
+        upload_preview = str(upload_detail.get("upload_response", "") or "")[:160]
+        console.add(
+            "info",
+            f"[UPLOAD RUN] upload_result ok={str(bool(upload_ok)).lower()} status={upload_status} response_preview={upload_preview}",
+        )
+        if upload_ok and not bool(upload_detail.get("ok")):
+            upload_detail["ok"] = True
+            upload_detail["message"] = str(upload_detail.get("message") or "Upload accepted by success heuristic")
         console.add(
             "info",
             f"Upload source size={upload_detail.get('source_size')} sha256={str(upload_detail.get('source_sha256',''))[:12]} "
@@ -5442,6 +6495,13 @@ def api_jobs_start() -> Any:
         if upload_detail.get("rewrite_used"):
             console.add("warn", "Upload rewrite enabled; uploaded file may differ from source.")
         machine_filename = str(upload_detail.get("upload_filename") or filename)
+        src_key = _normalize_laser_job_key(filename)
+        dst_key = _normalize_laser_job_key(machine_filename)
+        if src_key and dst_key and src_key != dst_key:
+            with app_state_lock:
+                src_meta = laser_job_power_cache.get(src_key)
+                if isinstance(src_meta, dict):
+                    laser_job_power_cache[dst_key] = dict(src_meta) | {"filename": machine_filename, "updated_at": time.time()}
         upload_path = str((upload_detail.get("params") or {}).get("path") or cfg.get("ray5", {}).get("upload_path", "/") or "/")
         if not upload_ok:
             console.add(
@@ -5487,6 +6547,7 @@ def api_jobs_start() -> Any:
                 console.add("warn", "Upload verified on SD after timeout; continuing with run")
             else:
                 console.add("error", "Upload could not be verified on SD after retries; start blocked")
+                console.add("warn", "[UPLOAD RUN] blocked reason=upload_verify_failed")
                 _clear_ray5_comm_busy(reason="upload_verify_failed")
                 busy_cleared = True
                 return (
@@ -5500,9 +6561,12 @@ def api_jobs_start() -> Any:
                     ),
                     400,
                 )
+        upload_phase_ok = True
+        console.add("info", f"[UPLOAD RUN] upload_complete file={machine_filename}")
         _set_ray5_comm_busy(reason="starting_after_upload", filename=machine_filename, seconds=25.0, message="Waiting for Ray5 reconnect before start")
         if not _wait_for_ray5_http_reachable(max_wait_seconds=20.0, interval_seconds=2.0):
             console.add("warn", "Ray5 HTTP still unavailable after verified upload; start blocked")
+            console.add("warn", "[UPLOAD RUN] blocked reason=start_reconnect_timeout")
             _clear_ray5_comm_busy(reason="start_reconnect_timeout")
             busy_cleared = True
             return (
@@ -5519,10 +6583,30 @@ def api_jobs_start() -> Any:
             )
         if bool(upload_detail.get("verified_after_timeout")):
             console.add("info", "Upload verified after reconnect; starting job.")
+        start_cmd_preview = ""
+        start_mode_preview = "unknown"
+        try:
+            if hasattr(ray5, "_build_sd_run_command"):
+                cmd_prev, mode_prev, _norm = ray5._build_sd_run_command(machine_filename)  # intentional use for logging
+                start_cmd_preview = str(cmd_prev or "")
+                start_mode_preview = str(mode_prev or "unknown")
+        except Exception:
+            start_cmd_preview = ""
+        console.add(
+            "info",
+            f"[UPLOAD RUN] sending_start file={machine_filename} command={start_cmd_preview or '(built-in start path)'} mode={start_mode_preview}",
+        )
         ok, resp = ray5.start_file(machine_filename)
         _clear_ray5_comm_busy(reason="start_command_sent")
         busy_cleared = True
+        if ok:
+            with app_state_lock:
+                ray5_comm_safety_state["job_start_sent"] = True
         console.add("info", f"Start result {filename}: {'ok' if ok else 'fail'} {str(resp)[:120]}")
+        console.add(
+            "info",
+            f"[UPLOAD RUN] start_sent file={machine_filename} ok={str(bool(ok)).lower()} response_preview={str(resp)[:160]}",
+        )
         timelapse_arm = None
         if ok:
             _record_job_activity(source="imported_start", name=filename)
@@ -5543,6 +6627,7 @@ def api_jobs_start() -> Any:
         console.add("error", f"Upload+Run failed unexpectedly: {exc}")
         return jsonify({"ok": False, "error": "Upload+Run failed unexpectedly.", "message": str(exc)}), 500
     finally:
+        _clear_upload_in_progress(kind="upload_and_run", ok=upload_phase_ok)
         if not busy_cleared:
             _clear_ray5_comm_busy(reason="unexpected_exception")
 
@@ -5629,6 +6714,8 @@ def api_unlock() -> Any:
         return guard
     console.add("info", "Unlock / Clear Alarm requested")
     result = ray5.clear_alarm()
+    _set_laser_commanded_s(0.0, "command")
+    _clear_laser_display_hold("alarm_clear")
     steps = result.get("steps", {}) if isinstance(result.get("steps"), dict) else {}
     reset = steps.get("CTRL_X", {}) if isinstance(steps.get("CTRL_X"), dict) else {}
     m5 = steps.get("M5", {}) if isinstance(steps.get("M5"), dict) else {}
@@ -5752,6 +6839,8 @@ def api_laser_off() -> Any:
         return guard
     console.add("warn", "Laser off requested")
     result = ray5.laser_off()
+    if bool(result.get("ok")):
+        _set_laser_commanded_s(0.0, "command")
     console.add("warn", f"Laser off result: {'ok' if result.get('ok') else 'fail'}")
     return jsonify(result)
 
@@ -5809,6 +6898,8 @@ def api_test_fire() -> Any:
             console.add("error", msg)
             return jsonify({"ok": False, "message": msg, "power_percent": power_percent, "s_value": s_value, "duration_ms": duration_ms}), 400
         console.add("warn", f"Test Fire clamped: percent={power_percent} s_value={s_value} duration_ms={duration_ms}")
+        _set_laser_commanded_s(s_value, "command")
+        _set_laser_test_active(s_value, duration_ms)
         result = ray5.test_fire(
             s_value=s_value,
             duration_ms=duration_ms,
@@ -5908,10 +6999,13 @@ def api_stop() -> Any:
     if guard:
         return guard
     console.add("warn", "Stop Job requested")
+    _mark_job_progress_aborted(reason="stop_or_alarm")
     jc = cfg.get("job_control", {}) if isinstance(cfg.get("job_control"), dict) else {}
     stop_mode = str(jc.get("stop_mode", "hold_only")).strip().lower()
     console.add("warn", f"Stop mode: {stop_mode}")
     result = ray5.stop_job()
+    _set_laser_commanded_s(0.0, "command")
+    _clear_laser_display_hold("stop")
     if stop_mode == "soft_reset":
         steps = result.get("steps", {}) if isinstance(result.get("steps"), dict) else {}
         if "M5" in steps:
@@ -6010,6 +7104,8 @@ def api_files_start() -> Any:
     console.add("info", f"SD start {'ok' if result.get('ok') else 'fail'} file={filename}")
     timelapse_arm = None
     if result.get("ok"):
+        with app_state_lock:
+            ray5_comm_safety_state["job_start_sent"] = True
         _record_job_activity(source="sd_start", name=filename)
         timelapse_arm = _timelapse_arm(job_name=filename, job_source="sd")
     return jsonify(result | {"timelapse_arm": timelapse_arm})
@@ -6050,18 +7146,29 @@ def api_files_upload() -> Any:
         console.add("warn", f"G-code safety scan warning: {filename} detected=unknown allowed_by_config=true")
     else:
         console.add("info", f"G-code safety scan passed: {filename} detected={safety.get('detected_type')}")
+    try:
+        _record_laser_job_metadata(filename, data.decode("utf-8", errors="ignore"))
+    except Exception:
+        pass
     console.add("info", f"SD direct upload start: {filename} size={len(data)} path={req_path}")
+    upload_ok = False
+    _set_upload_in_progress(kind="sd_upload", filename=filename)
     _set_ray5_comm_busy(reason="uploading_to_sd", filename=filename, seconds=55.0, message="SD direct upload writing")
     try:
         result = ray5.upload_bytes_to_sd(filename=filename, data=data, path=req_path)
-    finally:
-        _clear_ray5_comm_busy(reason="sd_upload_complete")
+    except Exception:
+        _clear_ray5_comm_busy(reason="sd_upload_exception")
+        _clear_upload_in_progress(kind="sd_upload", ok=False)
+        raise
+    _clear_ray5_comm_busy(reason="sd_upload_complete")
     if result.get("filename_shortened"):
         console.add(
             "info",
             f"Ray5 upload filename shortened: original='{result.get('original_filename', filename)}' final='{result.get('filename', filename)}'",
         )
     if result.get("ok"):
+        upload_ok = True
+        _clear_upload_in_progress(kind="sd_upload", ok=True)
         console.add("info", f"SD direct upload end: {filename} => ok")
         return jsonify(
             {
@@ -6073,6 +7180,7 @@ def api_files_upload() -> Any:
             }
         )
     console.add("error", f"SD direct upload failed: {filename} => {result.get('message', 'unknown error')}")
+    _clear_upload_in_progress(kind="sd_upload", ok=False)
     return jsonify({"ok": False, "filename": filename, "path": req_path, "size": len(data), "message": result.get("message", "Upload failed")}), 502
 
 

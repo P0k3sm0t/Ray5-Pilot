@@ -343,6 +343,81 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
+## v1.2.1
+Ray5 Pilot v1.2.1 focuses on final Dashboard status polish, improved laser/air/job reporting, stronger emulator compatibility, and release-safety checks.
+
+### Added
+- Added native Ray5 SD start command support using `[ESP220]/filename`.
+  - SD Start and Upload + Run now use the shared SD run command builder.
+  - Default Ray5 behavior now uses `[ESP220]` mode.
+  - Legacy `$sd/run` and `$sd/runzip` modes remain available through config fallback.
+
+- Added improved live job progress handling.
+  - Ray5 Pilot now prefers fresh live websocket `Run` status lines containing `SD:<percent>,<file>`.
+  - Progress now matches Ray5 native ESP32 status output.
+  - Normal job completion still infers `100.00%` if needed.
+
+- Added Pilot-local Run Time tracking.
+  - Run Time now starts near zero when the job actually enters `Run`.
+  - Ray5 `time:` status values are preserved separately as controller time, but are no longer used as Dashboard job runtime.
+  - Pause/Hold and Resume behavior are handled by the local timer.
+
+- Added improved Laser status display.
+  - Dashboard now shows a simple `Laser: On` or `Laser: Off`.
+  - Added separate `Laser Power` display based on commanded laser power when available.
+  - Uses `$30` max laser/spindle value for percent conversion, with a default fallback.
+  - Smooths brief zero-power samples during active jobs to prevent flickering.
+
+- Added stronger emulator support.
+  - Emulator now supports realistic Upload + Run and SD Start behavior.
+  - Supports `[ESP220]/filename`, `$sd/run`, and `$sd/runzip`.
+  - Simulates line-by-line G-code execution, SD progress, elapsed time, position updates, accessory flags, pause, resume, stop/alarm, unlock, and `$G` state.
+
+- Added final safety-check coverage for v1.2.1 behavior.
+  - Covers ESP220 SD run support.
+  - Covers Upload + Run emulator compatibility.
+  - Covers live Run+SD progress snapshots.
+  - Covers local Run Time tracking.
+  - Covers air pump and laser accessory flag parsing.
+  - Covers Laser Power display behavior.
+  - Covers clean file-name display in the Dashboard.
+
+### Changed
+- Cleaned up the Dashboard Status card.
+  - Removed `Coordinate source`.
+  - Removed `Machine status update`.
+  - File names now hide the leading slash in the UI while keeping backend paths unchanged.
+
+- Improved Air Pump display behavior.
+  - `A:F` and `A:SF` indicate Air Pump On.
+  - `A:S` indicates laser active with Air Pump Off.
+  - Normal job completion sets Air Pump Off.
+  - Missing `A:` fields no longer force a false state change.
+
+- Improved Laser Power behavior.
+  - Laser Power no longer relies only on instantaneous `FS` samples.
+  - Commanded `S` values are tracked when available.
+  - Brief `FS=0` samples during active jobs no longer make the Dashboard look like the laser power is constantly dropping out.
+
+- Improved Upload + Run compatibility.
+  - Upload + Run no longer gets blocked by devices or emulators that return `404` on `/` while still accepting commands/files.
+  - Emulator-style upload success responses are accepted when the upload returns HTTP 2xx and no error marker.
+
+### Fixed
+- Fixed Upload + Run not starting jobs against the emulator after upload.
+- Fixed SD Start progress showing tiny values when the wrong start method was used.
+- Fixed Dashboard Run Time showing high Ray5 controller time instead of actual job runtime.
+- Fixed Air Pump staying On after normal job completion.
+- Fixed file display showing `/filename.gc` instead of `filename.gc`.
+- Fixed Laser status flickering between On and Off during active laser jobs.
+- Fixed Laser Power appearing misleadingly as zero when the laser job was still actively using a commanded power value.
+
+### Notes
+- Laser status is based on Ray5 status flags and command tracking. It is not physical electrical feedback from the laser module.
+- Laser Power is based on commanded `S` values and `$30` max power when available. It is not a measured optical output value.
+- Run Time is measured locally by Ray5 Pilot from observed job state transitions.
+- Progress is based on Ray5 live `SD:<percent>,<file>` websocket status when available.
+
 ## v1.2.0
 Ray5 Pilot v1.2.0 focuses on reliability, update handling, safer backups, improved GRBL and ESP32 status visibility, and stronger local-app hardening.
 

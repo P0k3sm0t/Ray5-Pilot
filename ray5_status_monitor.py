@@ -49,6 +49,15 @@ class Ray5StatusMonitor:
         self._status_line_count = 0
         self._last_wco: dict[str, float | None] = {"x": None, "y": None, "z": None}
         self._recent_lines: deque[tuple[float, str]] = deque(maxlen=800)
+        self._last_logged_progress_signature: tuple[float | None, str, float | None] | None = None
+        self._last_run_sd_status_raw: str | None = None
+        self._last_run_sd_status_timestamp: float | None = None
+        self._last_run_sd_percent: float | None = None
+        self._last_run_sd_file: str = ""
+        self._last_run_sd_time_seconds: float | None = None
+        self._last_run_sd_accessory_state: str = ""
+        self._last_run_sd_accessory_flags: list[str] = []
+        self._last_logged_run_sd_signature: tuple[float | None, str, float | None] | None = None
 
     def start(self) -> None:
         if not self.ws_enabled or not self.host or self.host.upper() == "YOUR_RAY5_IP":
@@ -115,6 +124,7 @@ class Ray5StatusMonitor:
     def get_debug_info(self) -> dict[str, Any]:
         with self._lock:
             age = (time.time() - self._last_live_ts) if self._last_live_ts is not None else None
+            run_sd_age = (time.time() - self._last_run_sd_status_timestamp) if self._last_run_sd_status_timestamp is not None else None
             return {
                 "monitor_exists": True,
                 "websocket_enabled": self.ws_enabled,
@@ -133,6 +143,14 @@ class Ray5StatusMonitor:
                 "last_disconnect_error": self._last_disconnect_error,
                 "reconnect_count": self._reconnect_count,
                 "last_reconnect_time": self._last_reconnect_time,
+                "last_run_sd_status_raw": self._last_run_sd_status_raw,
+                "last_run_sd_status_age_seconds": run_sd_age,
+                "last_run_sd_percent": self._last_run_sd_percent,
+                "last_run_sd_file": self._last_run_sd_file,
+                "last_run_sd_time_seconds": self._last_run_sd_time_seconds,
+                "last_run_sd_accessory_state": self._last_run_sd_accessory_state,
+                "last_run_sd_accessory_flags": list(self._last_run_sd_accessory_flags),
+                "job_progress_source": "live_websocket_run_sd" if self._last_run_sd_percent is not None else None,
             }
 
     def get_lines_since(self, since_ts: float) -> list[str]:
@@ -270,6 +288,7 @@ class Ray5StatusMonitor:
             if status_line:
                 try:
                     parsed = self._parse_status_line(status_line)
+                    self._maybe_capture_run_sd_snapshot(status_line, parsed)
                     with self._lock:
                         self._latest_status = parsed
                         self._last_live_ts = time.time()
@@ -321,6 +340,11 @@ class Ray5StatusMonitor:
         wpos_seen = False
         feed = None
         spindle = None
+        job_progress_percent = None
+        job_file = ""
+        job_time_seconds = None
+        accessory_state = ""
+        accessory_flags: list[str] = []
         parts = line[1:-1].split("|")
         if parts:
             state = parts[0]
@@ -356,6 +380,21 @@ class Ray5StatusMonitor:
                     feed = self._to_float(vals[0])
                 if len(vals) >= 2:
                     spindle = self._to_float(vals[1])
+            elif part.startswith("SD:"):
+                sd_payload = part.split(":", 1)[1]
+                sd_parts = sd_payload.split(",", 1)
+                if len(sd_parts) >= 1:
+                    raw_sd_percent = self._to_float(sd_parts[0])
+                    if raw_sd_percent is not None:
+                        job_progress_percent = max(0.0, min(100.0, float(raw_sd_percent)))
+                if len(sd_parts) >= 2:
+                    job_file = str(sd_parts[1] or "").strip()
+            elif part.startswith("time:"):
+                job_time_seconds = self._to_float(part.split(":", 1)[1])
+            elif part.startswith("A:"):
+                accessory_state = str(part.split(":", 1)[1] or "").strip().upper()
+                if accessory_state:
+                    accessory_flags = [ch for ch in accessory_state if ch.isalpha()]
 
         # Cache latest WCO values because firmware may emit WCO only occasionally.
         if wco_seen:
@@ -398,7 +437,7 @@ class Ray5StatusMonitor:
         else:
             coordinate_source_label = "—"
 
-        return {
+        parsed = {
             "state": state,
             "machine_position": mpos,
             "work_offset": wco,
@@ -412,7 +451,58 @@ class Ray5StatusMonitor:
             "timestamp": time.time(),
             "status_source": "live_websocket",
             "position_source": "live_websocket",
+            "job_progress_percent": job_progress_percent,
+            "job_file": job_file,
+            "job_time_seconds": job_time_seconds,
+            "controller_time_seconds": job_time_seconds,
+            "job_progress_source": "websocket_status" if (job_progress_percent is not None or job_file or job_time_seconds is not None) else None,
+            "accessory_state": accessory_state,
+            "accessory_flags": accessory_flags,
         }
+        signature = (job_progress_percent, job_file, job_time_seconds)
+        if signature != self._last_logged_progress_signature and (
+            (job_progress_percent is not None) or bool(job_file) or (job_time_seconds is not None)
+        ):
+            self._last_logged_progress_signature = signature
+            display_percent = (max(0.0, min(100.0, float(job_progress_percent))) if isinstance(job_progress_percent, (int, float)) else None)
+            self._log(
+                "[JOB PROGRESS PARSED] "
+                f"sd_percent={job_progress_percent if job_progress_percent is not None else 'none'} "
+                f"file={job_file or ''} "
+                f"time={job_time_seconds if job_time_seconds is not None else 'none'} "
+                f"display_percent={display_percent if display_percent is not None else 'none'}"
+            )
+        return parsed
+
+    def _maybe_capture_run_sd_snapshot(self, status_line: str, parsed: dict[str, Any]) -> None:
+        state = str(parsed.get("state") or "").strip().lower()
+        percent = parsed.get("job_progress_percent")
+        if state != "run" or not isinstance(percent, (int, float)):
+            return
+        now = time.time()
+        file_text = str(parsed.get("job_file") or "")
+        tsec = parsed.get("job_time_seconds")
+        acc_state = str(parsed.get("accessory_state") or "")
+        acc_flags = parsed.get("accessory_flags") if isinstance(parsed.get("accessory_flags"), list) else []
+        sig = (float(percent), file_text, float(tsec) if isinstance(tsec, (int, float)) else None)
+        with self._lock:
+            self._last_run_sd_status_raw = status_line
+            self._last_run_sd_status_timestamp = now
+            self._last_run_sd_percent = float(percent)
+            self._last_run_sd_file = file_text
+            self._last_run_sd_time_seconds = float(tsec) if isinstance(tsec, (int, float)) else None
+            self._last_run_sd_accessory_state = acc_state
+            self._last_run_sd_accessory_flags = list(acc_flags)
+            changed = sig != self._last_logged_run_sd_signature
+            if changed:
+                self._last_logged_run_sd_signature = sig
+        if changed:
+            self._log(
+                f"[JOB PROGRESS WS RUN SD] percent={float(percent):.2f} "
+                f"file={file_text} "
+                f"time={float(tsec) if isinstance(tsec, (int, float)) else 'none'} "
+                f"raw={status_line[:220]}"
+            )
 
     def _to_float(self, v: Any) -> float | None:
         try:

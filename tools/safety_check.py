@@ -756,6 +756,8 @@ def check_hardening_regression_markers(r: Result) -> None:
     app_js_path = ROOT / "web" / "static" / "app.js"
     ms_js_path = ROOT / "web" / "static" / "machine_settings.js"
     ms_html_path = ROOT / "web" / "templates" / "machine_settings.html"
+    monitor_path = ROOT / "ray5_status_monitor.py"
+    client_path = ROOT / "ray5_client.py"
 
     app_markers = [
         ("before_request request guard", "@app.before_request"),
@@ -796,6 +798,52 @@ def check_hardening_regression_markers(r: Result) -> None:
         ("air pump command M9", "M9"),
         ("grbl version payload", "grbl_version"),
         ("raw identity password redaction", "redacted_raw = re.sub"),
+        ("upload response success helper", "def _upload_response_indicates_success"),
+        ("upload run marker", "[UPLOAD RUN]"),
+        ("upload run complete marker", "upload_complete"),
+        ("upload run sending start marker", "sending_start"),
+        ("upload run start sent marker", "start_sent"),
+        ("upload run blocked marker", "blocked reason"),
+        ("run timer run_started_at", "run_started_at"),
+        ("run timer pause_started_at", "pause_started_at"),
+        ("run timer paused_total_seconds", "paused_total_seconds"),
+        ("job elapsed seconds payload", "job_elapsed_seconds"),
+        ("job elapsed source payload", "job_elapsed_source"),
+        ("pilot run timer source", "pilot_run_timer"),
+        ("controller time seconds payload", "controller_time_seconds"),
+        ("accessory parser helper", "def _track_air_pump_from_accessory_state"),
+        ("accessory flags field", "accessory_flags"),
+        ("accessory state field", "accessory_state"),
+        ("air pump parsed log", "AIR PUMP STATUS PARSED"),
+        ("air pump job complete log", "AIR PUMP JOB COMPLETE"),
+        ("live websocket run sd source", "live_websocket_run_sd"),
+        ("job progress source selected log", "JOB PROGRESS SOURCE SELECTED"),
+        ("job progress source mismatch log", "JOB PROGRESS SOURCE MISMATCH"),
+        ("run sd percent debug marker", "last_run_sd_percent"),
+        ("status reachability uses http status code", "status_code = probe.get(\"status_code\")"),
+        ("status reachability any-http-response marker", "isinstance(status_code, int)"),
+        ("laser display hold seconds field", "laser_active_hold_seconds"),
+        ("laser display active field", "laser_display_active"),
+        ("laser display power percent field", "laser_display_power_percent"),
+        ("laser display power label field", "laser_display_power_label"),
+        ("laser hold active field", "laser_hold_active"),
+        ("laser display off log", "LASER DISPLAY OFF"),
+        ("laser hard-off idle state marker", 'state_key in {"idle", "alarm"}'),
+        ("laser hard-off idle reason marker", 'off_reason = "idle"'),
+        ("laser hard-off alarm reason marker", 'off_reason = "alarm"'),
+        ("laser command tracking helper", "def _track_laser_from_command"),
+        ("laser commanded s field", "laser_commanded_s"),
+        ("laser power percent field", "laser_power_percent"),
+        ("laser power source field", "laser_power_source"),
+        ("laser power max field", "laser_power_max"),
+        ("laser power max source field", "laser_power_max_source"),
+        ("grbl $30 lookup marker", 'key != "30"'),
+        ("laser max fallback marker", "default_max = 1000.0"),
+        ("laser display off m5 marker", '_clear_laser_display_hold("m5")'),
+        ("laser display off stop marker", "reason=stop"),
+        ("laser display off alarm clear marker", '_clear_laser_display_hold("alarm_clear")'),
+        ("stop job route marker", "@app.post(\"/api/stop\")"),
+        ("unlock route marker", "@app.post(\"/api/unlock\")"),
     ]
     missing += [f"app.py: {x}" for x in _check_markers(app_path, app_markers)]
 
@@ -803,6 +851,11 @@ def check_hardening_regression_markers(r: Result) -> None:
         ("debug_endpoints defaults", '"debug_endpoints"'),
         ("debug_endpoints enabled default", '"enabled": False'),
         ("debug_endpoints localhost_only default", '"localhost_only": True'),
+        ("sd_run config block", '"sd_run"'),
+        ("sd_run mode", '"mode"'),
+        ("sd_run esp220 template", '"esp220_template"'),
+        ("sd_run grbl template", '"grbl_template"'),
+        ("sd_run grbl zip template", '"grbl_zip_template"'),
     ]
     missing += [f"config_manager.py: {x}" for x in _check_markers(cfg_mgr_path, cfg_mgr_markers)]
 
@@ -810,8 +863,38 @@ def check_hardening_regression_markers(r: Result) -> None:
         ("debug_endpoints example block", '"debug_endpoints"'),
         ("debug_endpoints enabled example", '"enabled"'),
         ("debug_endpoints localhost_only example", '"localhost_only"'),
+        ("sd_run example block", '"sd_run"'),
+        ("sd_run mode example", '"mode"'),
+        ("sd_run esp220 template example", '"esp220_template"'),
+        ("sd_run esp220 template value", "[ESP220]/{filename}"),
     ]
     missing += [f"config.example.json: {x}" for x in _check_markers(cfg_example_path, cfg_example_markers)]
+
+    client_markers = [
+        ("sd_run reference in client", "sd_run"),
+        ("esp220 token", "esp220"),
+        ("esp220 command template token", "[ESP220]"),
+        ("sd run command builder", "def _build_sd_run_command"),
+        ("sd run command log marker", "SD RUN COMMAND"),
+        ("grbl template key", "grbl_template"),
+        ("grbl zip template key", "grbl_zip_template"),
+    ]
+    missing += [f"ray5_client.py: {x}" for x in _check_markers(client_path, client_markers)]
+
+    monitor_markers = [
+        ("last run sd raw snapshot", "last_run_sd_status_raw"),
+        ("last run sd timestamp", "last_run_sd_status_timestamp"),
+        ("last run sd percent", "last_run_sd_percent"),
+        ("last run sd file", "last_run_sd_file"),
+        ("last run sd time", "last_run_sd_time_seconds"),
+        ("job progress ws run sd log", "JOB PROGRESS WS RUN SD"),
+        ("accessory flags parse", "accessory_flags"),
+        ("accessory state parse", "accessory_state"),
+        ("sd percent parse marker", "sd_percent="),
+        ("display percent marker", "display_percent="),
+        ("clamp 0..100 marker", "max(0.0, min(100.0"),
+    ]
+    missing += [f"ray5_status_monitor.py: {x}" for x in _check_markers(monitor_path, monitor_markers)]
 
     updater_markers = [
         ("package-driven copy mode marker", "package_driven=true"),
@@ -841,6 +924,14 @@ def check_hardening_regression_markers(r: Result) -> None:
     app_js_markers = [
         ("air pump state in dashboard JS", "air_pump_state"),
         ("air pump label in dashboard JS", "air_pump_label"),
+        ("display job file helper", "displayJobFileName"),
+        ("display job file slash strip", "replace(/^\\/+/,"),
+        ("laser display active in dashboard JS", "laser_display_active"),
+        ("laser display power label in dashboard JS", "laser_display_power_label"),
+        ("laser state label in dashboard JS", "laser_state_label"),
+        ("laser power label fallback in dashboard JS", "laser_power_label"),
+        ("laser row label in dashboard JS", "Laser:"),
+        ("laser power row label in dashboard JS", "Laser Power"),
     ]
     missing += [f"web/static/app.js: {x}" for x in _check_markers(app_js_path, app_js_markers)]
 
@@ -855,6 +946,24 @@ def check_hardening_regression_markers(r: Result) -> None:
         ("Raw $I Output section", "Raw $I Output"),
     ]
     missing += [f"web/templates/machine_settings.html: {x}" for x in _check_markers(ms_html_path, ms_html_markers)]
+
+    # Lightweight anti-regression heuristic: avoid obvious divide-by-100 in dashboard progress display path.
+    app_js_txt = _read_text(app_js_path)
+    if ("job_progress_percent / 100" in app_js_txt) or ("progressVal / 100" in app_js_txt):
+        missing.append("web/static/app.js: found divide-by-100 progress marker in dashboard path")
+
+    # Laser dashboard anti-regression:
+    # ensure status-card Laser row is simple and does not include recent/peak display text.
+    if "Laser:" in app_js_txt:
+        laser_line_matches = re.findall(r"Laser:\s*<b>\$\{esc\(([^}]*)\)\}</b>", app_js_txt)
+        if laser_line_matches:
+            laser_expr_joined = " | ".join(laser_line_matches).lower()
+            if "recent" in laser_expr_joined or "peak" in laser_expr_joined:
+                missing.append("web/static/app.js: Laser status-card row references recent/peak display text")
+    if re.search(r"Laser:\s*<b>.*recent.*</b>", app_js_txt, flags=re.IGNORECASE | re.DOTALL):
+        missing.append("web/static/app.js: Laser status-card row contains visible 'recent' text")
+    if re.search(r"Laser:\s*<b>.*peak.*</b>", app_js_txt, flags=re.IGNORECASE | re.DOTALL):
+        missing.append("web/static/app.js: Laser status-card row contains visible 'peak' text")
 
     if missing:
         r.fail("Hardening regression checks")

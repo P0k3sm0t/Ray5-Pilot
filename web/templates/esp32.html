@@ -188,6 +188,7 @@ let rowStatus={};
 let hasSessionBackup=false;
 let sessionBackupDownloaded=false;
 let latestBackup=null;
+const NATIVE_ESP32_URL = {{ (native_esp32_url or '')|tojson }};
 const NETWORK_SENSITIVE_PATHS = new Set([
   'Sta/SSID',
   'Sta/Password',
@@ -584,7 +585,17 @@ document.getElementById('refreshAll').onclick=async()=>{setMsg('Refreshing...');
 document.getElementById('refreshInfo').onclick=async()=>{try{setMsg('Loading ESP3D info...');await loadInfo();setMsg('ESP3D info loaded.');}catch(e){setMsg('Info failed: '+e.message)}};
 document.getElementById('refreshEeprom').onclick=async()=>{try{setMsg('Loading EEPROM...');await loadEeprom();setMsg('EEPROM loaded.');}catch(e){setMsg('EEPROM failed: '+e.message)}};
 document.getElementById('refreshWs').onclick=async()=>{try{await loadWsStatus();setMsg('WS status loaded.');}catch(e){setMsg('WS status failed: '+e.message)}};
-document.getElementById('openNative').onclick=async()=>{const i=await api('/api/esp32/info'); if(!i.ok){ setMsg('Open native failed: Ray5 may be offline or unreachable.'); return; } window.open(`http://${i.http_host||'127.0.0.1'}:${i.http_port||8848}/#`,'_blank','noopener');};
+document.getElementById('openNative').onclick=async()=>{
+  const i=await api('/api/esp32/info');
+  const configuredNative=String((i&&i.native_url)||NATIVE_ESP32_URL||'').trim();
+  const fallbackNative=`http://${(i&&i.http_host)||'127.0.0.1'}:${(i&&i.http_port)||8848}`;
+  const targetUrl=configuredNative||fallbackNative;
+  if(!targetUrl){
+    setMsg('Open native failed: no native URL configured.');
+    return;
+  }
+  window.open(targetUrl,'_blank','noopener,noreferrer');
+};
 
 document.getElementById('sendGcode').onclick=async()=>{const c=document.getElementById('gcodeCmd').value.trim();if(!c)return;try{const d=await api('/api/esp32/command','POST',{command:c});document.getElementById('gcodeLast').textContent=maskSensitiveText(esc(d));logRaw('GCODE '+c,d);setMsg('G-code sent.');}catch(e){setMsg('G-code failed: '+e.message)}};
 document.getElementById('sendEsp').onclick=async()=>{const c=document.getElementById('espCmd').value.trim();if(!c)return;try{const d=await api('/api/esp32/esp-command','POST',{cmd:c});document.getElementById('espLast').textContent=maskSensitiveText(esc(d));logRaw('ESP '+c,d);setMsg('ESP cmd sent.');}catch(e){setMsg('ESP cmd failed: '+e.message)}};

@@ -16,6 +16,18 @@ function statusAgeText(seconds){
   if(!Number.isFinite(n) || n < 0) return '—';
   return `${Math.round(n)}s ago`;
 }
+function parseSdPercentFromRawStatus(raw){
+  const text = String(raw || '');
+  const m = text.match(/(?:^|\|)SD:([+-]?\d+(?:\.\d+)?)(?:,[^|>]*)?(?:\||>)/i);
+  if(!m) return null;
+  const n = Number(m[1]);
+  if(!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, n));
+}
+function displayJobFileName(name){
+  const cleaned = String(name || '').replace(/^\/+/, '').trim();
+  return cleaned || '—';
+}
 function axisStatusLine(axis, wVal, mVal){
   const w = Number(wVal);
   const m = Number(mVal);
@@ -80,6 +92,7 @@ let currentTimelapseSessions = [];
 let timelapseRuntimeState = null;
 let lastTimelapseCompletionRefreshKey = '';
 let localUploadBusyState = {active:false, reason:'', filename:'', startedAt:0, expiresAt:0};
+let laserTestActiveUntilMs = 0;
 
 function setLocalUploadBusyStatus(reason='uploading_to_sd', filename='', seconds=45){
   const now = Date.now();
@@ -248,14 +261,15 @@ async function refreshStatus(){
   latestMachineStateForSd = stateText;
   const pageId = (d.websocket_page_id===null || d.websocket_page_id===undefined || d.websocket_page_id==='') ? '—' : String(d.websocket_page_id);
   const feedText = isOfflineFallback ? '0' : ((d.feed===null || d.feed===undefined) ? '—' : fmtNum(d.feed, 0));
-  const laserText = isOfflineFallback ? '0' : ((d.spindle===null || d.spindle===undefined) ? '—' : fmtNum(d.spindle, 0));
+  const nowMs = Date.now();
+  const laserStateFromStatus = String(d.laser_state_label || (d.laser_display_active ? 'On' : (d.laser_active ? 'On' : 'Off')));
+  const laserStateText = nowMs < laserTestActiveUntilMs ? 'On' : laserStateFromStatus;
+  const laserPowerLabel = String(d.laser_display_power_label || d.laser_power_label || '—');
   const alarmText = d.alarm_status || ((String(d.state_base||d.state||'').toLowerCase()==='alarm') ? 'Active' : (d.online ? 'Clear' : 'Unknown'));
   const jobText = d.job_status || 'Unknown';
   const timelapseText = normalizeTimelapseStatusLabel(d);
   const sourceText = isOfflineFallback ? 'fallback_offline' : (effectiveSource || d.status_source || 'unknown');
-  const coordSourceText = isOfflineFallback ? '—' : (d.coordinate_source_label || '—');
   const connectionText = effectiveSource === 'upload_busy' ? 'Busy / Uploading' : (isOfflineFallback ? 'Offline' : (d.connection_status || ((d.online && sourceText === 'live_websocket') ? 'Online' : 'Offline')));
-  const lastUpdateText = isOfflineFallback ? '—' : statusAgeText(d.last_update_age_seconds);
   const appVersionText = String(d.app_version || 'unknown');
   const us = (d && d.update_status) ? d.update_status : {};
   let updateText = 'Unable to check';
@@ -272,6 +286,18 @@ async function refreshStatus(){
   const pageDisplay = isOfflineFallback ? '—' : pageId;
   const pumpLabel = String(d.air_pump_label || 'Unknown');
   const pumpState = String(d.air_pump_state || 'unknown');
+  const rawStatusForProgress = String(d.raw_status || d.raw || '');
+  let progressVal = Number(d.job_progress_percent);
+  if(!Number.isFinite(progressVal)){
+    const fallbackSd = parseSdPercentFromRawStatus(rawStatusForProgress);
+    if(Number.isFinite(fallbackSd)) progressVal = fallbackSd;
+  }
+  const progressText = Number.isFinite(progressVal) ? `${progressVal.toFixed(2)}%` : '';
+  const jobFileText = String(d.job_file || '').trim();
+  const jobFileDisplay = displayJobFileName(jobFileText);
+  const jobTimeVal = Number(d.job_time_seconds);
+  const jobTimeText = Number.isFinite(jobTimeVal) ? `${jobTimeVal.toFixed(1)}s` : '';
+  const showJobExtras = (String(d.state_base || d.state || '').toLowerCase() === 'run') || !!progressText || !!jobFileText || !!jobTimeText;
   const sc = (d && d.system_check) ? d.system_check : {};
   const commSafety = (d && d.comm_safety) ? d.comm_safety : {};
   commSafetyLockout = !!commSafety.comm_lost_during_job;
@@ -308,7 +334,8 @@ async function refreshStatus(){
       <div>${esc(yLine)}</div>
       <div>${esc(wcoLine)}</div>
       <div>Feed: <b>${esc(feedText)}</b></div>
-      <div>Laser: <b>${esc(laserText)}</b></div>
+      <div>Laser: <b>${esc(laserStateText)}</b></div>
+      <div>Laser Power: <b>${esc(laserPowerLabel)}</b></div>
     </div>
     <div class="status-safety">
       <div>Alarm: <b>${esc(alarmText)}</b></div>
@@ -316,11 +343,12 @@ async function refreshStatus(){
       <div>Air Pump: <b>${esc(pumpLabel)}</b></div>
       <div id="statusTimelapse">Timelapse: <b>${esc(timelapseText)}</b></div>
       <div>Connection: <b>${esc(connectionText)}</b></div>
+      ${showJobExtras ? `<div>Progress: <b>${esc(progressText || '—')}</b></div>` : ''}
+      ${showJobExtras ? `<div>File: <b>${esc(jobFileDisplay)}</b></div>` : ''}
+      ${showJobExtras ? `<div>Run Time: <b>${esc(jobTimeText || '—')}</b></div>` : ''}
     </div>
     <div class="status-foot muted small">
       <div>Source: ${esc(sourceText)}</div>
-      <div>Coordinate source: ${esc(coordSourceText)}</div>
-      <div>Machine status update: ${esc(lastUpdateText)}</div>
       <div>Version: ${esc(appVersionText)}</div>
       <div>Update: ${esc(updateText)}</div>
       <div style="margin-top:4px;"><b>System check</b></div>
@@ -1323,12 +1351,20 @@ async function manualCall(url, body=null, confirmText=''){
   if(confirmText && !confirm(confirmText)) return;
   setManualBusy(true);
   try{
+    if(url === '/api/laser/test-fire'){
+      const reqDuration = Number(body && body.duration_ms);
+      const durationMs = Number.isFinite(reqDuration) ? Math.max(0, reqDuration) : 1000;
+      laserTestActiveUntilMs = Date.now() + durationMs + 250;
+    }
     const r = await api(url,'POST',body);
     let msg = r.ok ? 'OK: '+(r.message||'command sent') : 'Error: '+(r.message||r.error||'request failed');
     if(r && r.ok && url === '/api/laser/test-fire'){
       const sVal = Number(r.s_value);
       const dur = Number(r.duration_ms);
       const cmd = String(r.command || 'M4').trim();
+      if(Number.isFinite(dur)){
+        laserTestActiveUntilMs = Date.now() + Math.max(0, dur) + 250;
+      }
       if(Number.isFinite(sVal) && Number.isFinite(dur)){
         msg = `Test fire complete: ${cmd} S${sVal} / ${dur} ms`;
       }

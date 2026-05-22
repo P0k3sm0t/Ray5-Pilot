@@ -717,9 +717,28 @@ class Ray5Client:
         target = str(filename_or_path or "").strip().lstrip("/")
         if not target:
             return {"ok": False, "message": "filename is required", "raw": ""}
-        tpl = str(self.cfg.get("ray5", {}).get("run_command_template", "$sd/runzip=/{filename}"))
-        cmd = tpl.format(filename=target)
+        cmd, mode, normalized = self._build_sd_run_command(target)
+        print(f"[SD RUN COMMAND] mode={mode} file={normalized} command={cmd}")
         return self._request_command(cmd)
+
+    def _build_sd_run_command(self, filename_or_path: str) -> tuple[str, str, str]:
+        target = re.sub(r"/+", "/", str(filename_or_path or "").strip().replace("\\", "/").lstrip("/"))
+        sd_cfg = self.cfg.get("sd_run")
+        if not isinstance(sd_cfg, dict):
+            legacy_tpl = str(self.cfg.get("ray5", {}).get("run_command_template", "$sd/runzip=/{filename}"))
+            return legacy_tpl.format(filename=target), "legacy", target
+
+        mode = str(sd_cfg.get("mode", "esp220") or "esp220").strip().lower()
+        template_by_mode = {
+            "esp220": str(sd_cfg.get("esp220_template", "[ESP220]/{filename}")),
+            "grbl": str(sd_cfg.get("grbl_template", "$sd/run=/{filename}")),
+            "grbl_zip": str(sd_cfg.get("grbl_zip_template", "$sd/runzip=/{filename}")),
+        }
+        template = template_by_mode.get(mode)
+        if not template:
+            legacy_tpl = str(self.cfg.get("ray5", {}).get("run_command_template", "$sd/runzip=/{filename}"))
+            return legacy_tpl.format(filename=target), "legacy", target
+        return template.format(filename=target), mode, target
 
     # Backward-compatible wrappers.
     def delete_file(self, filename: str) -> tuple[bool, str]:

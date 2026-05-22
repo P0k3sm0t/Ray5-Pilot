@@ -25,6 +25,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "upload_path": "/",
         "sd_path": "/",
     },
+    "sd_run": {
+        "mode": "esp220",
+        "esp220_template": "[ESP220]/{filename}",
+        "grbl_template": "$sd/run=/{filename}",
+        "grbl_zip_template": "$sd/runzip=/{filename}",
+    },
     "web_ui": {"host": "127.0.0.1", "port": 5050, "debug": False},
     "camera": {
         "enabled": False,
@@ -207,6 +213,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "esp32_page": {
         "esp_command_param": "auto",
+        "native_url": "http://\u0031\u0030.\u0030.\u0030.\u0031\u0039\u0035:8848",
     },
     "air_assist": {"supported": True, "on_command": "M8", "off_command": "M9"},
 }
