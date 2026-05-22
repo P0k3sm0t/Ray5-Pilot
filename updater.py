@@ -14,35 +14,6 @@ from pathlib import Path
 from urllib import request as urlrequest
 
 
-ALLOWED_UPDATE_PATHS: tuple[str, ...] = (
-    "README.md",
-    "VERSION",
-    ".gitignore",
-    "app.py",
-    "camera_manager.py",
-    "config.example.json",
-    "config_manager.py",
-    "ray5_client.py",
-    "job_manager.py",
-    "console_log.py",
-    "calibrate_camera.py",
-    "ray5_status_monitor.py",
-    "gcode_safety.py",
-    "requirements.txt",
-    "updater.py",
-    "web/templates/index.html",
-    "web/templates/setup.html",
-    "web/templates/camera_calibration.html",
-    "web/templates/machine_settings.html",
-    "web/templates/esp32.html",
-    "web/static/app.js",
-    "web/static/setup.js",
-    "web/static/machine_settings.js",
-    "web/static/style.css",
-    "web/static/favicon.ico",
-    "web/static/favicon.svg",
-    "web/static/camera_placeholder.svg",
-)
 PARENT_EXIT_WAIT_TIMEOUT_SECONDS = 30.0
 REQUIRED_SOURCE_ROOT_ENTRIES: tuple[str, ...] = ("app.py", "VERSION", "config.example.json", "web")
 REQUIRED_TEMPLATE_PATHS: tuple[str, ...] = (
@@ -51,6 +22,25 @@ REQUIRED_TEMPLATE_PATHS: tuple[str, ...] = (
     "web/templates/machine_settings.html",
     "web/templates/esp32.html",
 )
+PROTECTED_TOP_LEVEL_PATHS: tuple[str, ...] = (
+    "config.json",
+    ".env",
+    ".venv",
+    "venv",
+    "env",
+    ".git",
+    "__pycache__",
+    "backups",
+    "logs",
+    "update_logs",
+    "update_work",
+    "camera_captures",
+    "timelapse",
+    "watched_gcode",
+    "imported_jobs",
+    "rejected_jobs",
+)
+PROTECTED_SUFFIXES: tuple[str, ...] = (".pyc", ".pyo")
 
 
 def _sha256_file(path: Path) -> str:
@@ -105,6 +95,23 @@ def _is_process_running(pid: int) -> bool:
 def _copy_file(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
+
+
+def _is_protected_update_relpath(rel: Path) -> bool:
+    if not rel.parts:
+        return True
+    first = str(rel.parts[0]).strip().lower()
+    rel_name = rel.name.lower()
+    rel_str = str(rel).replace("\\", "/").lower()
+    if first in {p.lower() for p in PROTECTED_TOP_LEVEL_PATHS}:
+        return True
+    if any(part.lower() in {"__pycache__"} for part in rel.parts):
+        return True
+    if rel_name.endswith(PROTECTED_SUFFIXES):
+        return True
+    if rel_str in {"config.json", ".env"}:
+        return True
+    return False
 
 
 def _write_update_status(
@@ -296,22 +303,33 @@ def _run(argv: argparse.Namespace) -> int:
             if not _is_valid_source_root(source_root):
                 raise RuntimeError("Invalid update package: could not find Ray5 Pilot app root.")
             log(f"Using extracted source root: {source_root}")
+            log("[UPDATE COPY MODE] package_driven=true")
 
             backed_up: list[str] = []
             copied: list[str] = []
-            for rel in ALLOWED_UPDATE_PATHS:
-                src = (source_root / rel).resolve()
-                dst = (project_root / rel).resolve()
-                if not src.exists():
-                    log(f"WARN: Missing in update source, skipped: {rel}")
+            new_files = 0
+            skipped = 0
+            source_files = sorted([p for p in source_root.rglob("*") if p.is_file()])
+            for src in source_files:
+                rel_path = src.relative_to(source_root)
+                rel_posix = rel_path.as_posix()
+                if _is_protected_update_relpath(rel_path):
+                    skipped += 1
+                    log(f"[UPDATE SKIP] {rel_posix} reason=protected")
                     continue
+                dst = (project_root / rel_path).resolve()
                 if dst.exists():
-                    backup_target = (backup_dir / rel).resolve()
+                    backup_target = (backup_dir / rel_path).resolve()
                     _copy_file(dst, backup_target)
-                    backed_up.append(rel)
-                _copy_file(src, dst)
-                copied.append(rel)
-                log(f"Updated: {rel}")
+                    backed_up.append(rel_posix)
+                    _copy_file(src, dst)
+                    copied.append(rel_posix)
+                    log(f"[UPDATE FILE] {rel_posix}")
+                else:
+                    _copy_file(src, dst)
+                    copied.append(rel_posix)
+                    new_files += 1
+                    log(f"[UPDATE NEW FILE] {rel_posix}")
 
             missing_required_templates = [
                 rel for rel in REQUIRED_TEMPLATE_PATHS
@@ -357,7 +375,8 @@ def _run(argv: argparse.Namespace) -> int:
 
             log(f"Backed up files: {len(backed_up)}")
             log(f"Copied files: {len(copied)}")
-            if len(backed_up) == 0 and len(copied) == 0:
+            log(f"[UPDATE SUMMARY] backed_up={len(backed_up)} copied={len(copied)} new={new_files} skipped={skipped}")
+            if len(copied) == 0:
                 raise RuntimeError("Update aborted: no files were copied.")
             if not pip_ok:
                 log("Update completed with pip warning.")

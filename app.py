@@ -32,6 +32,41 @@ from ray5_status_monitor import Ray5StatusMonitor
 BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__, template_folder=str(BASE_DIR / "web" / "templates"), static_folder=str(BASE_DIR / "web" / "static"))
 
+
+@app.before_request
+def guard_state_changing_requests():
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return None
+    if request.headers.get("X-Ray5-Pilot-Request") == "1":
+        return None
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return None
+    console.add(
+        "warn",
+        f"[REQUEST GUARD BLOCKED] method={request.method} path={request.path} remote_addr={request.remote_addr}",
+    )
+    return jsonify({"ok": False, "error": "Request guard header missing."}), 403
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+
+    req_path = str(getattr(request, "path", "") or "")
+    if (
+        req_path.startswith("/api/")
+        or req_path.startswith("/debug")
+        or req_path.startswith("/update_logs")
+        or req_path.startswith("/backups")
+    ):
+        response.headers.setdefault("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        response.headers.setdefault("Pragma", "no-cache")
+        response.headers.setdefault("Expires", "0")
+    return response
+
 ESP32_TEMPLATE_FALLBACK = r"""
 ﻿<!doctype html>
 <html lang="en">
@@ -238,7 +273,7 @@ const NETWORK_SENSITIVE_PATHS = new Set([
 ]);
 
 async function api(url, method='GET', body=null){
-  const opt={method,headers:{'Content-Type':'application/json'}};
+  const opt={method,headers:{'Content-Type':'application/json','X-Ray5-Pilot-Request':'1'}};
   if(body!==null) opt.body=JSON.stringify(body);
   try{
     const r=await fetch(url,opt);
@@ -419,7 +454,7 @@ async function loadEeprom(){
   logRaw('EEPROM', d);
 }
 async function loadWsStatus(){
-  const d=await api('/api/status/debug');
+  const d=await api('/api/status/live');
   if(!d.ok){
     renderInfoGrid(document.getElementById('wsInfoGrid'),[
       ['WebSocket Connected','false'],['PAGEID',''],['Active ID',''],
@@ -513,7 +548,7 @@ async function saveChanges(){
   };
   const resp = await fetch('/api/esp32/eeprom/save',{
     method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:{'Content-Type':'application/json','X-Ray5-Pilot-Request':'1'},
     body: JSON.stringify(payload)
   });
   let d={};
@@ -673,6 +708,11 @@ ray5_comm_safety_state: dict[str, Any] = {
     "entered_at": None,
     "last_skip_log_at": None,
 }
+air_pump_state: dict[str, Any] = {
+    "state": "unknown",
+    "source": "unknown",
+    "updated_at": None,
+}
 github_update_status: dict[str, Any] = {
     "checked": False,
     "checking": False,
@@ -722,6 +762,8 @@ firmware_settings_collect_state: dict[str, Any] = {
     "timed_out": False,
     "raw": "",
     "settings": [],
+    "grbl_version": {},
+    "grbl_identity_raw": "",
 }
 console.add("info", f"CONFIG PATH: {cfg_mgr.config_path}")
 console.add("info", f"CONFIG EXISTS: {cfg_mgr.config_path.exists()}")
@@ -1141,6 +1183,18 @@ def _check_source_update() -> dict[str, Any]:
             "checksum_url": "",
             "message": "Unable to check for updates right now.",
         }
+
+
+def _is_trusted_github_release_asset_url(url: str) -> bool:
+    raw = str(url or "")
+    if not raw.strip():
+        return False
+    if "\\" in raw:
+        return False
+    if any(ord(ch) < 32 for ch in raw):
+        return False
+    trusted_prefix = "https://github.com/P0k3sm0t/Ray5-Pilot/releases/download/"
+    return raw.startswith(trusted_prefix)
 
 
 def _snapshot_startup_update_status() -> dict[str, Any]:
@@ -1856,6 +1910,40 @@ def _require_ray5_configured():
         ),
         400,
     )
+
+
+def _debug_endpoints_enabled() -> bool:
+    with app_state_lock:
+        active_cfg = cfg
+    dbg = active_cfg.get("debug_endpoints", {}) if isinstance(active_cfg.get("debug_endpoints"), dict) else {}
+    return bool(dbg.get("enabled", False))
+
+
+def _is_local_request() -> bool:
+    addr = str(request.remote_addr or "").strip().lower()
+    if addr in {"127.0.0.1", "::1"}:
+        return True
+    host = str(request.host or "").split(":", 1)[0].strip().lower()
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    return False
+
+
+def _guard_debug_endpoint():
+    if not _debug_endpoints_enabled():
+        console.add("warn", f"[DEBUG ENDPOINT BLOCKED] path={request.path} reason=disabled")
+        return jsonify({"ok": False, "error": "Debug endpoint disabled."}), 404
+    with app_state_lock:
+        active_cfg = cfg
+    dbg = active_cfg.get("debug_endpoints", {}) if isinstance(active_cfg.get("debug_endpoints"), dict) else {}
+    localhost_only = bool(dbg.get("localhost_only", True))
+    if localhost_only and not _is_local_request():
+        console.add(
+            "warn",
+            f"[DEBUG ENDPOINT BLOCKED] path={request.path} reason=not_local remote_addr={request.remote_addr}",
+        )
+        return jsonify({"ok": False, "error": "Debug endpoint is only available from localhost."}), 403
+    return None
 
 if _is_ray5_host_configured():
     status_monitor = Ray5StatusMonitor(ray5, cfg, console)
@@ -2861,6 +2949,16 @@ def api_status() -> Any:
     app_version_value = _read_local_version() or "unknown"
     update_status_cached = _snapshot_startup_update_status()
     comm_safety = _snapshot_comm_safety_state()
+    with app_state_lock:
+        pump_state = str(air_pump_state.get("state") or "unknown").strip().lower()
+        pump_source = str(air_pump_state.get("source") or "unknown").strip().lower()
+        pump_updated_at = air_pump_state.get("updated_at")
+    if pump_state not in {"on", "off", "unknown"}:
+        pump_state = "unknown"
+    if pump_source not in {"command", "parser_state", "unknown"}:
+        pump_source = "unknown"
+    pump_label = "On" if pump_state == "on" else ("Off" if pump_state == "off" else "Unknown")
+    pump_stale = bool((not online) and isinstance(pump_updated_at, (int, float)))
     return jsonify(
         {
             "ok": True,
@@ -2916,6 +3014,10 @@ def api_status() -> Any:
             "camera_scheme": cam_scheme,
             "app_version": app_version_value,
             "update_status": update_status_cached,
+            "air_pump_state": pump_state,
+            "air_pump_source": pump_source,
+            "air_pump_label": pump_label,
+            "air_pump_stale": pump_stale,
             "comm_safety": comm_safety,
             "system_check": {
                 "ray5_host_configured": bool(_is_ray5_host_configured(active_cfg)),
@@ -2934,6 +3036,9 @@ def api_status() -> Any:
 
 @app.get("/api/status/debug")
 def api_status_debug() -> Any:
+    guard = _guard_debug_endpoint()
+    if guard:
+        return guard
     with app_state_lock:
         active_monitor = status_monitor
     watch_state = _watch_state_snapshot()
@@ -2960,6 +3065,40 @@ def api_status_debug() -> Any:
     if isinstance(info, dict):
         info["watch_state"] = watch_state
     return jsonify(info)
+
+
+@app.get("/api/status/live")
+def api_status_live() -> Any:
+    with app_state_lock:
+        active_monitor = status_monitor
+    if active_monitor is None:
+        return jsonify(
+            {
+                "ok": True,
+                "websocket_enabled": False,
+                "websocket_connected": False,
+                "page_id": None,
+                "active_id": None,
+                "last_raw_status": None,
+                "last_status_age_seconds": None,
+                "latest_status": None,
+                "reconnect_count": 0,
+            }
+        )
+    info = active_monitor.get_debug_info() or {}
+    return jsonify(
+        {
+            "ok": True,
+            "websocket_enabled": bool(info.get("websocket_enabled", False)),
+            "websocket_connected": bool(info.get("websocket_connected", False)),
+            "page_id": info.get("page_id"),
+            "active_id": info.get("active_id"),
+            "last_raw_status": info.get("last_raw_status"),
+            "last_status_age_seconds": info.get("last_status_age_seconds"),
+            "latest_status": info.get("latest_status"),
+            "reconnect_count": info.get("reconnect_count", 0),
+        }
+    )
 
 
 @app.get("/api/console")
@@ -3001,6 +3140,7 @@ def api_console_command() -> Any:
         else:
             console.add("error", f"Raw command status query failed: {result.get('message') or result.get('raw') or 'unknown'}")
     else:
+        _track_air_pump_from_command(command)
         result = ray5.send_gcode(command_to_send)
         ok = bool(result.get("ok"))
         if ok:
@@ -3008,6 +3148,8 @@ def api_console_command() -> Any:
         else:
             console.add("error", f"Raw command failed: {result.get('message') or result.get('raw') or 'unknown'}")
     response_text = str(result.get("raw", "") or "").strip()
+    if command.upper() == "$G":
+        _track_air_pump_from_parser_state(response_text)
     if response_text:
         # Keep multiline device responses visible in Live Console (e.g. $$, $I, $G).
         preview = response_text[:12000]
@@ -3046,6 +3188,98 @@ def _mask_sensitive_text_for_log(value: Any, *, sensitive: bool = False) -> str:
     if sensitive and masked and masked != "******":
         return "******"
     return masked
+
+
+def _is_sensitive_key(name: str) -> bool:
+    n = str(name or "").strip().lower()
+    return any(token in n for token in ("password", "pass", "token", "key", "secret", "auth"))
+
+
+def _redact_sensitive_backup_data(obj: Any) -> Any:
+    def _walk(node: Any, parent_sensitive: bool = False) -> Any:
+        if isinstance(node, dict):
+            path_val = str(node.get("P") or node.get("path") or "")
+            label_val = str(node.get("H") or node.get("label") or "")
+            dict_sensitive = parent_sensitive or _is_sensitive_key(path_val) or _is_sensitive_key(label_val)
+            out: dict[str, Any] = {}
+            if dict_sensitive and path_val:
+                console.add("info", f"[ESP32 BACKUP REDACT] path={path_val}")
+            for k, v in node.items():
+                k_str = str(k or "")
+                key_sensitive = dict_sensitive or _is_sensitive_key(k_str)
+                kl = k_str.lower()
+                if key_sensitive and kl in {"v", "value", "raw_value", "original_value", "current_value", "display_value"}:
+                    out[k] = None if kl == "raw_value" else "******"
+                    continue
+                out[k] = _walk(v, key_sensitive)
+            if dict_sensitive:
+                out["sensitive"] = True
+                out["masked"] = True
+                if "V" in out:
+                    out["V"] = "******"
+                if "value" in out:
+                    out["value"] = "******"
+                if "raw_value" in out:
+                    out["raw_value"] = None
+                if "original_value" in out:
+                    out["original_value"] = "******"
+                if "current_value" in out:
+                    out["current_value"] = "******"
+                if "display_value" in out:
+                    out["display_value"] = "******"
+            return out
+        if isinstance(node, list):
+            return [_walk(x, parent_sensitive) for x in node]
+        if isinstance(node, str):
+            masked = re.sub(
+                r'(?i)("?(?:password|pass|token|key|secret|auth)[^"=\r\n:]{0,40}"?\s*[:=]\s*)(".*?"|[^,\s\]\}\r\n]+)',
+                r"\1******",
+                node,
+            )
+            masked = re.sub(
+                r'(?i)("V"\s*:\s*)".*?"',
+                r'\1"******"',
+                masked,
+            )
+            return masked
+        return node
+
+    return _walk(obj, False)
+
+
+def _set_air_pump_state(state: str, source: str) -> None:
+    normalized_state = str(state or "").strip().lower()
+    normalized_source = str(source or "").strip().lower()
+    if normalized_state not in {"on", "off", "unknown"}:
+        normalized_state = "unknown"
+    if normalized_source not in {"command", "parser_state", "unknown"}:
+        normalized_source = "unknown"
+    with app_state_lock:
+        air_pump_state["state"] = normalized_state
+        air_pump_state["source"] = normalized_source
+        air_pump_state["updated_at"] = time.time()
+
+
+def _track_air_pump_from_command(command: str) -> None:
+    cmd = str(command or "").strip().upper()
+    if cmd == "M8":
+        _set_air_pump_state("on", "command")
+    elif cmd == "M9":
+        _set_air_pump_state("off", "command")
+
+
+def _track_air_pump_from_parser_state(raw_text: str) -> None:
+    raw = str(raw_text or "")
+    if not raw:
+        return
+    gc_lines = [line.strip().upper() for line in raw.replace("\r", "\n").split("\n") if line.strip().upper().startswith("[GC:")]
+    if not gc_lines:
+        return
+    merged = " ".join(gc_lines)
+    if " M8 " in f" {merged} " or merged.endswith(" M8]"):
+        _set_air_pump_state("on", "parser_state")
+    elif " M9 " in f" {merged} " or merged.endswith(" M9]"):
+        _set_air_pump_state("off", "parser_state")
 
 
 def _backup_root_dir() -> Path:
@@ -3176,12 +3410,14 @@ def _create_esp32_auto_backup() -> tuple[bool, dict[str, Any]]:
             "parsed": parsed,
             "result": result,
         }
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        safe_payload = _redact_sensitive_backup_data(payload)
+        path.write_text(json.dumps(safe_payload, indent=2), encoding="utf-8")
         rel = str(path.relative_to(BASE_DIR)).replace("\\", "/")
         _apply_backup_retention(
             backup_dir,
             ("esp32_eeprom_backup_*.json", "esp32_eeprom_autobackup_*.json"),
         )
+        console.add("info", f"[ESP32 BACKUP WRITE] file={rel}")
         console.add("info", f"[ESP32 EEPROM AUTO BACKUP OK] file={rel}")
         return True, {"ok": True, "file": rel}
     except Exception as exc:
@@ -3607,11 +3843,13 @@ def api_esp32_eeprom_backup() -> Any:
         "raw": parsed if parsed else raw_text,
         "settings": settings,
     }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    safe_payload = _redact_sensitive_backup_data(payload)
+    path.write_text(json.dumps(safe_payload, indent=2), encoding="utf-8")
     _apply_backup_retention(
         backup_dir,
         ("esp32_eeprom_backup_*.json", "esp32_eeprom_autobackup_*.json"),
     )
+    console.add("info", f"[ESP32 BACKUP WRITE] file={filename}")
     return jsonify({"ok": True, "backup_file": filename, "setting_count": len(settings)})
 
 
@@ -3662,7 +3900,8 @@ def api_esp32_eeprom_backup_view(filename: str) -> Any:
         data = json.loads(p.read_text(encoding="utf-8-sig"))
     except Exception:
         return jsonify({"ok": False, "error": "backup file is invalid"}), 400
-    return jsonify({"ok": True, "name": p.name, "data": data})
+    safe_data = _redact_sensitive_backup_data(data)
+    return jsonify({"ok": True, "name": p.name, "data": safe_data})
 
 
 @app.get("/api/esp32/eeprom/backups/<path:filename>/download")
@@ -3670,6 +3909,7 @@ def api_esp32_eeprom_backup_download(filename: str) -> Any:
     p = (_esp32_backup_dir() / Path(filename).name).resolve()
     if not p.exists() or not p.is_file():
         return jsonify({"ok": False, "error": "backup not found"}), 404
+    console.add("info", f"[ESP32 BACKUP DOWNLOAD] serving existing backup file={p.name}")
     return send_file(
         str(p),
         mimetype="application/json",
@@ -3690,6 +3930,7 @@ def api_esp32_eeprom_compare() -> Any:
         backup_obj = json.loads(p.read_text(encoding="utf-8-sig"))
     except Exception:
         return jsonify({"ok": False, "error": "backup file is invalid"}), 400
+    backup_obj = _redact_sensitive_backup_data(backup_obj)
     backup_settings = backup_obj.get("settings", []) if isinstance(backup_obj.get("settings"), list) else []
     _, _, current_settings, _ = _fetch_esp32_eeprom_payload()
     cur_map = {str(x.get("path")): x for x in current_settings}
@@ -4084,6 +4325,133 @@ def _collect_machine_settings_raw(timeout_seconds: float = 4.0, max_lines: int =
     return combined, str(initial_result.get("message") or ""), timed_out
 
 
+def _collect_grbl_identity_raw(timeout_seconds: float = 3.0, max_lines: int = 120) -> tuple[str, str, bool]:
+    start_ts = time.time()
+    initial_result = ray5.send_gcode("$I")
+    immediate_raw = str(initial_result.get("raw", "") or "")
+    lines: list[str] = []
+    saw_identity = False
+    saw_ok = False
+    end_at = start_ts + max(1.0, float(timeout_seconds))
+    while time.time() < end_at:
+        if status_monitor is not None:
+            new_lines = status_monitor.get_lines_since(start_ts)
+            if new_lines:
+                lines = new_lines[-max(1, int(max_lines)) :]
+                saw_identity = any(str(x).strip().startswith("[") for x in lines)
+                saw_ok = any(str(x).strip().lower() == "ok" for x in lines)
+        if saw_identity and saw_ok:
+            break
+        time.sleep(0.1)
+    combined_parts = [immediate_raw]
+    if lines:
+        combined_parts.append("\n".join(lines))
+    combined = "\n".join([p for p in combined_parts if str(p).strip()]).strip()
+    if not combined:
+        combined = immediate_raw.strip()
+    timed_out = (time.time() >= end_at) and not saw_identity
+    return combined, str(initial_result.get("message") or ""), timed_out
+
+
+def _parse_grbl_identity_raw(raw_text: str, *, timed_out: bool = False) -> dict[str, Any]:
+    text = str(raw_text or "")
+    redacted_raw = re.sub(r"(?i)(password\s*=\s*)([^:\]\s]+)", r"\1******", text)
+    info: dict[str, Any] = {
+        "ok": False,
+        "raw": redacted_raw.strip(),
+        "firmware_version": "",
+        "options": "",
+        "board": "",
+        "machine": "",
+        "software": "",
+        "wavelength": "",
+        "working_size": {"x": "", "y": "", "label": ""},
+        "sta": {"ssid": "", "ip": "", "mac": ""},
+        "ap": {"ssid": "", "ip": "", "mac": ""},
+        "error": "",
+    }
+    if timed_out and not text.strip():
+        info["error"] = "Timed out waiting for GRBL version response."
+        return info
+
+    last_key = ""
+    last_value = ""
+    parsed: dict[str, str] = {}
+    msg_lines: list[str] = []
+    for line in text.replace("\r", "\n").split("\n"):
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith(",") and last_key == "OPT":
+            last_value = f"{last_value}{s.rstrip(']')}"
+            parsed["OPT"] = last_value
+            continue
+        if s.startswith("[") and ":" in s:
+            body = s[1:-1] if s.endswith("]") else s[1:]
+            k, v = body.split(":", 1)
+            key = k.strip()
+            val = v.strip()
+            parsed[key] = val
+            last_key = key
+            last_value = val
+            if key == "MSG":
+                msg_lines.append(val)
+        elif s.lower() == "ok":
+            continue
+        elif ":" in s and not s.startswith("["):
+            # tolerant malformed continuation payloads
+            if last_key == "OPT":
+                parsed["OPT"] = f"{parsed.get('OPT','')}{s.rstrip(']')}"
+
+    ver = parsed.get("VER", "")
+    if ver:
+        info["firmware_version"] = ver.split(":", 1)[0].strip()
+    info["options"] = parsed.get("OPT", "").rstrip("]")
+    info["board"] = parsed.get("Board", "")
+    info["machine"] = parsed.get("Machine", "")
+    info["software"] = parsed.get("Software", "")
+    info["wavelength"] = parsed.get("Wavelength", "")
+
+    ws = parsed.get("Working Size", "")
+    mx = re.search(r"XSIZE=([0-9.]+)", ws, flags=re.IGNORECASE)
+    my = re.search(r"YSIZE=([0-9.]+)", ws, flags=re.IGNORECASE)
+    x = mx.group(1) if mx else ""
+    y = my.group(1) if my else ""
+    info["working_size"] = {"x": x, "y": y, "label": (f"{x} × {y}" if x and y else "")}
+
+    for msg in msg_lines:
+        if "Mode=STA" in msg:
+            sta = {
+                "ssid": (re.search(r"(?:SSID|SSDI)=([^:]+)", msg, flags=re.IGNORECASE).group(1) if re.search(r"(?:SSID|SSDI)=([^:]+)", msg, flags=re.IGNORECASE) else ""),
+                "ip": (re.search(r"IP=([^:]+)", msg, flags=re.IGNORECASE).group(1) if re.search(r"IP=([^:]+)", msg, flags=re.IGNORECASE) else ""),
+                "mac": (re.search(r"MAC=([^:]+(?::[^:]+)*)", msg, flags=re.IGNORECASE).group(1).split(":password", 1)[0] if re.search(r"MAC=([^:]+(?::[^:]+)*)", msg, flags=re.IGNORECASE) else ""),
+            }
+            info["sta"] = sta
+        elif "Mode=AP" in msg:
+            ap = {
+                "ssid": (re.search(r"(?:SSID|SSDI)=([^:]+)", msg, flags=re.IGNORECASE).group(1) if re.search(r"(?:SSID|SSDI)=([^:]+)", msg, flags=re.IGNORECASE) else ""),
+                "ip": (re.search(r"IP=([^:]+)", msg, flags=re.IGNORECASE).group(1) if re.search(r"IP=([^:]+)", msg, flags=re.IGNORECASE) else ""),
+                "mac": (re.search(r"MAC=([^:]+(?::[^:]+)*)", msg, flags=re.IGNORECASE).group(1).split(":password", 1)[0] if re.search(r"MAC=([^:]+(?::[^:]+)*)", msg, flags=re.IGNORECASE) else ""),
+            }
+            info["ap"] = ap
+
+    has_any = any(
+        [
+            info["firmware_version"],
+            info["options"],
+            info["board"],
+            info["machine"],
+            info["software"],
+            info["wavelength"],
+            info["working_size"].get("label"),
+        ]
+    )
+    info["ok"] = bool(has_any)
+    if not has_any:
+        info["error"] = "No GRBL version information available."
+    return info
+
+
 def _firmware_settings_collect_snapshot() -> dict[str, Any]:
     with firmware_settings_collect_lock:
         return dict(firmware_settings_collect_state)
@@ -4093,6 +4461,8 @@ def _firmware_settings_collect_worker(job_id: str) -> None:
     try:
         raw_text, initial_message, timed_out = _collect_machine_settings_raw(timeout_seconds=4.0, max_lines=200)
         settings = _parse_machine_settings_raw(raw_text)
+        identity_raw, _identity_message, identity_timed_out = _collect_grbl_identity_raw(timeout_seconds=3.0, max_lines=120)
+        grbl_version = _parse_grbl_identity_raw(identity_raw, timed_out=identity_timed_out)
         now_ts = time.time()
         with firmware_settings_collect_lock:
             if firmware_settings_collect_state.get("job_id") != job_id:
@@ -4101,6 +4471,8 @@ def _firmware_settings_collect_worker(job_id: str) -> None:
             firmware_settings_collect_state["completed_at"] = now_ts
             firmware_settings_collect_state["raw"] = raw_text
             firmware_settings_collect_state["settings"] = settings
+            firmware_settings_collect_state["grbl_identity_raw"] = identity_raw
+            firmware_settings_collect_state["grbl_version"] = grbl_version
             firmware_settings_collect_state["timed_out"] = bool(timed_out)
             if settings:
                 firmware_settings_collect_state["ok"] = True
@@ -4126,6 +4498,8 @@ def _firmware_settings_collect_worker(job_id: str) -> None:
             firmware_settings_collect_state["message"] = "Firmware settings read failed."
             firmware_settings_collect_state["timed_out"] = False
             firmware_settings_collect_state["settings"] = []
+            firmware_settings_collect_state["grbl_identity_raw"] = ""
+            firmware_settings_collect_state["grbl_version"] = {"ok": False, "error": f"No GRBL version information available. ({exc})", "raw": ""}
 
 
 def _start_firmware_settings_collect() -> dict[str, Any]:
@@ -4149,6 +4523,8 @@ def _start_firmware_settings_collect() -> dict[str, Any]:
         firmware_settings_collect_state["timed_out"] = False
         firmware_settings_collect_state["raw"] = ""
         firmware_settings_collect_state["settings"] = []
+        firmware_settings_collect_state["grbl_identity_raw"] = ""
+        firmware_settings_collect_state["grbl_version"] = {}
     worker = threading.Thread(target=_firmware_settings_collect_worker, args=(job_id,), name="firmware-settings-collect", daemon=True)
     worker.start()
     return {"ok": True, "started": True, "running": True, "job_id": job_id, "message": "Firmware settings read started."}
@@ -4189,6 +4565,7 @@ def api_machine_settings_get() -> Any:
                 "message": str(snap.get("message", "Firmware settings read in progress.")),
                 "error": "",
                 "timed_out": False,
+                "grbl_version": {},
             }
         )
     if snap.get("ok") is True and isinstance(snap.get("settings"), list):
@@ -4202,6 +4579,7 @@ def api_machine_settings_get() -> Any:
                 "message": str(snap.get("message", "")),
                 "error": "",
                 "timed_out": bool(snap.get("timed_out", False)),
+                "grbl_version": snap.get("grbl_version", {}),
             }
         )
     if snap.get("ok") is False:
@@ -4215,6 +4593,7 @@ def api_machine_settings_get() -> Any:
                 "message": str(snap.get("message", "")),
                 "error": str(snap.get("error", "") or "Firmware settings read failed."),
                 "timed_out": bool(snap.get("timed_out", False)),
+                "grbl_version": snap.get("grbl_version", {}),
             }
         ), 502
     start_res = _start_firmware_settings_collect()
@@ -4248,6 +4627,7 @@ def api_machine_settings_collect_status() -> Any:
             "error": str(snap.get("error", "") or ""),
             "settings": snap.get("settings", []),
             "raw": str(snap.get("raw", "") or ""),
+            "grbl_version": snap.get("grbl_version", {}),
         }
     )
 
@@ -5503,6 +5883,8 @@ def api_air_on() -> Any:
         return guard
     console.add("info", "Air assist on requested")
     result = ray5.air_on()
+    if bool(result.get("ok")):
+        _set_air_pump_state("on", "command")
     console.add("info", f"Air on result: {'ok' if result.get('ok') else 'fail'} {str(result.get('message',''))[:120]}")
     return jsonify(result)
 
@@ -5514,6 +5896,8 @@ def api_air_off() -> Any:
         return guard
     console.add("info", "Air assist off requested")
     result = ray5.air_off()
+    if bool(result.get("ok")):
+        _set_air_pump_state("off", "command")
     console.add("info", f"Air off result: {'ok' if result.get('ok') else 'fail'} {str(result.get('message',''))[:120]}")
     return jsonify(result)
 
@@ -5837,6 +6221,9 @@ def api_files_refresh() -> Any:
 
 @app.get("/api/debug/ray5")
 def api_debug_ray5() -> Any:
+    guard = _guard_debug_endpoint()
+    if guard:
+        return guard
     probe = _ray5_list_files_locked()
     dbg = ray5.debug_info(str(cfg_mgr.config_path))
     online = bool(ray5.connectivity().get("connected"))
@@ -5863,6 +6250,9 @@ def api_debug_ray5() -> Any:
 
 @app.get("/api/debug/ray5/device-info")
 def api_debug_ray5_device_info() -> Any:
+    guard = _guard_debug_endpoint()
+    if guard:
+        return guard
     guard = _require_ray5_configured()
     if guard:
         return guard
@@ -5892,6 +6282,9 @@ def api_debug_ray5_device_info() -> Any:
 
 @app.get("/api/debug/ray5/keepalive")
 def api_debug_ray5_keepalive() -> Any:
+    guard = _guard_debug_endpoint()
+    if guard:
+        return guard
     guard = _require_ray5_configured()
     if guard:
         return guard
@@ -5907,6 +6300,9 @@ def api_debug_ray5_keepalive() -> Any:
 
 @app.get("/api/debug/ray5/settings-info")
 def api_debug_ray5_settings_info() -> Any:
+    guard = _guard_debug_endpoint()
+    if guard:
+        return guard
     guard = _require_ray5_configured()
     if guard:
         return guard
@@ -5938,6 +6334,9 @@ def api_config_get() -> Any:
 
 @app.get("/api/config/debug")
 def api_config_debug() -> Any:
+    guard = _guard_debug_endpoint()
+    if guard:
+        return guard
     loaded = cfg_mgr.load()
     host = str(loaded.get("ray5", {}).get("host", "")).strip()
     cam = loaded.get("camera", {}) if isinstance(loaded.get("camera"), dict) else {}
@@ -6053,6 +6452,7 @@ def api_github_apply_update() -> Any:
     if not updater_path.exists():
         return jsonify({"ok": False, "message": "Updater script is missing. Cannot apply update.", "update_status": cached_state}), 500
     source_zip_url = str(update_info.get("source_zip_url") or "").strip()
+    checksum_url = str(update_info.get("checksum_url") or "").strip()
     source_zip_sha256 = str(update_info.get("source_zip_sha256") or "").strip().lower()
     checksum_available = bool(re.fullmatch(r"[0-9a-f]{64}", source_zip_sha256))
     source_zip_lower = source_zip_url.lower()
@@ -6079,6 +6479,33 @@ def api_github_apply_update() -> Any:
             ),
             503,
         )
+    if not _is_trusted_github_release_asset_url(source_zip_url):
+        console.add("error", f"[UPDATE URL REJECTED] source_zip_url={source_zip_url}")
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Update asset URL was not trusted; update was not started.",
+                    "update_status": cached_state,
+                }
+            ),
+            400,
+        )
+    console.add("info", f"[UPDATE URL TRUSTED] source_zip_url={source_zip_url}")
+    if checksum_url:
+        if not _is_trusted_github_release_asset_url(checksum_url):
+            console.add("error", f"[UPDATE URL REJECTED] checksum_url={checksum_url}")
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Update asset URL was not trusted; update was not started.",
+                        "update_status": cached_state,
+                    }
+                ),
+                400,
+            )
+        console.add("info", f"[UPDATE URL TRUSTED] checksum_url={checksum_url}")
 
     args = [
         sys.executable,

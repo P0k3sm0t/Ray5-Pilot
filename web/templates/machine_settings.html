@@ -7,6 +7,16 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="alternate icon" href="/static/favicon.ico">
   <link rel="stylesheet" href="/static/style.css">
+  <style>
+    .grbl-version-card{margin-top:10px;margin-bottom:12px;padding:12px;border:1px solid #2b364d;border-radius:8px;background:#151c2b}
+    .grbl-version-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+    .grbl-version-col h3{margin:0 0 8px 0;font-size:14px;color:#d6deef}
+    .grbl-version-row{display:flex;justify-content:space-between;gap:8px;padding:2px 0}
+    .grbl-version-row .k{color:#9fb0cf;font-size:12px}
+    .grbl-version-row .v{color:#d6deef;font-size:13px;word-break:break-word;text-align:right}
+    .grbl-version-note{color:#9fb0cf;font-size:12px;margin-top:6px}
+    @media (max-width:980px){.grbl-version-grid{grid-template-columns:1fr}}
+  </style>
 </head>
 <body>
 <header>
@@ -25,6 +35,38 @@
       <button id="msReset" disabled>Reset Unsaved Changes</button>
     </div>
     <div id="msMsg" class="muted small"></div>
+    <section id="msVersionCard" class="grbl-version-card">
+      <h3 style="margin-top:0;">GRBL Version</h3>
+      <div id="msVersionMsg" class="grbl-version-note"></div>
+      <div class="grbl-version-grid">
+        <div class="grbl-version-col">
+          <h3>Firmware</h3>
+          <div class="grbl-version-row"><span class="k">Firmware Version</span><span class="v" id="gvFirmwareVersion"></span></div>
+          <div class="grbl-version-row"><span class="k">Options</span><span class="v" id="gvOptions"></span></div>
+          <div class="grbl-version-row"><span class="k">Software</span><span class="v" id="gvSoftware"></span></div>
+          <div class="grbl-version-row"><span class="k">Wavelength</span><span class="v" id="gvWavelength"></span></div>
+          <div class="grbl-version-row"><span class="k">Working Size</span><span class="v" id="gvWorkingSize"></span></div>
+        </div>
+        <div class="grbl-version-col">
+          <h3>Machine</h3>
+          <div class="grbl-version-row"><span class="k">Board</span><span class="v" id="gvBoard"></span></div>
+          <div class="grbl-version-row"><span class="k">Machine</span><span class="v" id="gvMachine"></span></div>
+        </div>
+        <div class="grbl-version-col">
+          <h3>Network</h3>
+          <div class="grbl-version-row"><span class="k">STA SSID</span><span class="v" id="gvStaSsid"></span></div>
+          <div class="grbl-version-row"><span class="k">STA IP</span><span class="v" id="gvStaIp"></span></div>
+          <div class="grbl-version-row"><span class="k">STA MAC</span><span class="v" id="gvStaMac"></span></div>
+          <div class="grbl-version-row"><span class="k">AP SSID</span><span class="v" id="gvApSsid"></span></div>
+          <div class="grbl-version-row"><span class="k">AP IP</span><span class="v" id="gvApIp"></span></div>
+          <div class="grbl-version-row"><span class="k">AP MAC</span><span class="v" id="gvApMac"></span></div>
+        </div>
+      </div>
+      <details class="machine-settings-raw" style="margin-top:8px;">
+        <summary>Raw $I Output</summary>
+        <pre id="msVersionRaw" class="small muted"></pre>
+      </details>
+    </section>
     <div class="table-wrap machine-settings-wrap">
       <table class="machine-settings-table">
         <thead>

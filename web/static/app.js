@@ -1,5 +1,6 @@
 async function api(url, method='GET', body=null){
   const opt={method,headers:{}};
+  opt.headers['X-Ray5-Pilot-Request']='1';
   if(body){opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(body)}
   const r=await fetch(url,opt);
   return r.json();
@@ -29,6 +30,12 @@ function yesNoUnknown(v){
   if(v === true) return 'Yes';
   if(v === false) return 'No';
   return 'Unknown';
+}
+function airPumpBadgeClass(state){
+  const s = String(state || '').toLowerCase();
+  if(s === 'on') return 'status-badge status-saved';
+  if(s === 'off') return 'status-badge';
+  return 'status-badge status-blocked';
 }
 function esc(v){return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'","&#39;")}
 function btn(t,fn){const b=document.createElement('button');b.textContent=t;b.onclick=fn;return b}
@@ -263,6 +270,8 @@ async function refreshStatus(){
   const wcoLine = hasWco ? `WCO: X ${Number(wco.x).toFixed(3)} / Y ${Number(wco.y).toFixed(3)}` : 'WCO: —';
   const stateDisplay = isOfflineFallback ? 'Offline' : stateText;
   const pageDisplay = isOfflineFallback ? '—' : pageId;
+  const pumpLabel = String(d.air_pump_label || 'Unknown');
+  const pumpState = String(d.air_pump_state || 'unknown');
   const sc = (d && d.system_check) ? d.system_check : {};
   const commSafety = (d && d.comm_safety) ? d.comm_safety : {};
   commSafetyLockout = !!commSafety.comm_lost_during_job;
@@ -304,6 +313,7 @@ async function refreshStatus(){
     <div class="status-safety">
       <div>Alarm: <b>${esc(alarmText)}</b></div>
       <div>Job: <b>${esc(jobText)}</b></div>
+      <div>Air Pump: <b>${esc(pumpLabel)}</b></div>
       <div id="statusTimelapse">Timelapse: <b>${esc(timelapseText)}</b></div>
       <div>Connection: <b>${esc(connectionText)}</b></div>
     </div>
@@ -503,7 +513,7 @@ async function refreshJobs(opts={}){
         clearLocalUploadBusyStatus();
       });
     });
-    const delBtn=btn('Delete',async()=>{if(!confirm('Delete local imported job '+name+' ?')) return; const res = await fetch('/api/jobs/'+encodeURIComponent(name),{method:'DELETE'}); let data={ok:false}; try{data=await res.json();}catch(_e){} msg.textContent = data.ok ? (`Deleted imported file: ${name}`) : (`Delete failed: ${data.error||'unknown'}`); await refreshJobs({preserveMessage:true}); await refreshConsole();});
+    const delBtn=btn('Delete',async()=>{if(!confirm('Delete local imported job '+name+' ?')) return; const res = await fetch('/api/jobs/'+encodeURIComponent(name),{method:'DELETE',headers:{'X-Ray5-Pilot-Request':'1'}}); let data={ok:false}; try{data=await res.json();}catch(_e){} msg.textContent = data.ok ? (`Deleted imported file: ${name}`) : (`Delete failed: ${data.error||'unknown'}`); await refreshJobs({preserveMessage:true}); await refreshConsole();});
     frameBtn.classList.add('btn-sm');
     uploadBtn.classList.add('btn-sm');
     runBtn.classList.add('btn-sm');
@@ -530,7 +540,7 @@ async function refreshImportedJobsFromWatched(){
   if(refreshBtn) refreshBtn.disabled = true;
   let result = null;
   try{
-    const res = await fetch('/api/jobs/refresh-watched', {method:'POST'});
+    const res = await fetch('/api/jobs/refresh-watched', {method:'POST',headers:{'X-Ray5-Pilot-Request':'1'}});
     try{
       result = await res.json();
     }catch(_e){
@@ -1660,7 +1670,7 @@ function bind(){
     document.getElementById('importBtn').disabled = true;
     const fd=new FormData();fd.append('file',f);
     try{
-      const r = await fetch('/api/jobs/import',{method:'POST',body:fd});
+      const r = await fetch('/api/jobs/import',{method:'POST',headers:{'X-Ray5-Pilot-Request':'1'},body:fd});
       const data = await r.json();
       document.getElementById('jobsMsg').textContent=data.ok?'Import complete':'Import failed: '+(data.error||'unknown');
       if(data.ok){
@@ -1841,7 +1851,7 @@ function bind(){
       const fd = new FormData();
       fd.append('file', file);
       fd.append('path', currentSdPath || '/');
-      const r = await fetch('/api/files/upload', {method:'POST', body: fd});
+      const r = await fetch('/api/files/upload', {method:'POST', headers:{'X-Ray5-Pilot-Request':'1'}, body: fd});
       const data = await r.json();
       if(data.ok){
         msgEl.textContent = `Uploaded to SD: ${data.filename}`;

@@ -343,6 +343,90 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
+## v1.2.0
+Ray5 Pilot v1.2.0 focuses on reliability, update handling, safer backups, improved GRBL and ESP32 status visibility, and stronger local-app hardening.
+
+### Added
+- Added a **GRBL Version** card to the GRBL page.
+  - Collects `$I` identity/version information during GRBL refresh.
+  - Displays firmware version, options, board, machine, software version, wavelength, working size, STA network info, and AP network info.
+  - Includes a collapsed raw `$I` output section.
+  - Redacts sensitive values such as AP password from raw identity output.
+
+- Added **Air Pump** status tracking to the Dashboard status card.
+  - Tracks `M8` as Air Pump On.
+  - Tracks `M9` as Air Pump Off.
+  - Parses `$G` parser state to confirm `M8` / `M9` when available.
+  - Shows the air pump state as `On`, `Off`, or `Unknown`.
+
+- Added a safe `/api/status/live` endpoint for UI websocket status display.
+  - Provides only the status fields needed by the UI.
+  - Keeps internal debug details out of normal page data.
+
+- Added config-gated debug endpoints.
+  - Debug endpoints now default to disabled.
+  - Debug endpoints can be enabled in config when needed.
+  - Optional localhost-only behavior is supported.
+
+- Added a simple state-changing request guard.
+  - POST, PUT, PATCH, and DELETE requests now require a Ray5 Pilot request header.
+  - Helps reduce accidental or cross-site triggering of machine-control endpoints.
+
+- Added minimal HTTP security headers.
+  - Adds `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and `Permissions-Policy`.
+  - Adds no-store cache headers for sensitive API/debug-style routes.
+
+### Changed
+- Updated the self-updater to use a package-driven copy system.
+  - The updater now installs files included in the release package instead of relying on a fixed old allowlist.
+  - New shipped files, templates, static assets, and tools are copied automatically.
+  - Runtime/user files remain protected.
+
+- Improved updater safety.
+  - `config.json` is preserved during updates.
+  - Runtime folders such as backups, logs, captures, timelapse, watched jobs, imported jobs, rejected jobs, and update work folders are protected.
+  - Existing files are backed up before overwrite.
+  - New files are logged during update.
+  - Zero-copy updates are treated as failures.
+  - Required templates are validated after update copy.
+
+- Improved release packaging.
+  - Release zip builder uses the `VERSION` file automatically.
+  - Release zips use a single top-level folder for updater compatibility.
+  - Release zips include `Ray5 Pilot.exe`, `VERSION`, app files, tools, templates, and static assets.
+  - Release zips exclude runtime folders, backups, logs, caches, and `config.json`.
+  - SHA256 checksum files are generated automatically.
+
+- Improved ESP32 WebSocket Status display.
+  - The ESP32 page now reads the safe status payload correctly.
+  - WebSocket connected state, PAGEID, state, MPos, WPos, feed, spindle, reconnect count, and last raw status display correctly.
+
+- Improved ESP32 backup safety.
+  - ESP32 manual backups and automatic pre-save backups now redact sensitive values before writing to disk.
+  - Passwords, pass fields, tokens, keys, secrets, and auth values are masked.
+  - Sensitive `raw_value` fields are no longer stored in plaintext.
+
+- Improved update asset safety.
+  - GitHub release ZIP and checksum URLs are now validated before the updater is launched.
+  - SHA256 verification remains in place.
+
+### Fixed
+- Fixed ESP32 WebSocket Status card incorrectly showing disconnected even when websocket status was live.
+- Fixed the updater missing new files added after older releases.
+- Fixed release packaging so future files included in the release zip are installed automatically.
+- Fixed sensitive ESP32 backup data being stored in plaintext.
+- Fixed update handling that could previously report success when no files were copied.
+- Fixed 1.1.8-to-newer update compatibility issues caused by older updater behavior.
+- Fixed missing-template risk for the ESP32 page by keeping an embedded fallback for older updater compatibility.
+
+### Safety and Reliability Notes
+- ESP32 and GRBL saves continue to create automatic local backups before writing settings.
+- ESP32 backups now redact sensitive values before being written to disk.
+- Debug endpoints are now disabled by default.
+- State-changing requests now require a Ray5 Pilot request header.
+- The Air Pump status is a command/parser-state tracker. It shows what the controller was told or reports through parser state; it is not physical electrical feedback from the pump.
+- Existing user configuration and runtime folders are preserved during updates.
+
 ## v1.1.9
 This release focuses on the new ESP32 / ESP3D tools, safer settings workflows, backup improvements, GRBL page cleanup, and release packaging.
 

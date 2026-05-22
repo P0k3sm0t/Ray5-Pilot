@@ -203,7 +203,7 @@
       b.disabled = true;
       setMsg('Capturing snapshot...');
       try{
-        const r = await fetch('/api/camera/capture', {method:'POST'});
+        const r = await fetch('/api/camera/capture', {method:'POST', headers:{'X-Ray5-Pilot-Request':'1'}});
         const d = await r.json();
         if(d.ok){
           setMsg('Snapshot captured. Reloading image...', 'ok');

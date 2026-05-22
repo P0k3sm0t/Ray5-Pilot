@@ -1,4 +1,4 @@
-async function api(url, method='GET', body=null){const opt={method,headers:{}};if(body){opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(body)}const r=await fetch(url,opt);return r.json()}
+async function api(url, method='GET', body=null){const opt={method,headers:{'X-Ray5-Pilot-Request':'1'}};if(body){opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(body)}const r=await fetch(url,opt);return r.json()}
 function v(id){return document.getElementById(id)}
 function setVal(id,value,fallback=''){const el=v(id);if(!el){console.warn(`Missing settings field: ${id}`);return}el.value=(value??fallback)}
 function setChecked(id,value,fallback=false){const el=v(id);if(!el){console.warn(`Missing settings field: ${id}`);return}el.checked=(value??fallback)}

@@ -203,7 +203,7 @@ const NETWORK_SENSITIVE_PATHS = new Set([
 ]);
 
 async function api(url, method='GET', body=null){
-  const opt={method,headers:{'Content-Type':'application/json'}};
+  const opt={method,headers:{'Content-Type':'application/json','X-Ray5-Pilot-Request':'1'}};
   if(body!==null) opt.body=JSON.stringify(body);
   try{
     const r=await fetch(url,opt);
@@ -384,24 +384,76 @@ async function loadEeprom(){
   logRaw('EEPROM', d);
 }
 async function loadWsStatus(){
-  const d=await api('/api/status/debug');
-  if(!d.ok){
+  const data=await api('/api/status/live');
+  const hasWsDebugShape = data && (
+    Object.prototype.hasOwnProperty.call(data, 'websocket_connected') ||
+    Object.prototype.hasOwnProperty.call(data, 'latest_status') ||
+    Object.prototype.hasOwnProperty.call(data, 'last_raw_status') ||
+    Object.prototype.hasOwnProperty.call(data, 'page_id')
+  );
+  const isErrorPayload = !!(data && (data.offline || data._http_status===0 || data.ok===false) && !hasWsDebugShape);
+  if(isErrorPayload){
     renderInfoGrid(document.getElementById('wsInfoGrid'),[
       ['WebSocket Connected','false'],['PAGEID',''],['Active ID',''],
       ['State',''],['MPos',''],['WPos',''],
       ['Feed',''],['Spindle',''],['Last Raw Status','WebSocket disconnected or no status received.'],['Last Message Age',''],['Reconnect Count','']
     ]);
-    document.getElementById('wsAdvanced').textContent=esc(d);
-    logRaw('WS Offline', d);
+    document.getElementById('wsAdvanced').textContent=esc(data);
+    logRaw('WS Offline', data);
     return;
   }
-  const latest=d.latest_status||{}; const parsed=latest.parsed||{};
+  console.debug("[ESP32 WS STATUS]", {
+    websocket_connected: data.websocket_connected,
+    page_id: data.page_id,
+    last_raw_status: data.last_raw_status,
+    latest_status: data.latest_status
+  });
+  const wsConnected = Boolean(data.websocket_connected);
+  const latest = data.latest_status || {};
+  const mposObj = latest.machine_position || {};
+  const wposObj = latest.work_position || {};
+  const feedVal = latest.feed;
+  const spindleVal = latest.spindle;
+  const fmtPos = (obj)=>{
+    if(!obj || typeof obj!=='object') return '';
+    const x = Number(obj.x);
+    const y = Number(obj.y);
+    const zRaw = obj.z;
+    const z = Number(zRaw);
+    const hasX = Number.isFinite(x);
+    const hasY = Number.isFinite(y);
+    const hasZ = zRaw !== null && zRaw !== undefined && Number.isFinite(z);
+    if(!hasX && !hasY && !hasZ) return '';
+    const parts = [];
+    if(hasX) parts.push(x.toFixed(3));
+    if(hasY) parts.push(y.toFixed(3));
+    if(hasZ) parts.push(z.toFixed(3));
+    return parts.join(', ');
+  };
+  let lastRawStatus = String(data.last_raw_status || '').trim();
+  if(wsConnected && !lastRawStatus){
+    lastRawStatus = 'Connected, waiting for first status message.';
+  }
+  if(!wsConnected){
+    lastRawStatus = 'WebSocket disconnected or no status received.';
+  }
+  const ageRaw = data.last_status_age_seconds;
+  const ageVal = Number(ageRaw);
+  const ageText = Number.isFinite(ageVal) ? `${ageVal.toFixed(1)}s` : (ageRaw ?? '');
   renderInfoGrid(document.getElementById('wsInfoGrid'),[
-    ['WebSocket Connected',String(d.websocket_connected??'')],['PAGEID',d.page_id??d.websocket_page_id??''],['Active ID',d.active_id??''],
-    ['State',parsed.state??latest.state??''],['MPos',Array.isArray(parsed.mpos)?parsed.mpos.join(', '):''],['WPos',Array.isArray(parsed.wpos)?parsed.wpos.join(', '):''],
-    ['Feed',parsed.feed??''],['Spindle',parsed.spindle??''],['Last Raw Status',d.last_raw_status??latest.raw??''],['Last Message Age',d.last_status_age_seconds??''],['Reconnect Count',d.reconnect_count??'']
+    ['WebSocket Connected',String(Boolean(data.websocket_connected))],
+    ['PAGEID',data.page_id||''],
+    ['Active ID',data.active_id||''],
+    ['State',latest.state??''],
+    ['MPos',fmtPos(mposObj)],
+    ['WPos',fmtPos(wposObj)],
+    ['Feed',feedVal??''],
+    ['Spindle',spindleVal??''],
+    ['Last Raw Status',lastRawStatus],
+    ['Last Message Age',ageText],
+    ['Reconnect Count',data.reconnect_count??'']
   ]);
-  document.getElementById('wsAdvanced').textContent=esc(d);
+  document.getElementById('wsAdvanced').textContent=esc(data);
 }
 async function loadBackups(){
   const d=await api('/api/esp32/eeprom/backups');
@@ -478,7 +530,7 @@ async function saveChanges(){
   };
   const resp = await fetch('/api/esp32/eeprom/save',{
     method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:{'Content-Type':'application/json','X-Ray5-Pilot-Request':'1'},
     body: JSON.stringify(payload)
   });
   let d={};

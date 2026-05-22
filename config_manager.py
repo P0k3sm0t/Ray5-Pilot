@@ -194,6 +194,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "raw_command_enabled": True,
         "confirm_dangerous_raw_commands": True,
     },
+    "debug_endpoints": {
+        "enabled": False,
+        "localhost_only": True,
+    },
     "backups": {
         "backup_root": "backups",
         "esp32_backup_dir": "backups/esp32",

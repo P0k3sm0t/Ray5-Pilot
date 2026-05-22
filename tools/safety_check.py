@@ -745,6 +745,125 @@ def check_requirements_ranges(r: Result) -> None:
         r.ok("Requirements ranges")
 
 
+def check_hardening_regression_markers(r: Result) -> None:
+    missing: list[str] = []
+
+    app_path = ROOT / "app.py"
+    cfg_mgr_path = ROOT / "config_manager.py"
+    cfg_example_path = ROOT / "config.example.json"
+    updater_path = ROOT / "updater.py"
+    release_script_path = ROOT / "tools" / "make_release_zip.py"
+    app_js_path = ROOT / "web" / "static" / "app.js"
+    ms_js_path = ROOT / "web" / "static" / "machine_settings.js"
+    ms_html_path = ROOT / "web" / "templates" / "machine_settings.html"
+
+    app_markers = [
+        ("before_request request guard", "@app.before_request"),
+        ("request guard header X-Ray5-Pilot-Request", "X-Ray5-Pilot-Request"),
+        ("request guard header X-Requested-With", "X-Requested-With"),
+        ("request guard blocked log", "REQUEST GUARD BLOCKED"),
+        ("request guard error message", "Request guard header missing."),
+        ("after_request security headers", "@app.after_request"),
+        ("X-Content-Type-Options header", "X-Content-Type-Options"),
+        ("X-Frame-Options header", "X-Frame-Options"),
+        ("Referrer-Policy header", "Referrer-Policy"),
+        ("Permissions-Policy header", "Permissions-Policy"),
+        ("API no-store cache control", "Cache-Control"),
+        ("API no-store marker", "no-store"),
+        ("debug_endpoints config use", "debug_endpoints"),
+        ("debug guard helper", "def _guard_debug_endpoint"),
+        ("debug enabled helper", "def _debug_endpoints_enabled"),
+        ("local request helper", "def _is_local_request"),
+        ("debug blocked log", "DEBUG ENDPOINT BLOCKED"),
+        ("safe status endpoint", '"/api/status/live"'),
+        ("ESP32 backup sensitive key helper", "def _is_sensitive_key"),
+        ("ESP32 backup redaction helper", "def _redact_sensitive_backup_data"),
+        ("ESP32 backup redaction log", "ESP32 BACKUP REDACT"),
+        ("ESP32 backup redaction field sensitive", '"sensitive"'),
+        ("ESP32 backup redaction field masked", '"masked"'),
+        ("ESP32 backup redaction raw_value handling", "raw_value"),
+        ("trusted github asset url helper", "def _is_trusted_github_release_asset_url"),
+        ("trusted github asset url prefix", "https://github.com/P0k3sm0t/Ray5-Pilot/releases/download/"),
+        ("update url trusted log", "UPDATE URL TRUSTED"),
+        ("update url rejected log", "UPDATE URL REJECTED"),
+        ("ESP32 fallback template constant", "ESP32_TEMPLATE_FALLBACK"),
+        ("TemplateNotFound fallback", "TemplateNotFound"),
+        ("render_template_string fallback", "render_template_string"),
+        ("ESP32 fallback log", "ESP32 TEMPLATE FALLBACK"),
+        ("air pump state tracking", "air_pump_state"),
+        ("air pump label", "air_pump_label"),
+        ("air pump command M8", "M8"),
+        ("air pump command M9", "M9"),
+        ("grbl version payload", "grbl_version"),
+        ("raw identity password redaction", "redacted_raw = re.sub"),
+    ]
+    missing += [f"app.py: {x}" for x in _check_markers(app_path, app_markers)]
+
+    cfg_mgr_markers = [
+        ("debug_endpoints defaults", '"debug_endpoints"'),
+        ("debug_endpoints enabled default", '"enabled": False'),
+        ("debug_endpoints localhost_only default", '"localhost_only": True'),
+    ]
+    missing += [f"config_manager.py: {x}" for x in _check_markers(cfg_mgr_path, cfg_mgr_markers)]
+
+    cfg_example_markers = [
+        ("debug_endpoints example block", '"debug_endpoints"'),
+        ("debug_endpoints enabled example", '"enabled"'),
+        ("debug_endpoints localhost_only example", '"localhost_only"'),
+    ]
+    missing += [f"config.example.json: {x}" for x in _check_markers(cfg_example_path, cfg_example_markers)]
+
+    updater_markers = [
+        ("package-driven copy mode marker", "package_driven=true"),
+        ("update copy mode log", "[UPDATE COPY MODE]"),
+        ("update new file log", "[UPDATE NEW FILE]"),
+        ("update skip log", "[UPDATE SKIP]"),
+        ("protected config.json", "config.json"),
+        ("protected update_work", "update_work"),
+        ("required templates list", "REQUIRED_TEMPLATE_PATHS"),
+        ("zero-copy abort", "Update aborted: no files were copied."),
+    ]
+    missing += [f"updater.py: {x}" for x in _check_markers(updater_path, updater_markers)]
+
+    release_markers = [
+        ("release includes VERSION marker", "VERSION"),
+        ("versioned release zip name", "Ray5-Pilot-v"),
+        ("sha256 generation", "sha256"),
+        ("checksum sidecar file", ".sha256.txt"),
+        ("include Ray5 Pilot.exe", "Ray5 Pilot.exe"),
+        ("top-level folder arcname", "arcname = f\"{package_root}/"),
+        ("exclude config.json", "config.json"),
+        ("exclude backups", "backups"),
+        ("exclude __pycache__", "__pycache__"),
+    ]
+    missing += [f"tools/make_release_zip.py: {x}" for x in _check_markers(release_script_path, release_markers)]
+
+    app_js_markers = [
+        ("air pump state in dashboard JS", "air_pump_state"),
+        ("air pump label in dashboard JS", "air_pump_label"),
+    ]
+    missing += [f"web/static/app.js: {x}" for x in _check_markers(app_js_path, app_js_markers)]
+
+    ms_js_markers = [
+        ("GRBL version payload handling", "grbl_version"),
+        ("GRBL version renderer", "renderGrblVersion"),
+    ]
+    missing += [f"web/static/machine_settings.js: {x}" for x in _check_markers(ms_js_path, ms_js_markers)]
+
+    ms_html_markers = [
+        ("GRBL Version card heading", "GRBL Version"),
+        ("Raw $I Output section", "Raw $I Output"),
+    ]
+    missing += [f"web/templates/machine_settings.html: {x}" for x in _check_markers(ms_html_path, ms_html_markers)]
+
+    if missing:
+        r.fail("Hardening regression checks")
+        for m in missing:
+            print(f"  - missing indicator: {m}")
+    else:
+        r.ok("Hardening regression checks")
+
+
 def check_launcher(r: Result) -> None:
     problems = []
     if not (ROOT / "Ray5 Pilot.exe").exists():
@@ -812,6 +931,7 @@ def main() -> int:
     check_timelapse_recovery_safeguards(r)
     check_import_refresh_watched_folder(r)
     check_requirements_ranges(r)
+    check_hardening_regression_markers(r)
     check_launcher(r)
     check_git_status(r, args.require_clean)
 

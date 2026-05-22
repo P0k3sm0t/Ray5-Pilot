@@ -1,5 +1,5 @@
 async function api(url, method = "GET", body = null) {
-  const opt = { method, headers: {} };
+  const opt = { method, headers: { "X-Ray5-Pilot-Request": "1" } };
   if (body) {
     opt.headers["Content-Type"] = "application/json";
     opt.body = JSON.stringify(body);
@@ -19,6 +19,7 @@ function esc(v) {
 
 let settingsRows = [];
 let rawBackupText = "";
+let grblVersionInfo = {};
 let collectPollTimer = null;
 let collectPollStartedAt = 0;
 const COLLECT_POLL_MS = 800;
@@ -36,6 +37,39 @@ function setMsg(text, cls = "muted") {
   if (!el) return;
   el.className = `small ${cls}`;
   el.textContent = text;
+}
+
+function setVersionField(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = String(value || "");
+}
+
+function renderGrblVersion(info) {
+  grblVersionInfo = info || {};
+  setVersionField("gvFirmwareVersion", grblVersionInfo.firmware_version || "");
+  setVersionField("gvOptions", grblVersionInfo.options || "");
+  setVersionField("gvSoftware", grblVersionInfo.software || "");
+  setVersionField("gvWavelength", grblVersionInfo.wavelength || "");
+  setVersionField("gvWorkingSize", (grblVersionInfo.working_size && grblVersionInfo.working_size.label) || "");
+  setVersionField("gvBoard", grblVersionInfo.board || "");
+  setVersionField("gvMachine", grblVersionInfo.machine || "");
+  setVersionField("gvStaSsid", (grblVersionInfo.sta && grblVersionInfo.sta.ssid) || "");
+  setVersionField("gvStaIp", (grblVersionInfo.sta && grblVersionInfo.sta.ip) || "");
+  setVersionField("gvStaMac", (grblVersionInfo.sta && grblVersionInfo.sta.mac) || "");
+  setVersionField("gvApSsid", (grblVersionInfo.ap && grblVersionInfo.ap.ssid) || "");
+  setVersionField("gvApIp", (grblVersionInfo.ap && grblVersionInfo.ap.ip) || "");
+  setVersionField("gvApMac", (grblVersionInfo.ap && grblVersionInfo.ap.mac) || "");
+  const rawEl = document.getElementById("msVersionRaw");
+  if (rawEl) rawEl.textContent = String(grblVersionInfo.raw || "").trim();
+  const msgEl = document.getElementById("msVersionMsg");
+  if (msgEl) {
+    if (grblVersionInfo.ok) {
+      msgEl.textContent = "";
+    } else {
+      msgEl.textContent = String(grblVersionInfo.error || "No GRBL version information available.");
+    }
+  }
 }
 
 function changedRows() {
@@ -103,6 +137,7 @@ function stopCollectPolling() {
 function renderLoadedSettings(r) {
   setRawOutput(r.raw || "");
   rawBackupText = String(r.raw || "");
+  renderGrblVersion(r.grbl_version || {});
   settingsRows = (r.settings || []).map((x) => ({
     ...x,
     new_value: String(x.value || ""),
@@ -129,6 +164,7 @@ async function pollCollectStatus(preserveMessage = false) {
       return;
     }
     stopCollectPolling();
+    renderGrblVersion(r.grbl_version || {});
     if (r.ok && Array.isArray(r.settings) && r.settings.length) {
       renderLoadedSettings(r);
       if (!preserveMessage) setMsg(r.message || `Loaded ${settingsRows.length} setting(s).`, "muted");
@@ -141,6 +177,7 @@ async function pollCollectStatus(preserveMessage = false) {
     if (!preserveMessage) setMsg(r.error || r.message || "Failed to load GRBL settings.", "error");
   } catch (_err) {
     stopCollectPolling();
+    renderGrblVersion({ ok: false, error: "No GRBL version information available.", raw: "" });
     if (!preserveMessage) setMsg("Failed to read GRBL settings status.", "error");
   }
 }
@@ -229,6 +266,7 @@ async function saveChanges() {
 
 function init() {
   window.__firmwareCollectRunning = false;
+  renderGrblVersion({ ok: false, error: "No GRBL version information available.", raw: "" });
   const tableBody = document.getElementById("msBody");
   if (tableBody) {
     tableBody.addEventListener("input", (ev) => {
