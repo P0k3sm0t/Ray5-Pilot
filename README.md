@@ -1,8 +1,8 @@
 # Web UI Demo Screenshots
 ### Dashboard
 
-<a href="https://github.com/user-attachments/assets/310f0630-182f-42ac-8b9e-2949695c9b33">
-  <img src="https://github.com/user-attachments/assets/310f0630-182f-42ac-8b9e-2949695c9b33" width="420" alt="Ray5 Pilot dashboard screenshot">
+<a href="https://github.com/user-attachments/assets/f01bfa7e-c205-4ba6-a21e-b0cdf8155320">
+  <img src="https://github.com/user-attachments/assets/f01bfa7e-c205-4ba6-a21e-b0cdf8155320" width="420" alt="Ray5 Pilot dashboard screenshot">
 </a>
 
 ### Settings
