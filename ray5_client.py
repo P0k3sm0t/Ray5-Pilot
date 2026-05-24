@@ -4,6 +4,7 @@ import json
 import re
 import time
 import hashlib
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ class Ray5Client:
         self.cfg = cfg
         self.session = requests.Session()
         self.session.trust_env = False
+        self.http_request_lock = threading.RLock()
         self.last_debug: dict[str, Any] = {
             "endpoint": None,
             "method": None,
@@ -96,7 +98,8 @@ class Ray5Client:
             page_id_fallback = True
         params["PAGEID"] = page_id_used
         try:
-            resp = self.session.get(url, params=params, timeout=self._timeout())
+            with self.http_request_lock:
+                resp = self.session.get(url, params=params, timeout=self._timeout())
             text = (resp.text or "").strip()
             lower = text.lower()
             is_error_text = (lower in {"error", "invalid command"} or "invalid command" in lower) and not tolerate_error_text
@@ -149,7 +152,8 @@ class Ray5Client:
         url = self._base() + endpoint
         params = {"plain": command}
         try:
-            resp = self.session.get(url, params=params, timeout=self._timeout())
+            with self.http_request_lock:
+                resp = self.session.get(url, params=params, timeout=self._timeout())
             text = (resp.text or "").strip()
             lower = text.lower()
             is_error_text = lower in {"error", "invalid command"} or "invalid command" in lower
@@ -207,7 +211,8 @@ class Ray5Client:
         url = self._base() + endpoint
         params = {param_name: cmd}
         try:
-            resp = self.session.get(url, params=params, timeout=self._timeout())
+            with self.http_request_lock:
+                resp = self.session.get(url, params=params, timeout=self._timeout())
             text = (resp.text or "").strip()
             ok = bool(resp.status_code == 200 and "invalid command" not in text.lower())
             self.last_debug = {
@@ -326,7 +331,8 @@ class Ray5Client:
         if page_id not in (None, ""):
             params["PAGEID"] = str(page_id)
         try:
-            resp = self.session.get(url, params=params, timeout=self._timeout())
+            with self.http_request_lock:
+                resp = self.session.get(url, params=params, timeout=self._timeout())
             text = (resp.text or "").strip()
             ok = bool(resp.status_code == 200)
             self.last_debug = {
@@ -600,7 +606,8 @@ class Ray5Client:
         params = {"path": base_path}
         url = self._base() + endpoint
         try:
-            resp = self.session.get(url, params=params, timeout=self._timeout())
+            with self.http_request_lock:
+                resp = self.session.get(url, params=params, timeout=self._timeout())
             raw_text = resp.text if isinstance(resp.text, str) else ""
             preview = raw_text[:220].replace("\n", "\\n").replace("\r", "")
             self.last_debug = {
@@ -690,7 +697,8 @@ class Ray5Client:
     def probe_http(self) -> dict[str, Any]:
         url = self._base() + "/"
         try:
-            resp = self.session.get(url, timeout=self._timeout())
+            with self.http_request_lock:
+                resp = self.session.get(url, timeout=self._timeout())
             text = resp.text if isinstance(resp.text, str) else ""
             return {
                 "ok": bool(resp.ok),
@@ -807,14 +815,15 @@ class Ray5Client:
         data = {"path": upload_path, "size": str(len(payload))}
         files = {"file": (upload_name, payload, "application/octet-stream")}
         try:
-            resp = self.session.post(
-                url,
-                params=params,
-                data=data,
-                files=files,
-                timeout=upload_timeout_seconds,
-                stream=True,
-            )
+            with self.http_request_lock:
+                resp = self.session.post(
+                    url,
+                    params=params,
+                    data=data,
+                    files=files,
+                    timeout=upload_timeout_seconds,
+                    stream=True,
+                )
             text = resp.text if isinstance(resp.text, str) else ""
             preview = text[:220].replace("\n", "\\n").replace("\r", "")
             self.last_debug = {
@@ -939,14 +948,15 @@ class Ray5Client:
         form = {"path": upload_path, "size": str(len(payload))}
         files = {"file": (upload_name, payload, "application/octet-stream")}
         try:
-            resp = self.session.post(
-                url,
-                params=params,
-                data=form,
-                files=files,
-                timeout=upload_timeout_seconds,
-                stream=True,
-            )
+            with self.http_request_lock:
+                resp = self.session.post(
+                    url,
+                    params=params,
+                    data=form,
+                    files=files,
+                    timeout=upload_timeout_seconds,
+                    stream=True,
+                )
             text = resp.text if isinstance(resp.text, str) else ""
             preview = text[:220].replace("\n", "\\n").replace("\r", "")
             ok = bool(resp.ok and "invalid parameter" not in text.lower())

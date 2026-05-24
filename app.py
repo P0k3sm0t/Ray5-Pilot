@@ -714,6 +714,7 @@ system_check_state: dict[str, Any] = {
     "last_auto_check_at": None,
     "auto_check_in_progress": False,
     "last_auto_check_log_at": None,
+    "last_active_skip_log_at": None,
 }
 ray5_comm_safety_state: dict[str, Any] = {
     "comm_lost_during_job": False,
@@ -1873,6 +1874,24 @@ def _is_recent_job_activity(now: float | None = None) -> bool:
     return (now_ts - float(ts)) <= 180.0
 
 
+def _is_job_likely_active_for_lightweight_checks() -> bool:
+    now = time.time()
+    with app_state_lock:
+        progress_active = bool(job_progress_state.get("active", False))
+        last_known_state = str(ray5_comm_safety_state.get("last_known_machine_state", "") or "")
+        upload_in_progress = bool(upload_transfer_state.get("upload_in_progress", False))
+        last_job_start_time = ray5_comm_safety_state.get("last_job_start_time")
+    if progress_active:
+        return True
+    if _is_machine_active_state(last_known_state):
+        return True
+    if isinstance(last_job_start_time, (int, float)) and (now - float(last_job_start_time)) <= 180.0:
+        return True
+    if upload_in_progress:
+        return True
+    return False
+
+
 def _update_comm_safety_state(status_source: str, online: bool, state_base: str) -> None:
     now = time.time()
     source = str(status_source or "").strip().lower()
@@ -1961,6 +1980,17 @@ def _run_system_check_probe() -> None:
             return
         if _is_ray5_comm_busy():
             console.add("info", "System-check SD probe skipped while Ray5 upload-busy state is active.")
+            return
+        if _is_job_likely_active_for_lightweight_checks():
+            now = time.time()
+            should_log = False
+            with app_state_lock:
+                last_log = system_check_state.get("last_active_skip_log_at")
+                if (last_log is None) or ((now - float(last_log)) >= 60.0):
+                    system_check_state["last_active_skip_log_at"] = now
+                    should_log = True
+            if should_log:
+                console.add("info", "System-check SD probe skipped while job is active to reduce Ray5 ESP32 load.")
             return
 
         # Lightweight HTTP reachability probe.

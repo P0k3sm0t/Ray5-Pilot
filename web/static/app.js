@@ -65,6 +65,16 @@ function shortDate(ts){
   return new Date(n*1000).toLocaleString([], {year:'2-digit', month:'numeric', day:'numeric', hour:'numeric', minute:'2-digit'});
 }
 
+function formatDurationHHMMSS(seconds){
+  const n = Number(seconds);
+  if(!Number.isFinite(n) || n < 0) return '—';
+  const total = Math.round(n);
+  const hh = Math.floor(total / 3600);
+  const mm = Math.floor((total % 3600) / 60);
+  const ss = total % 60;
+  return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+}
+
 function normalizeName(name){
   return String(name || '').trim();
 }
@@ -296,7 +306,7 @@ async function refreshStatus(){
   const jobFileText = String(d.job_file || '').trim();
   const jobFileDisplay = displayJobFileName(jobFileText);
   const jobTimeVal = Number(d.job_time_seconds);
-  const jobTimeText = Number.isFinite(jobTimeVal) ? `${jobTimeVal.toFixed(1)}s` : '';
+  const jobTimeText = formatDurationHHMMSS(jobTimeVal);
   const showJobExtras = (String(d.state_base || d.state || '').toLowerCase() === 'run') || !!progressText || !!jobFileText || !!jobTimeText;
   const sc = (d && d.system_check) ? d.system_check : {};
   const commSafety = (d && d.comm_safety) ? d.comm_safety : {};

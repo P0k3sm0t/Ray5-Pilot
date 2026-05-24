@@ -973,6 +973,44 @@ def check_hardening_regression_markers(r: Result) -> None:
         r.ok("Hardening regression checks")
 
 
+def check_esp32_long_job_load_reduction_markers(r: Result) -> None:
+    app_path = ROOT / "app.py"
+    monitor_path = ROOT / "ray5_status_monitor.py"
+    client_path = ROOT / "ray5_client.py"
+
+    app_markers = [
+        ("job-likely-active helper", "_is_job_likely_active_for_lightweight_checks"),
+        ("system-check active-job skip log", "System-check SD probe skipped while job is active to reduce Ray5 ESP32 load"),
+        ("system-check active skip timestamp", "last_active_skip_log_at"),
+    ]
+    monitor_markers = [
+        ("active poll seconds config", "active_poll_seconds"),
+        ("active poll interval helper", "_current_poll_interval_seconds"),
+        ("polling startup log", "Ray5 status monitor polling:"),
+        ("websocket ping interval config", "websocket_ping_interval"),
+        ("websocket ping timeout config", "websocket_ping_timeout"),
+        ("websocket ping disabled log", "Ray5 WebSocket ping: disabled"),
+        ("websocket ping disabled run_forever", "ping_interval=0"),
+    ]
+    client_markers = [
+        ("http request lock field", "http_request_lock"),
+        ("http request rlock", "threading.RLock"),
+        ("http request lock scope", "with self.http_request_lock"),
+    ]
+
+    missing: list[str] = []
+    missing += [f"app.py: {x}" for x in _check_markers(app_path, app_markers)]
+    missing += [f"ray5_status_monitor.py: {x}" for x in _check_markers(monitor_path, monitor_markers)]
+    missing += [f"ray5_client.py: {x}" for x in _check_markers(client_path, client_markers)]
+
+    if missing:
+        r.fail("ESP32 long-job load reduction markers")
+        for m in missing:
+            print(f"  - missing indicator: {m}")
+    else:
+        r.ok("ESP32 long-job load reduction markers")
+
+
 def check_launcher(r: Result) -> None:
     problems = []
     if not (ROOT / "Ray5 Pilot.exe").exists():
@@ -1041,6 +1079,7 @@ def main() -> int:
     check_import_refresh_watched_folder(r)
     check_requirements_ranges(r)
     check_hardening_regression_markers(r)
+    check_esp32_long_job_load_reduction_markers(r)
     check_launcher(r)
     check_git_status(r, args.require_clean)
 

@@ -343,6 +343,41 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
+## v1.2.2 — Long Job Stability Update
+Ray5 Pilot v1.2.2 focuses on improving stability during longer SD card jobs by reducing unnecessary traffic to the Ray5 ESP32 web interface.
+
+### What Changed
+- Reduced background ESP32 load during active jobs.
+- System-check SD card probing is skipped while a job is running.
+- Live status polling now slows down during active jobs instead of polling every second.
+- WebSocket automatic ping is disabled by default.
+- Ray5 HTTP requests are serialized through a shared request lock to avoid overlapping requests.
+- Status card **Run Time** now displays in `HH:MM:SS` format instead of raw seconds.
+- Pre-release safety checks now verify the long-job ESP32 load-reduction protections.
+
+### Why This Matters
+Some Ray5 users may see the WebSocket/status connection drop during longer jobs, especially after the machine has been running for a while. The job may continue on the Ray5, but Ray5 Pilot can lose live status updates and enter a communication safety lockout.
+
+This update reduces repeated SD card/file checks, slows active-job status polling, disables extra WebSocket ping traffic, and prevents multiple Ray5 HTTP requests from hitting the ESP32 at the same time.
+
+### Expected Result
+During longer SD card jobs, Ray5 Pilot should be gentler on the Ray5 ESP32 and should maintain live status more reliably.
+
+The Status card should continue to show:
+
+- State
+- Connection
+- Progress
+- File
+- Run Time
+- Timelapse state
+- System check information
+
+### Notes
+If communication is lost while a job may still be active, Ray5 Pilot will still trigger the communication safety lockout. This is intentional. Always verify the Ray5 screen and machine state before clearing the safety lockout.
+
+The safety lockout is not removed in this update. This release only reduces the chance of unnecessary connection drops during longer jobs.
+
 ## v1.2.1
 Ray5 Pilot v1.2.1 focuses on final Dashboard status polish, improved laser/air/job reporting, stronger emulator compatibility, and release-safety checks.
 

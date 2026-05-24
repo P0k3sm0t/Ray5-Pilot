@@ -23,6 +23,9 @@ class Ray5StatusMonitor:
         self.subprotocol = str(status_cfg.get("websocket_subprotocol", "arduino") or "").strip()
         self.debug_logging = bool(status_cfg.get("debug_logging", False))
         self.poll_seconds = max(0.2, float(status_cfg.get("poll_seconds", 1.0)))
+        self.active_poll_seconds = max(0.2, float(status_cfg.get("active_poll_seconds", 4.0)))
+        self.websocket_ping_interval = float(status_cfg.get("websocket_ping_interval", 0) or 0)
+        self.websocket_ping_timeout = max(1.0, float(status_cfg.get("websocket_ping_timeout", 10.0)))
         self.reconnect_seconds = max(1.0, float(status_cfg.get("reconnect_seconds", 3.0)))
         self.stale_after_seconds = max(1.0, float(status_cfg.get("stale_after_seconds", 5.0)))
 
@@ -64,6 +67,13 @@ class Ray5StatusMonitor:
             return
         if self._thread and self._thread.is_alive():
             return
+        self._log(f"Ray5 status monitor polling: idle={self.poll_seconds:.1f}s active={self.active_poll_seconds:.1f}s")
+        if self.websocket_ping_interval <= 0:
+            self._log("Ray5 WebSocket ping: disabled")
+        else:
+            self._log(
+                f"Ray5 WebSocket ping: interval={self.websocket_ping_interval:.1f}s timeout={self.websocket_ping_timeout:.1f}s"
+            )
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="ray5-status-monitor")
         self._thread.start()
@@ -208,7 +218,13 @@ class Ray5StatusMonitor:
                 self._ws_app = ws
 
             try:
-                ws.run_forever(ping_interval=20, ping_timeout=10)
+                if self.websocket_ping_interval <= 0:
+                    ws.run_forever(ping_interval=0)
+                else:
+                    ws.run_forever(
+                        ping_interval=self.websocket_ping_interval,
+                        ping_timeout=self.websocket_ping_timeout,
+                    )
             except Exception as exc:
                 with self._lock:
                     self._active_error = str(exc)
@@ -226,18 +242,19 @@ class Ray5StatusMonitor:
         if self.debug_logging:
             self._log("[STATUS] poller thread started")
         while not self._stop.is_set():
+            poll_wait_seconds = self._current_poll_interval_seconds()
             with self._lock:
                 self._poll_count += 1
                 ws_connected = self._ws_connected
             if not ws_connected:
-                if self._stop.wait(self.poll_seconds):
+                if self._stop.wait(poll_wait_seconds):
                     break
                 continue
             page_id = self.get_page_id()
             if page_id in (None, ""):
                 if self.debug_logging:
                     self._log("[STATUS] poll skipped: no PAGEID yet")
-                if self._stop.wait(self.poll_seconds):
+                if self._stop.wait(poll_wait_seconds):
                     break
                 continue
             if self.debug_logging:
@@ -259,8 +276,18 @@ class Ray5StatusMonitor:
                     live_age_ok = self._last_live_ts is not None and ((time.time() - self._last_live_ts) <= self.stale_after_seconds)
                     if (not self._ws_connected) or (not live_age_ok):
                         self._active_error = err
-            if self._stop.wait(self.poll_seconds):
+            if self._stop.wait(poll_wait_seconds):
                 break
+
+    def _current_poll_interval_seconds(self) -> float:
+        with self._lock:
+            state = ""
+            if isinstance(self._latest_status, dict):
+                state = str(self._latest_status.get("state") or "").strip()
+        state_base = state.lower().split(":", 1)[0]
+        if state_base in {"run", "hold", "jog", "door"}:
+            return self.active_poll_seconds
+        return self.poll_seconds
 
     def _handle_message(self, message: Any) -> None:
         if isinstance(message, bytes):
