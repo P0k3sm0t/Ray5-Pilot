@@ -19,6 +19,7 @@ INCLUDE_PATHS = [
     "gcode_safety.py",
     "console_log.py",
     "camera_manager.py",
+    "platform_utils.py",
     "calibrate_camera.py",
     "updater.py",
     "config.example.json",
@@ -28,6 +29,7 @@ INCLUDE_PATHS = [
     "web",
     "tools",
     "Start_Ray5_Pilot.bat",
+    "start-ray5-pilot.sh",
     "build_launcher.bat",
 ]
 

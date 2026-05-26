@@ -1011,6 +1011,153 @@ def check_esp32_long_job_load_reduction_markers(r: Result) -> None:
         r.ok("ESP32 long-job load reduction markers")
 
 
+def check_repo_release_inclusion_markers(r: Result) -> None:
+    missing: list[str] = []
+    platform_path = ROOT / "platform_utils.py"
+    launcher_path = ROOT / "start-ray5-pilot.sh"
+    release_script_path = ROOT / "tools" / "make_release_zip.py"
+    cam_path = ROOT / "camera_manager.py"
+    app_path = ROOT / "app.py"
+
+    if not platform_path.exists():
+        missing.append("platform_utils.py: file missing at repo root")
+    if not launcher_path.exists():
+        missing.append("start-ray5-pilot.sh: file missing at repo root")
+
+    release_markers = [
+        ("release include start-ray5-pilot.sh", "\"start-ray5-pilot.sh\""),
+        ("release include platform_utils.py", "\"platform_utils.py\""),
+    ]
+    missing += [f"tools/make_release_zip.py: {x}" for x in _check_markers(release_script_path, release_markers)]
+
+    cam_markers = [
+        ("platform open_folder import", "from platform_utils import open_folder"),
+        ("snapshot/output open folder call", "open_folder(self.output_dir)"),
+    ]
+    missing += [f"camera_manager.py: {x}" for x in _check_markers(cam_path, cam_markers)]
+
+    cam_txt = _read_text(cam_path)
+    app_txt = _read_text(app_path)
+    if "webbrowser.open(" in cam_txt:
+        missing.append("camera_manager.py: local file/folder open still uses webbrowser.open")
+    if "webbrowser.open(" in app_txt and app_txt.count("webbrowser.open(") > 1:
+        missing.append("app.py: multiple webbrowser.open calls detected; local open must use platform_utils")
+
+    if missing:
+        r.fail("Repo/release inclusion checks")
+        for m in missing:
+            print(f"  - missing indicator: {m}")
+    else:
+        r.ok("Repo/release inclusion checks")
+
+
+def check_platform_open_and_ffmpeg_snapshot_hardening(r: Result) -> None:
+    missing: list[str] = []
+    platform_path = ROOT / "platform_utils.py"
+    app_path = ROOT / "app.py"
+    cam_path = ROOT / "camera_manager.py"
+
+    if not platform_path.exists():
+        missing.append("platform_utils.py: file missing")
+    else:
+        missing += [f"platform_utils.py: {x}" for x in _check_markers(platform_path, [("open_folder helper", "def open_folder"), ("open_file helper", "def open_file")])]
+
+    app_txt = _read_text(app_path)
+    cam_txt = _read_text(cam_path)
+
+    # Local file/folder open should not use webbrowser.open.
+    if "webbrowser.open(" in cam_txt:
+        missing.append("camera_manager.py: local file/folder open still uses webbrowser.open")
+    if "webbrowser.open(" in app_txt:
+        if "def api_camera_open_external" not in app_txt or "webbrowser.open(raw_url)" not in app_txt:
+            missing.append("app.py: webbrowser.open usage is not limited to camera external URL opening")
+        # If there are additional webbrowser.open calls beyond external camera open, fail.
+        if app_txt.count("webbrowser.open(") > 1:
+            missing.append("app.py: multiple webbrowser.open calls detected; local open must use platform_utils")
+
+    # Snapshot/output folder should use platform utility.
+    missing += [f"camera_manager.py: {x}" for x in _check_markers(cam_path, [("platform open_folder import", "from platform_utils import open_folder"), ("snapshot/output open folder call", "open_folder(self.output_dir)")])]
+
+    # ffmpeg snapshot hardening markers.
+    ffmpeg_markers = [
+        ("ffmpeg capture helper", "def _capture_ffmpeg"),
+        ("ffmpeg command list", "cmd = [ffmpeg"),
+        ("ffmpeg subprocess list call", "subprocess.run(cmd"),
+        ("rtsp credential encode helper", "_ffmpeg_rtsp_url_with_encoded_credentials"),
+        ("url encode import", "from urllib.parse import quote, unquote"),
+        ("rtsp username/password quote", "quote(unquote("),
+        ("sanitized rtsp logging", "mask_camera_url(input_url)"),
+        ("raw-first ffmpeg attempt", "_run_ffmpeg_once(raw_input_url, \"raw\")"),
+        ("auth-only encoded retry", "_ffmpeg_auth_failed(stderr_text)"),
+        ("encoded retry call", "_run_ffmpeg_once(encoded_input_url, \"encoded\")"),
+        ("stderr sanitization helper", "_sanitize_rtsp_urls_in_text"),
+    ]
+    missing += [f"camera_manager.py: {x}" for x in _check_markers(cam_path, ffmpeg_markers)]
+
+    if "shell=True" in cam_txt:
+        missing.append("camera_manager.py: ffmpeg snapshot path uses shell=True")
+
+    if missing:
+        r.fail("Platform open + ffmpeg snapshot hardening checks")
+        for m in missing:
+            print(f"  - missing indicator: {m}")
+    else:
+        r.ok("Platform open + ffmpeg snapshot hardening checks")
+
+
+def check_camera_snapshot_architecture_markers(r: Result) -> None:
+    app_path = ROOT / "app.py"
+    cam_path = ROOT / "camera_manager.py"
+    release_script_path = ROOT / "tools" / "make_release_zip.py"
+    launcher_path = ROOT / "start-ray5-pilot.sh"
+
+    missing: list[str] = []
+    cam_markers = [
+        ("live frame cache lock", "_live_frame_lock"),
+        ("latest live frame storage", "_latest_live_frame_jpeg"),
+        ("live frame timestamp storage", "_latest_live_frame_ts"),
+        ("live frame update method", "def update_live_frame"),
+        ("live frame read method", "def get_latest_live_frame"),
+        ("snapshot source helper", "def _capture_bytes_with_source"),
+        ("manual snapshot cache preference", "prefer_live_cache"),
+        ("snapshot source live cache log", "Snapshot source: %s"),
+        ("ffmpeg fallback source label", "\"ffmpeg_fallback\""),
+        ("opencv fallback source label", "\"opencv_fallback\""),
+        ("camera error sanitizer", "def _sanitize_camera_error_text"),
+        ("ffmpeg stderr sanitized before raise", "_sanitize_camera_error_text(stderr_text)"),
+        ("ffmpeg stderr sanitized before log", "_sanitize_rtsp_urls_in_text(stderr_text_raw)"),
+        ("mjpeg callback arg", "on_frame_jpeg"),
+        ("mjpeg callback invoke", "on_frame_jpeg(frame_bytes)"),
+    ]
+    app_markers = [
+        ("camera stream passes cache callback", "on_frame_jpeg=camera.update_live_frame"),
+    ]
+    release_markers = [
+        ("release includes linux launcher", "\"start-ray5-pilot.sh\""),
+    ]
+    launcher_markers = [
+        ("launcher creates venv", "python3 -m venv .venv"),
+        ("launcher uses venv python", "PYTHON_BIN=\".venv/bin/python\""),
+        ("launcher installs requirements", "pip install -r requirements.txt"),
+        ("launcher config bootstrap", "cp \"config.example.json\" \"config.json\""),
+        ("launcher opens URL with xdg-open", "xdg-open \"http://127.0.0.1:5050\""),
+    ]
+    missing += [f"camera_manager.py: {x}" for x in _check_markers(cam_path, cam_markers)]
+    missing += [f"app.py: {x}" for x in _check_markers(app_path, app_markers)]
+    missing += [f"tools/make_release_zip.py: {x}" for x in _check_markers(release_script_path, release_markers)]
+    if not launcher_path.exists():
+        missing.append("start-ray5-pilot.sh: file missing")
+    else:
+        missing += [f"start-ray5-pilot.sh: {x}" for x in _check_markers(launcher_path, launcher_markers)]
+
+    if missing:
+        r.fail("Camera snapshot architecture checks")
+        for m in missing:
+            print(f"  - missing indicator: {m}")
+    else:
+        r.ok("Camera snapshot architecture checks")
+
+
 def check_launcher(r: Result) -> None:
     problems = []
     if not (ROOT / "Ray5 Pilot.exe").exists():
@@ -1080,6 +1227,9 @@ def main() -> int:
     check_requirements_ranges(r)
     check_hardening_regression_markers(r)
     check_esp32_long_job_load_reduction_markers(r)
+    check_repo_release_inclusion_markers(r)
+    check_platform_open_and_ffmpeg_snapshot_hardening(r)
+    check_camera_snapshot_architecture_markers(r)
     check_launcher(r)
     check_git_status(r, args.require_clean)
 

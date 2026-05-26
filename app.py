@@ -2432,7 +2432,7 @@ def _timelapse_worker() -> None:
         try:
             if frame_source not in {"processed", "raw"}:
                 frame_source = "processed"
-            console.add("info", f"Timelapse frame source: {frame_source}")
+            console.add("info", f"Timelapse frame variant: {frame_source}")
             session_dir = Path(session_dir_str) if session_dir_str else _timelapse_output_dir() / "session_unspecified"
             session_dir.mkdir(parents=True, exist_ok=True)
             session_dir_resolved = session_dir.resolve()
@@ -5805,6 +5805,7 @@ def camera_stream() -> Any:
                 rtsp_transport=str(cam.get("rtsp_transport", "tcp") or "tcp"),
                 on_frame_ok=_on_stream_frame_ok,
                 on_frame_fail=_on_stream_frame_fail,
+                on_frame_jpeg=camera.update_live_frame,
             )
         finally:
             with camera_stream_clients_lock:

@@ -343,6 +343,40 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
+## Ray5 Pilot v1.2.3
+Ray5 Pilot v1.2.3 is a stability and cross-platform cleanup release focused on camera capture, timelapse reliability, Linux launcher support, release packaging, and status monitor configuration.
+
+### Highlights
+- Added a cross-platform file/folder open helper for Windows, Linux, and macOS.
+- Added a Linux/macOS launcher script: `start-ray5-pilot.sh`.
+- Improved Linux startup by creating and validating a Python virtual environment before launching.
+- Added release ZIP packaging support for the Linux launcher and platform helper files.
+- Improved manual camera snapshots so they use the live preview frame first when available.
+- Improved timelapse frame capture so it uses the same safe camera capture path instead of calling removed/private capture methods.
+- Preserved RTSP camera config exactly as entered by the user.
+- Improved ffmpeg RTSP handling by trying the raw URL first and only using encoded credential fallback on authentication-related failures.
+- Hardened ffmpeg error logging so RTSP usernames/passwords are not exposed in logs.
+- Added status monitor settings to the Settings page:
+  - Active Job Poll Interval
+  - WebSocket Ping Interval
+  - WebSocket Ping Timeout
+- Added config defaults for the new status monitor settings in both `config.example.json` and `DEFAULT_CONFIG`.
+- Updated safety checks to cover repo/release inclusion, platform open handling, camera snapshot architecture, timelapse capture path, ffmpeg hardening, and config key coverage.
+
+### Camera and Timelapse Improvements
+Manual snapshots now prefer the latest live preview frame when the camera preview is active. This avoids opening a second RTSP/ffmpeg connection when the app already has a valid camera frame.
+
+Timelapse capture now uses a public camera capture path and supports the same cache-first behavior. This fixes the regression where timelapse could fail with a missing `_capture_bytes` method after the camera capture refactor.
+
+### Linux Support
+The new `start-ray5-pilot.sh` launcher helps Linux users start Ray5 Pilot more easily. It creates a `.venv` if needed, checks that pip is available, installs requirements, creates `config.json` from `config.example.json` if missing, opens the Web UI when possible, and starts the app.
+
+On Debian/Ubuntu-based systems, users may need to install venv support first:
+
+```bash
+sudo apt update
+sudo apt install python3-venv python3-pip
+
 ## v1.2.2 — Long Job Stability Update
 Ray5 Pilot v1.2.2 focuses on improving stability during longer SD card jobs by reducing unnecessary traffic to the Ray5 ESP32 web interface.
 

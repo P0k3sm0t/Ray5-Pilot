@@ -156,7 +156,10 @@ function load(cfg){
   setVal('status_ws_path', st.websocket_path||'/', '/');
   setVal('status_ws_subprotocol', st.websocket_subprotocol||'arduino', 'arduino');
   setVal('status_poll_seconds', st.poll_seconds??1.0, 1.0);
+  setVal('status_active_poll_seconds', st.active_poll_seconds??4.0, 4.0);
   setVal('status_reconnect_seconds', st.reconnect_seconds??3.0, 3.0);
+  setVal('status_ws_ping_interval', st.websocket_ping_interval??0, 0);
+  setVal('status_ws_ping_timeout', st.websocket_ping_timeout??10.0, 10.0);
   setVal('status_stale_after', st.stale_after_seconds??5.0, 5.0);
   setChecked('status_show_source', (st.show_status_source!==false), true);
   setChecked('status_show_pos_source', (st.show_position_source!==false), true);
@@ -319,7 +322,10 @@ function collect(){
       websocket_path:v('status_ws_path').value.trim()||'/',
       websocket_subprotocol:v('status_ws_subprotocol').value.trim()||'arduino',
       poll_seconds:Number(v('status_poll_seconds').value)||1.0,
+      active_poll_seconds:Number(v('status_active_poll_seconds').value)||4.0,
       reconnect_seconds:Number(v('status_reconnect_seconds').value)||3.0,
+      websocket_ping_interval:Number(v('status_ws_ping_interval').value)||0,
+      websocket_ping_timeout:Number(v('status_ws_ping_timeout').value)||10.0,
       stale_after_seconds:Number(v('status_stale_after').value)||5.0,
       live_status_stale_seconds: (loadedConfig.status && Number.isFinite(Number(loadedConfig.status.live_status_stale_seconds)))
         ? Number(loadedConfig.status.live_status_stale_seconds)

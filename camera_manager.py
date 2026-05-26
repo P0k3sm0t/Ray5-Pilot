@@ -9,15 +9,15 @@ import subprocess
 import tempfile
 import threading
 import time
-import webbrowser
 from pathlib import Path
 from typing import Any, Iterator
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import cv2
 import numpy as np
 import requests
 from PIL import Image, ImageDraw
+from platform_utils import open_folder
 
 
 class CameraCaptureError(RuntimeError):
@@ -41,6 +41,53 @@ def mask_camera_url(url: str) -> str:
         host = f"{host}:{parsed.port}"
     auth = "****:****@" + host
     return urlunsplit((parsed.scheme, auth, parsed.path, parsed.query, parsed.fragment))
+
+
+def _ffmpeg_rtsp_url_with_encoded_credentials(url: str) -> str:
+    raw = str(url or "").strip()
+    parsed = urlsplit(raw)
+    if parsed.scheme.strip().lower() != "rtsp":
+        return raw
+    if parsed.username is None and parsed.password is None:
+        return raw
+
+    user_raw = str(parsed.username or "")
+    pass_raw = str(parsed.password or "")
+    user_enc = quote(unquote(user_raw), safe="")
+    pass_enc = quote(unquote(pass_raw), safe="")
+
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    auth = f"{user_enc}:{pass_enc}@" if (user_raw or pass_raw) else ""
+    netloc = f"{auth}{host}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+
+def _ffmpeg_auth_failed(stderr_text: str) -> bool:
+    s = str(stderr_text or "").strip().lower()
+    if not s:
+        return False
+    auth_markers = (
+        "401 unauthorized",
+        "unauthorized",
+        "authorization failed",
+        "authentication failed",
+        "forbidden",
+    )
+    return any(m in s for m in auth_markers)
+
+
+def _sanitize_rtsp_urls_in_text(text: str) -> str:
+    raw = str(text or "")
+    if not raw:
+        return raw
+    pattern = re.compile(r"(?:rtsp|rtsps|http|https)://[^\s\"']+", re.IGNORECASE)
+    return pattern.sub(lambda m: mask_camera_url(m.group(0)), raw)
+
+
+def _sanitize_camera_error_text(text: str) -> str:
+    return _sanitize_rtsp_urls_in_text(str(text or ""))
 
 
 def offline_frame_jpeg(message: str = "Camera unavailable") -> bytes:
@@ -105,6 +152,9 @@ class CameraManager:
         self.latest_instructions_path = self.output_dir / "latest_lightburn_instructions.txt"
         self.last_capture_debug: dict[str, Any] = {}
         self._capture_lock = threading.RLock()
+        self._live_frame_lock = threading.RLock()
+        self._latest_live_frame_jpeg: bytes | None = None
+        self._latest_live_frame_ts: float | None = None
 
     def enabled(self) -> bool:
         return bool(self.camera.get("enabled", False))
@@ -138,7 +188,8 @@ class CameraManager:
                 raise CameraCaptureError("camera is disabled")
             if self.cleanup_on_capture and not self.save_history:
                 self.cleanup_snapshots(mode="capture", keep_latest=False)
-            content = self._capture_bytes()
+            content, source_label = self._capture_bytes_with_source(prefer_live_cache=(str(reason or "").strip().lower() == "manual"))
+            self.log.info("[CAMERA] Snapshot source: %s", source_label)
             raw_image = Image.open(io.BytesIO(content)).convert("RGB")
             raw_w, raw_h = raw_image.size
             ts = time.strftime("%Y%m%d_%H%M%S")
@@ -185,6 +236,25 @@ class CameraManager:
             )
             return out_path
 
+    def update_live_frame(self, jpeg_bytes: bytes) -> None:
+        data = bytes(jpeg_bytes or b"")
+        if not data:
+            return
+        with self._live_frame_lock:
+            self._latest_live_frame_jpeg = data
+            self._latest_live_frame_ts = time.time()
+
+    def get_latest_live_frame(self, max_age_seconds: float = 3.0) -> bytes | None:
+        max_age = max(0.1, float(max_age_seconds))
+        with self._live_frame_lock:
+            data = self._latest_live_frame_jpeg
+            ts = self._latest_live_frame_ts
+        if not data or not isinstance(ts, (int, float)):
+            return None
+        if (time.time() - float(ts)) > max_age:
+            return None
+        return bytes(data)
+
     def capture_timelapse_frame_to(self, dest_path: Path, source: str = "processed") -> Path:
         selected = str(source or "processed").strip().lower()
         if selected not in {"processed", "raw"}:
@@ -196,7 +266,7 @@ class CameraManager:
             self._reload_camera_config()
             if not self.enabled():
                 raise CameraCaptureError("camera is disabled")
-            content = self._capture_bytes()
+            content, source_label = self.capture_timelapse_frame()
             raw_image_pil = Image.open(io.BytesIO(content)).convert("RGB")
             raw_np = cv2.cvtColor(np.array(raw_image_pil), cv2.COLOR_RGB2BGR)
             if selected == "raw":
@@ -206,9 +276,12 @@ class CameraManager:
                 processed_np, _, _ = self._create_corrected_from_image(raw_np)
                 if not cv2.imwrite(str(dest_path), processed_np):
                     raise CameraCaptureError(f"failed to write timelapse processed frame {dest_path}")
-            self.log.info("[CAMERA] Timelapse frame source: %s", selected)
+            self.log.info("[CAMERA] Timelapse frame source: %s", source_label)
             self.log.info("[CAMERA] Timelapse frame saved: %s", dest_path)
             return dest_path
+
+    def capture_timelapse_frame(self) -> tuple[bytes, str]:
+        return self._capture_bytes_with_source(prefer_live_cache=True)
 
     def _reload_camera_config(self) -> None:
         cfg_path = self.base_dir / "config.json"
@@ -230,23 +303,27 @@ class CameraManager:
             self.latest_processed_name = str(self.camera.get("latest_processed_name", "latest.jpg")) or "latest.jpg"
             self.timeout_seconds = max(1.0, float(self.camera.get("timeout_seconds", 15)))
 
-    def _capture_bytes(self) -> bytes:
+    def _capture_bytes_with_source(self, prefer_live_cache: bool = False) -> tuple[bytes, str]:
+        if prefer_live_cache:
+            cached = self.get_latest_live_frame(max_age_seconds=3.0)
+            if cached:
+                return cached, "live_frame_cache"
         snap = self.snapshot_url()
         if snap:
-            return self._capture_http_snapshot(snap)
+            return self._capture_http_snapshot(snap), "http_fallback"
         stream = self.stream_url()
         if not stream:
             raise CameraCaptureError("camera URL not configured")
         method = self.capture_method()
         if method == "ffmpeg":
-            return self._capture_ffmpeg(stream)
-        return self._capture_opencv_frame(stream)
+            return self._capture_ffmpeg(stream), "ffmpeg_fallback"
+        return self._capture_opencv_frame(stream), "opencv_fallback"
 
     def _capture_http_snapshot(self, url: str) -> bytes:
         try:
             resp = self.session.get(url, timeout=self.timeout_seconds, stream=True)
         except requests.RequestException as exc:
-            raise CameraCaptureError(f"http snapshot failed: {exc}") from exc
+            raise CameraCaptureError(f"http snapshot failed: {_sanitize_camera_error_text(str(exc))}") from exc
         if not resp.ok:
             raise CameraCaptureError(f"http snapshot failed ({resp.status_code})")
         ctype = str(resp.headers.get("Content-Type", "")).lower()
@@ -274,29 +351,45 @@ class CameraManager:
             ) as tmp_file:
                 tmp = Path(tmp_file.name)
 
-            cmd = [ffmpeg, "-y"]
-            if stream_url.strip().lower().startswith("rtsp://"):
-                transport = self.rtsp_transport()
-                if transport in {"tcp", "udp"}:
-                    cmd.extend(["-rtsp_transport", transport])
-            cmd.extend(
-                [
-                    "-i",
-                    stream_url,
-                    "-frames:v",
-                    "1",
-                    "-q:v",
-                    "2",
-                    str(tmp),
-                ]
-            )
+            raw_input_url = str(stream_url or "").strip()
+            encoded_input_url = _ffmpeg_rtsp_url_with_encoded_credentials(raw_input_url)
+            rtsp_stream = raw_input_url.lower().startswith("rtsp://")
+            transport = self.rtsp_transport() if rtsp_stream else ""
 
-            try:
-                subprocess.run(cmd, check=True, capture_output=True, timeout=self.timeout_seconds + 8)
-            except subprocess.TimeoutExpired as exc:
-                raise CameraCaptureError("ffmpeg capture timed out") from exc
-            except subprocess.CalledProcessError as exc:
-                raise CameraCaptureError(f"ffmpeg capture failed: {exc.stderr.decode(errors='ignore')[:180]}") from exc
+            def _run_ffmpeg_once(input_url: str, attempt_label: str) -> tuple[bool, str]:
+                cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+                if rtsp_stream and transport in {"tcp", "udp"}:
+                    cmd.extend(["-rtsp_transport", transport])
+                self.log.info("[CAMERA] FFmpeg RTSP input (%s): %s", attempt_label, mask_camera_url(input_url))
+                cmd.extend(
+                    [
+                        "-i",
+                        input_url,
+                        "-frames:v",
+                        "1",
+                        "-q:v",
+                        "2",
+                        str(tmp),
+                    ]
+                )
+                try:
+                    subprocess.run(cmd, check=True, capture_output=True, timeout=self.timeout_seconds + 8)
+                    return True, ""
+                except subprocess.TimeoutExpired as exc:
+                    raise CameraCaptureError("ffmpeg capture timed out") from exc
+                except subprocess.CalledProcessError as exc:
+                    stderr_text_raw = exc.stderr.decode(errors="ignore")
+                    stderr_text = _sanitize_rtsp_urls_in_text(stderr_text_raw)
+                    if stderr_text.strip():
+                        self.log.error("[CAMERA] ffmpeg stderr (%s): %s", attempt_label, stderr_text.strip())
+                    return False, stderr_text
+
+            ok, stderr_text = _run_ffmpeg_once(raw_input_url, "raw")
+            if (not ok) and rtsp_stream and (encoded_input_url != raw_input_url) and _ffmpeg_auth_failed(stderr_text):
+                self.log.warn("[CAMERA] ffmpeg auth failure on raw RTSP URL; retrying with encoded credentials.")
+                ok, stderr_text = _run_ffmpeg_once(encoded_input_url, "encoded")
+            if not ok:
+                raise CameraCaptureError(f"ffmpeg capture failed: {_sanitize_camera_error_text(stderr_text)[:180]}")
 
             if not tmp.exists():
                 raise CameraCaptureError("ffmpeg did not produce output")
@@ -587,11 +680,7 @@ class CameraManager:
         self.log.info("[CAMERA] LightBurn instructions written")
 
     def open_capture_folder(self) -> None:
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        if os.name == "nt":
-            os.startfile(str(self.output_dir))  # type: ignore[attr-defined]
-        else:
-            webbrowser.open(self.output_dir.as_uri())
+        open_folder(self.output_dir)
 
     def cleanup_old_startup_snapshots(self) -> None:
         if not self.auto_cleanup_on_start:
@@ -723,6 +812,7 @@ def mjpeg_generator(
     rtsp_transport: str = "auto",
     on_frame_ok: Any | None = None,
     on_frame_fail: Any | None = None,
+    on_frame_jpeg: Any | None = None,
 ) -> Iterator[bytes]:
     delay = max(1.0, float(reconnect_seconds))
     transport = str(rtsp_transport or "auto").strip().lower()
@@ -755,12 +845,18 @@ def mjpeg_generator(
                 ok_enc, buf = cv2.imencode(".jpg", img)
                 if not ok_enc:
                     continue
+                frame_bytes = bytes(buf)
+                if callable(on_frame_jpeg):
+                    try:
+                        on_frame_jpeg(frame_bytes)
+                    except Exception:
+                        pass
                 if callable(on_frame_ok):
                     try:
                         on_frame_ok()
                     except Exception:
                         pass
-                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + bytes(buf) + b"\r\n"
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
         finally:
             cap.release()
         frame = offline_frame_jpeg("Reconnecting camera...")
