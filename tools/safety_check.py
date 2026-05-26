@@ -435,6 +435,9 @@ def check_safety_feature_presence(r: Result) -> None:
         ("sensitive token ap_", '"ap_"'),
         ("timelapse duplicate log map", "timelapse_duplicate_log_at"),
         ("timelapse duplicate log pop cleanup", 'timelapse_duplicate_log_at.pop(str(session_id or "none"), None)'),
+        ("laser live FS priority marker", 'power_source = "live_fs"'),
+        ("laser fallback only when live FS unavailable", "elif not live_fs_available"),
+        ("laser hold suppressed by live off", "suppressed_by_live_off"),
     ]
     client_markers = [
         ("clear_alarm soft reset step", '"CTRL_X"'),

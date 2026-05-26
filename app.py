@@ -3933,10 +3933,12 @@ def _build_laser_power_info(*, laser_info: dict[str, Any], state_base: str, job_
     max_s, max_source = _laser_power_max_info()
     now = time.time()
     state_key = str(state_base or "").strip().lower()
+    live_fs_available = spindle_value is not None
     try:
         instant = float(spindle_value) if spindle_value is not None else 0.0
     except Exception:
         instant = 0.0
+        live_fs_available = False
     with app_state_lock:
         commanded_s = laser_power_state.get("commanded_s")
         commanded_source = str(laser_power_state.get("source") or "unknown")
@@ -3958,20 +3960,19 @@ def _build_laser_power_info(*, laser_info: dict[str, Any], state_base: str, job_
     if isinstance(fire_until, (int, float)) and now < float(fire_until) and isinstance(fire_s, (int, float)):
         power_s = float(fire_s)
         power_source = "test_fire"
-    elif isinstance(commanded_s, (int, float)) and commanded_s > 0:
-        power_s = float(commanded_s)
-        power_source = commanded_source or "command"
-    else:
+    elif instant > 0:
+        power_s = float(instant)
+        power_source = "live_fs"
+    elif not live_fs_available:
         key = _normalize_laser_job_key(job_file)
         meta = laser_job_power_cache.get(key) if key else None
         if isinstance(meta, dict) and isinstance(meta.get("last_nonzero_s"), (int, float)):
             if str(state_base or "").strip().lower() == "run" and laser_active:
                 power_s = float(meta.get("last_nonzero_s"))
                 power_source = "job_gcode"
-
-    if not isinstance(power_s, (int, float)) and instant > 0:
-        power_s = float(instant)
-        power_source = "live_fs"
+        elif isinstance(commanded_s, (int, float)) and commanded_s > 0:
+            power_s = float(commanded_s)
+            power_source = commanded_source or "command"
 
     laser_power_percent = None
     laser_power_label = "—"
@@ -4011,20 +4012,13 @@ def _build_laser_power_info(*, laser_info: dict[str, Any], state_base: str, job_
                 hold_active = True
                 hold_age = 0.0
             elif (not laser_active) and hold_active:
-                laser_active = True
-                laser_label = "On"
-                if isinstance(held_power_percent, (int, float)):
-                    laser_power_percent = float(held_power_percent)
-                    laser_power_label = f"{laser_power_percent:.0f}%"
-                elif isinstance(held_s, (int, float)) and max_s > 0:
-                    laser_power_percent = max(0.0, min(100.0, (float(held_s) / float(max_s)) * 100.0))
-                    laser_power_label = f"{laser_power_percent:.0f}%"
-                display_sig = (True, round(float(laser_power_percent), 2) if isinstance(laser_power_percent, (int, float)) else None, "hold", round(float(hold_age or 0.0), 2))
+                # Keep hold metadata for debugging, but do not force main display On while live status is Off.
+                display_sig = (False, None, "hold_suppressed", round(float(hold_age or 0.0), 2))
                 if display_sig != _last_logged_laser_display_signature:
                     _last_logged_laser_display_signature = display_sig
                     console.add(
                         "info",
-                        f"[LASER DISPLAY HOLD] active=true power={laser_power_percent if isinstance(laser_power_percent,(int,float)) else 'none'} age={float(hold_age or 0.0):.1f}",
+                        f"[LASER DISPLAY HOLD] suppressed_by_live_off age={float(hold_age or 0.0):.1f}",
                     )
             elif (not laser_active) and isinstance(last_active_at, (int, float)) and (not hold_active):
                 with app_state_lock:
