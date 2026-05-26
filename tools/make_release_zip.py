@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import time
 from pathlib import Path
 import zipfile
 
@@ -131,6 +132,21 @@ def _release_version() -> str:
     return version or "unknown"
 
 
+def _zip_mode_for_path(path: Path) -> int:
+    return 0o755 if path.suffix.lower() == ".sh" else 0o644
+
+
+def _write_file_with_mode(zf: zipfile.ZipFile, src: Path, arcname: str) -> None:
+    st = src.stat()
+    dt_tuple = time.localtime(st.st_mtime)
+    zi = zipfile.ZipInfo(arcname)
+    zi.date_time = (dt_tuple.tm_year, dt_tuple.tm_mon, dt_tuple.tm_mday, dt_tuple.tm_hour, dt_tuple.tm_min, dt_tuple.tm_sec)
+    zi.compress_type = zipfile.ZIP_DEFLATED
+    zi.create_system = 3  # Unix
+    zi.external_attr = (_zip_mode_for_path(src) << 16)
+    zf.writestr(zi, src.read_bytes())
+
+
 def main() -> int:
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     included, skipped = _iter_included_files()
@@ -144,9 +160,9 @@ def main() -> int:
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for src in included:
             arcname = f"{package_root}/{src.relative_to(PROJECT_ROOT).as_posix()}"
-            zf.write(src, arcname)
+            _write_file_with_mode(zf, src, arcname)
         if exe_src is not None:
-            zf.write(exe_src, f"{package_root}/Ray5 Pilot.exe")
+            _write_file_with_mode(zf, exe_src, f"{package_root}/Ray5 Pilot.exe")
             print(f"[RELEASE ZIP] including executable: {exe_src} -> {package_root}/Ray5 Pilot.exe")
         else:
             print("[RELEASE ZIP] warning: Ray5 Pilot.exe not found; zip will be source-only")

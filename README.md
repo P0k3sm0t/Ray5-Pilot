@@ -478,6 +478,21 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
+## Ray5 Pilot v1.2.4
+Ray5 Pilot v1.2.4 is a quick follow-up release to v1.2.3. It fixes release-package and update-related issues found during final fresh ZIP testing.
+
+### Fixed
+- Fixed first-run Settings behavior so a fresh install can save the Ray5 IP after `config.json` is created from `config.example.json`.
+- Fixed release ZIP validation so `tools/safety_check.py` can run from an extracted release package without requiring `.git` or `.gitignore`.
+- Hardened updater ZIP extraction to avoid unsafe ZIP paths during update installs.
+- Preserved Linux executable permissions for `start-ray5-pilot.sh` in the release ZIP.
+- Cleaned up placeholder/default values used in example configuration files.
+- Confirmed release ZIP packaging excludes local/private runtime files such as `config.json`, logs, `.git`, `__pycache__`, `dist`, captures, timelapse output, and job folders.
+
+### Why this release came so soon after v1.2.3
+
+v1.2.3 added the main cross-platform camera, timelapse, Linux launcher, and release packaging improvements. During fresh Windows and Linux ZIP testing, a few packaging and first-run setup issues were found that should be fixed before wider use. v1.2.4 ships those cleanup fixes so new users have a smoother first-run experience and the updater/release package checks are more reliable.
+
 ## Ray5 Pilot v1.2.3
 Ray5 Pilot v1.2.3 is a stability and cross-platform cleanup release focused on camera capture, timelapse reliability, Linux launcher support, release packaging, and status monitor configuration.
 

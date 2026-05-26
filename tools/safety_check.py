@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
+GITIGNORE_PATH = ROOT / ".gitignore"
 
 PY_FILES = [
     "app.py",
@@ -96,6 +97,7 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 LOCAL_TERMS_FILE = ROOT / "tools" / "secret_terms.local.txt"
+GITIGNORE_WARNED = False
 
 
 class Result:
@@ -321,8 +323,19 @@ def _iter_scan_files() -> Iterable[Path]:
 def _read_text(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
     except UnicodeDecodeError:
         return path.read_text(encoding="latin-1", errors="ignore")
+
+
+def _warn_if_gitignore_missing(r: Result) -> None:
+    global GITIGNORE_WARNED
+    if GITIGNORE_WARNED:
+        return
+    if not GITIGNORE_PATH.exists():
+        r.warn(".gitignore not present; skipping source-repo ignore-pattern checks. This is normal for release ZIPs.")
+        GITIGNORE_WARNED = True
 
 
 def _load_local_terms() -> list[str]:
@@ -461,7 +474,6 @@ def check_updater_parser_hardening(r: Result) -> None:
     app_path = ROOT / "app.py"
     updater_path = ROOT / "updater.py"
     job_path = ROOT / "job_manager.py"
-    gi_path = ROOT / ".gitignore"
 
     app_markers = [
         ("sidecar checksum support", ".sha256.txt"),
@@ -482,6 +494,12 @@ def check_updater_parser_hardening(r: Result) -> None:
         ("mismatched checksum refusal", "checksum mismatch"),
         ("parent wait timeout constant", "PARENT_EXIT_WAIT_TIMEOUT_SECONDS"),
         ("parent wait timeout warning", "still running after"),
+        ("safe zip extract helper", "def _safe_extract_zip"),
+        ("safe zip member iteration", "infolist()"),
+        ("safe zip member validation", "member.filename"),
+        ("safe zip path resolve", ".resolve()"),
+        ("safe zip inside-root check", "relative_to(dest_root)"),
+        ("safe zip traversal rejection", "path traversal"),
     ]
     parser_markers = [
         ("G92 handling", "g92_set"),
@@ -496,10 +514,14 @@ def check_updater_parser_hardening(r: Result) -> None:
     missing += [f"app.py: {x}" for x in _check_markers(app_path, app_markers)]
     missing += [f"updater.py: {x}" for x in _check_markers(updater_path, updater_markers)]
     missing += [f"job_manager.py: {x}" for x in _check_markers(job_path, parser_markers)]
+    updater_txt = _read_text(updater_path)
+    if ".extractall(" in updater_txt:
+        missing.append("updater.py: unsafe ZipFile.extractall usage still present")
 
-    gi_txt = _read_text(gi_path)
-    if "tools/secret_terms.local.txt" not in gi_txt:
-        missing.append(".gitignore: missing tools/secret_terms.local.txt ignore")
+    if GITIGNORE_PATH.exists():
+        gi_txt = _read_text(GITIGNORE_PATH)
+        if "tools/secret_terms.local.txt" not in gi_txt:
+            missing.append(".gitignore: missing tools/secret_terms.local.txt ignore")
 
     if missing:
         r.fail("Updater/parser hardening checks")
@@ -1164,11 +1186,12 @@ def check_launcher(r: Result) -> None:
         problems.append("Ray5 Pilot.exe missing")
     if not (ROOT / "Start_Ray5_Pilot.bat").exists():
         problems.append("Start_Ray5_Pilot.bat missing")
-    gi = _read_text(ROOT / ".gitignore")
-    if "*.exe" not in gi:
-        problems.append(".gitignore missing '*.exe'")
-    if "!/Ray5 Pilot.exe" not in gi:
-        problems.append(".gitignore missing '!/Ray5 Pilot.exe'")
+    if GITIGNORE_PATH.exists():
+        gi = _read_text(GITIGNORE_PATH)
+        if "*.exe" not in gi:
+            problems.append(".gitignore missing '*.exe'")
+        if "!/Ray5 Pilot.exe" not in gi:
+            problems.append(".gitignore missing '!/Ray5 Pilot.exe'")
     if problems:
         r.fail("Launcher checks")
         for p in problems:
@@ -1182,9 +1205,16 @@ def check_git_status(r: Result, require_clean: bool) -> None:
     if not git:
         r.warn("git not available; status check skipped")
         return
+    if not (ROOT / ".git").exists():
+        r.warn(".git directory not present; skipping git status cleanliness checks. This is normal for release ZIPs.")
+        return
     cp = _run([git, "status", "--short"], ROOT)
     if cp.returncode != 0:
-        r.fail(f"git status checked ({(cp.stderr or cp.stdout).strip()})")
+        err = (cp.stderr or cp.stdout).strip()
+        if "not a git repository" in err.lower():
+            r.warn(".git directory not present; skipping git status cleanliness checks. This is normal for release ZIPs.")
+            return
+        r.fail(f"git status checked ({err})")
         return
     out = cp.stdout.strip()
     if out:
@@ -1207,6 +1237,7 @@ def main() -> int:
     print("Ray5 Pilot Safety Check\n")
 
     r = Result()
+    _warn_if_gitignore_missing(r)
     check_python_compile(r)
     check_js_syntax(r)
     check_json(r)

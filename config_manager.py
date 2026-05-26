@@ -216,7 +216,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "esp32_page": {
         "esp_command_param": "auto",
-        "native_url": "http://\u0031\u0030.\u0030.\u0030.\u0031\u0039\u0035:8848",
+        "native_url": "http://YOUR_RAY5_IP:8848",
     },
     "air_assist": {"supported": True, "on_command": "M8", "off_command": "M9"},
 }

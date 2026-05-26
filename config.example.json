@@ -239,6 +239,6 @@
                 },
     "esp32_page":  {
                        "esp_command_param":  "auto",
-                       "native_url":  "http://\u0031\u0030.\u0030.\u0030.\u0031\u0039\u0035:8848"
+                       "native_url":  "http://YOUR_RAY5_IP:8848"
                 }
 }

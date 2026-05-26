@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib import request as urlrequest
 
 
@@ -232,6 +232,41 @@ def _read_max_keep_backups(project_root: Path) -> int:
     return default_keep
 
 
+def _safe_extract_zip(zip_path: Path, dest_dir: Path, log) -> None:
+    dest_root = dest_dir.resolve()
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        members = zf.infolist()
+        log(f"[UPDATE ZIP] entries={len(members)}")
+        names = [m.filename for m in members]
+        log(f"[UPDATE ZIP] contains_app_py={any(x.endswith('/app.py') or x == 'app.py' for x in names)}")
+        log(f"[UPDATE ZIP] contains_VERSION={any(x.endswith('/VERSION') or x == 'VERSION' for x in names)}")
+        log(f"[UPDATE ZIP] contains_web={any('/web/' in x or x.startswith('web/') for x in names)}")
+
+        for member in members:
+            raw_name = str(member.filename or "")
+            if not raw_name or raw_name.strip() in {"", ".", "/"}:
+                raise RuntimeError("Invalid ZIP entry: empty member name")
+            pp = PurePosixPath(raw_name)
+            if pp.is_absolute():
+                raise RuntimeError(f"Invalid ZIP entry (absolute path): {raw_name}")
+            if pp.drive:
+                raise RuntimeError(f"Invalid ZIP entry (drive path): {raw_name}")
+            if any(part in {"", ".", ".."} for part in pp.parts):
+                raise RuntimeError(f"Invalid ZIP entry (path traversal): {raw_name}")
+            target = (dest_root / Path(*pp.parts)).resolve()
+            try:
+                target.relative_to(dest_root)
+            except ValueError as exc:
+                raise RuntimeError(f"Invalid ZIP entry (outside extraction root): {raw_name}") from exc
+
+            if member.is_dir() or raw_name.endswith("/"):
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(member, "r") as src, target.open("wb") as out_f:
+                shutil.copyfileobj(src, out_f)
+
+
 def _run(argv: argparse.Namespace) -> int:
     project_root = Path(argv.project_root).resolve()
     python_exe = str(Path(argv.python_exe).resolve())
@@ -290,13 +325,7 @@ def _run(argv: argparse.Namespace) -> int:
         log("Update package checksum verified.")
 
         log(f"Extracting ZIP to {extract_dir}")
-        with zipfile.ZipFile(download_zip, "r") as zf:
-            entries = zf.namelist()
-            log(f"[UPDATE ZIP] entries={len(entries)}")
-            log(f"[UPDATE ZIP] contains_app_py={any(x.endswith('/app.py') or x == 'app.py' for x in entries)}")
-            log(f"[UPDATE ZIP] contains_VERSION={any(x.endswith('/VERSION') or x == 'VERSION' for x in entries)}")
-            log(f"[UPDATE ZIP] contains_web={any('/web/' in x or x.startswith('web/') for x in entries)}")
-            zf.extractall(extract_dir)
+        _safe_extract_zip(download_zip, extract_dir, log)
 
         try:
             source_root = _detect_source_root(extract_dir, log)

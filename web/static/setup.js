@@ -583,13 +583,7 @@ async function init(){
     const cfg=unwrapConfigResponse(d);
     load(cfg);
     settingsLoaded = true;
-    const host = String((cfg?.ray5?.host)||'').trim();
-    if(host.toUpperCase()==='YOUR_RAY5_IP'){
-      v('saveOut').textContent='Settings are showing placeholder Ray5 host. Do not save until config.json is loaded correctly.';
-      if(saveBtn) saveBtn.disabled = true;
-    } else {
-      if(saveBtn) saveBtn.disabled = false;
-    }
+    if(saveBtn) saveBtn.disabled = false;
   }catch(err){
     settingsLoaded = false;
     if(v('saveOut')) v('saveOut').textContent=`Settings failed to load: ${err && err.message ? err.message : err}`;
@@ -627,6 +621,7 @@ async function init(){
     const hiddenSMax = Number(loadedSafetyConfig.test_fire_max_s_value ?? 500) || 500;
 
     if(!rayHost){ v('saveOut').textContent='Save failed: ray5 host cannot be empty'; return; }
+    if(rayHost.toUpperCase()==='YOUR_RAY5_IP'){ v('saveOut').textContent='Enter your Ray5 IP before saving.'; return; }
     if(!webHost){ v('saveOut').textContent='Save failed: web host cannot be empty'; return; }
     if(!(rayPort>=1 && rayPort<=65535)){ v('saveOut').textContent='Save failed: Ray5 port must be 1-65535'; return; }
     if(!(webPort>=1 && webPort<=65535)){ v('saveOut').textContent='Save failed: Web UI port must be 1-65535'; return; }
