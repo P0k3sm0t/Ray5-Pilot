@@ -134,6 +134,38 @@ Firmware Settings was previously labeled Machine Settings.
 6. Restart Ray5 Pilot.
 7. Open http://127.0.0.1:5050 if it does not automatically open.
 
+
+## Cross-platform compatibility
+
+Ray5 Pilot is a local Python/Flask web app and can run on multiple operating systems when Python and the required packages are available.
+
+### Supported startup paths
+
+| Operating system | Recommended startup | Manual startup |
+|---|---|---|
+| Windows | `Start_Ray5_Pilot.bat` or `Ray5 Pilot.exe` | `python app.py` |
+| Linux | `./start-ray5-pilot.sh` | `python3 app.py` |
+| macOS | `./start-ray5-pilot.sh` | `python3 app.py` |
+
+The web interface opens at:
+
+```text
+http://127.0.0.1:5050
+```
+
+Ray5 Pilot is intended to stay local to the computer running it. Keep the web host set to `127.0.0.1` unless you understand the risk of allowing other devices on your network to access machine-control endpoints.
+
+### Cross-platform notes
+
+- Windows uses the included `.bat` launcher or optional `.exe` launcher.
+- Linux/macOS can use `start-ray5-pilot.sh`.
+- Linux may require `python3-venv` before the launcher can create a virtual environment.
+- The Linux/macOS launcher creates `.venv`, installs requirements, creates `config.json` from `config.example.json` if needed, opens the Web UI when possible, and starts Ray5 Pilot.
+- Cross-platform folder opening is handled through `platform_utils.py`.
+- Camera snapshot and timelapse capture prefer the live preview frame when available, then fall back to the configured capture method.
+- RTSP camera URLs are preserved exactly as entered in `config.json`; Ray5 Pilot only handles credential encoding at runtime when needed for ffmpeg fallback.
+- Camera passwords should not be shared publicly, and logs should not expose raw or encoded RTSP passwords.
+
 ### Launcher Options
 
 Ray5 Pilot can be started manually with `python app.py`, or by using one of the included launch helpers.
@@ -159,6 +191,44 @@ Advanced users can still start Ray5 Pilot manually with:
 ```cmd
 python app.py
 ```
+
+
+#### Linux/macOS Shell Launcher
+
+`start-ray5-pilot.sh` is the recommended launcher for Linux and macOS users.
+
+First make the script executable if needed:
+
+```bash
+chmod +x start-ray5-pilot.sh
+```
+
+Then run:
+
+```bash
+./start-ray5-pilot.sh
+```
+
+The script will:
+
+- change into the Ray5 Pilot folder,
+- check for `python3`,
+- create `.venv` if it does not exist,
+- verify that pip works inside `.venv`,
+- install `requirements.txt`,
+- create `config.json` from `config.example.json` if missing,
+- open `http://127.0.0.1:5050` when possible,
+- start `app.py`.
+
+If the script reports that venv/pip support is missing on Debian/Ubuntu-based Linux, run:
+
+```bash
+sudo apt update
+sudo apt install python3-venv python3-pip
+rm -rf .venv
+./start-ray5-pilot.sh
+```
+
 
 ## Manual setup and run without the `.bat` file
 
@@ -249,6 +319,71 @@ To stop Ray5 Pilot, click inside the Command Prompt window and press:
 ```text
 CTRL + C
 ```
+
+
+## Manual setup and run on Linux/macOS
+
+Ray5 Pilot can also be started manually from a terminal without using `start-ray5-pilot.sh`.
+
+### 1. Open a terminal in the Ray5 Pilot folder
+
+```bash
+cd "/path/to/Ray5-Pilot"
+```
+
+### 2. Install venv support if needed
+
+On Debian/Ubuntu-based Linux systems:
+
+```bash
+sudo apt update
+sudo apt install python3-venv python3-pip
+```
+
+### 3. Create and activate a virtual environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 4. Install requirements
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+### 5. Create a local config if needed
+
+```bash
+cp config.example.json config.json
+```
+
+Then edit `config.json` or use the Settings page to set the Ray5 IP address and optional camera URL.
+
+### 6. Start Ray5 Pilot
+
+```bash
+python app.py
+```
+
+Leave the terminal open while using Ray5 Pilot.
+
+### 7. Open the Web UI
+
+```text
+http://127.0.0.1:5050
+```
+
+### 8. Stop Ray5 Pilot
+
+Press:
+
+```text
+CTRL + C
+```
+
 
 ## Network details
 - Ray5 HTTP port: 8848
@@ -376,6 +511,14 @@ On Debian/Ubuntu-based systems, users may need to install venv support first:
 ```bash
 sudo apt update
 sudo apt install python3-venv python3-pip
+```
+
+Then make the launcher executable and start Ray5 Pilot:
+
+```bash
+chmod +x start-ray5-pilot.sh
+./start-ray5-pilot.sh
+```
 
 ## v1.2.2 — Long Job Stability Update
 Ray5 Pilot v1.2.2 focuses on improving stability during longer SD card jobs by reducing unnecessary traffic to the Ray5 ESP32 web interface.
