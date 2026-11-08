@@ -17,6 +17,8 @@ class Ray5Client:
         self.session = requests.Session()
         self.session.trust_env = False
         self.http_request_lock = threading.RLock()
+        self._batch_state_lock = threading.Lock()
+        self._batch_cancel_generation = 0
         self.last_debug: dict[str, Any] = {
             "endpoint": None,
             "method": None,
@@ -49,10 +51,18 @@ class Ray5Client:
         if not cleaned:
             return {"ok": False, "message": "no commands provided", "raw": "", "endpoint": "/command", "param": "commandText", "count": 0}
         previews: list[str] = []
+        with self._batch_state_lock:
+            batch_generation = self._batch_cancel_generation
         page_id_used: str | None = None
         page_id_fallback = False
         for cmd in cleaned:
-            result = self._request_single_command(cmd)
+            with self.http_request_lock:
+                with self._batch_state_lock:
+                    canceled = batch_generation != self._batch_cancel_generation
+                if canceled:
+                    return {"ok": False, "cancelled": True, "message": "Command batch canceled by Stop.",
+                            "raw": "\n".join(previews), "count": len(previews)}
+                result = self._request_single_command(cmd)
             previews.append(f"{cmd}: {str(result.get('raw',''))[:80]}")
             if page_id_used is None:
                 page_id_used = str(result.get("page_id_used") or "")
@@ -79,7 +89,7 @@ class Ray5Client:
             "page_id_fallback": page_id_fallback,
         }
 
-    def _request_single_command(self, command: str, tolerate_error_text: bool = False) -> dict[str, Any]:
+    def _request_single_command(self, command: str, tolerate_error_text: bool = False, *, tolerate_reset_error: bool = False) -> dict[str, Any]:
         ray = self.cfg.get("ray5", {})
         endpoint = str(ray.get("command_endpoint", "/command"))
         url = self._base() + endpoint
@@ -102,7 +112,10 @@ class Ray5Client:
                 resp = self.session.get(url, params=params, timeout=self._timeout())
             text = (resp.text or "").strip()
             lower = text.lower()
-            is_error_text = (lower in {"error", "invalid command"} or "invalid command" in lower) and not tolerate_error_text
+            # Ray5 can execute Ctrl-X yet return HTTP 200 with the bare body "Error".
+            # This opt-in exception must not hide invalid commands or transport failures.
+            reset_response_quirk = bool(tolerate_reset_error and command == "\x18" and resp.status_code == 200 and lower == "error")
+            is_error_text = (bool(re.match(r"^error(?:\s*:|\s|$)", lower)) or "invalid command" in lower) and not tolerate_error_text and not reset_response_quirk
             ok = bool(resp.status_code == 200 and not is_error_text)
             self.last_debug = {
                 "endpoint": endpoint,
@@ -123,6 +136,7 @@ class Ray5Client:
                 "count": 1,
                 "page_id_used": page_id_used,
                 "page_id_fallback": page_id_fallback,
+                "reset_response_quirk": reset_response_quirk,
             }
         except requests.RequestException as exc:
             self.last_debug = {
@@ -554,6 +568,10 @@ class Ray5Client:
         unlock_after = bool(ctrl.get("stop_unlock_after_reset", False))
         if stop_mode == "disabled":
             return {"ok": False, "message": "Stop is disabled in settings.", "raw": "", "mode": "disabled"}
+        if stop_mode == "hold_only" or (stop_mode == "soft_reset" and allow_soft_reset):
+            # Cancel queued batch lines before waiting for the in-flight HTTP request.
+            with self._batch_state_lock:
+                self._batch_cancel_generation += 1
         if stop_mode == "hold_only":
             result = self.send_gcode("!")
             result["message"] = "Feed hold sent. Job paused, not aborted."
@@ -565,7 +583,7 @@ class Ray5Client:
             steps: dict[str, Any] = {}
             if send_laser_off:
                 steps["M5"] = self.send_gcode("M5")
-            steps["CTRL_X"] = self.send_gcode("\x18")
+            steps["CTRL_X"] = self._request_single_command("\x18", tolerate_reset_error=True)
             time.sleep(0.3)
             if unlock_after:
                 steps["$X"] = self.send_gcode("$X")

@@ -1,0 +1,108 @@
+/* Dashboard-only layout. Shared Settings, GRBL and ESP32 styles are unchanged. */
+.dashboard-page{--dash-panel:#1a1f2b;--dash-border:#2b3345;--dash-muted:#a3afc2;--dash-selected:#233859;--dash-accent:#9cbfff}
+.dashboard-page [hidden]{display:none!important}
+.dashboard-ready .dashboard-main{max-width:1320px;margin:auto;padding:20px 24px;overflow:visible}
+.dashboard-heading{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;position:sticky;top:96px;z-index:900;padding:14px 0 20px;background:#0f1115}
+.dashboard-heading h1{margin:0;font-size:26px;letter-spacing:-.5px}
+.dashboard-heading p{margin:6px 0 0;font-size:13px;color:var(--dash-muted)}
+.dashboard-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.dashboard-state{font-size:13px;font-weight:600;padding:6px 10px;border-radius:5px;background:#242b38;color:#cbd5e1}
+.dashboard-state[data-kind="idle"]{background:#183529;color:#9ed8b2}
+.dashboard-state[data-kind="busy"]{background:#233859;color:#9cbfff}
+.dashboard-state[data-kind="danger"]{background:#421f29;color:#f5abb0}
+.dashboard-layout{display:grid;grid-template-columns:180px minmax(0,1fr);gap:24px;align-items:start}
+.dashboard-sidebar{position:sticky;top:184px}
+.dashboard-sidebar nav{display:flex;flex-direction:column;gap:5px}
+.dashboard-sidebar button{font:inherit;font-size:13px;min-height:46px;text-align:left;background:transparent;color:var(--dash-muted);padding:11px 10px;border:1px solid transparent;border-radius:7px}
+.dashboard-sidebar button[aria-pressed="true"]{background:var(--dash-selected);color:var(--dash-accent);font-weight:600}
+.dashboard-sidebar button:hover{border-color:var(--dash-border)}
+.dashboard-sidebar p{color:var(--dash-muted);font-size:12px;line-height:1.65;margin:18px 0 0;padding:16px 10px;border-top:1px solid var(--dash-border)}
+.dashboard-content,.dashboard-left-column,.dashboard-right-column,.dashboard-workbench>div,.dashboard-workbench>div>div{min-width:0}
+.dashboard-workbench{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:16px;align-items:start}
+.dashboard-left-column,.dashboard-right-column{display:grid;gap:16px}
+.dashboard-ready .card{margin:0 0 16px;padding:18px;border:1px solid var(--dash-border);border-radius:10px;display:block;text-align:left;overflow:visible;max-width:100%;width:100%}
+.dashboard-ready .dashboard-workbench .card{margin-bottom:0}
+.dashboard-ready .card h2{margin:0 0 15px;font-size:18px}
+.dashboard-ready .card h3{font-size:15px}
+.dashboard-ready .card *{text-align:inherit}
+.dashboard-ready button,.dashboard-ready .camera-link-btn{font:inherit;font-size:13px;min-height:38px;border-radius:6px}
+.dashboard-ready button:disabled{opacity:.5;cursor:default}
+.dashboard-ready .card button:not(.danger),.dashboard-ready .camera-link-btn{background:#101723;border:1px solid var(--dash-border);color:#e5e7eb}
+.dashboard-ready .card button.dashboard-primary-action{background:var(--dash-selected);color:var(--dash-accent);border-color:var(--dash-accent)}
+.dashboard-ready button:focus-visible,.dashboard-ready summary:focus-visible{outline:2px solid var(--dash-accent);outline-offset:3px}
+.dashboard-ready details>summary{cursor:pointer;font-size:13px;color:var(--dash-muted);min-height:32px;line-height:1.5}
+.dashboard-ready details[open]>summary{margin-bottom:10px}
+.dashboard-ready .video-frame-wrap{max-height:420px;min-height:220px;margin:0;background:#05070c;border-radius:7px}
+.dashboard-ready .camera-feed,.dashboard-ready .timelapse-player{max-width:100%;max-height:420px;object-fit:contain}
+.dashboard-ready .dashboard-camera-mode .dashboard-workbench{grid-template-columns:1fr}
+.dashboard-ready .dashboard-camera-mode .dashboard-right-column,.dashboard-ready .dashboard-camera-mode #dashboardJobsSlot,.dashboard-ready .dashboard-camera-mode #dashboardConsoleSlot{display:none}
+.dashboard-ready .dashboard-camera-mode .video-frame-wrap,.dashboard-ready .dashboard-camera-mode .camera-feed{max-height:560px}
+.dashboard-ready .camera-top-actions{margin:0;gap:8px}
+.dashboard-ready .camera-footer-row{display:flex;flex-direction:column;align-items:stretch;gap:10px;margin-top:12px;padding-top:0;border-top:0}
+.dashboard-ready .latest-overlay-info{order:1;min-width:0;font-size:12px}
+.dashboard-ready .camera-bottom-actions{justify-content:flex-start;gap:8px}
+.dashboard-ready .camera-bottom-actions a,.dashboard-ready .camera-bottom-actions button{white-space:normal}
+.dashboard-ready .dashboard-camera-tools{margin-top:14px;padding-top:12px;border-top:1px solid var(--dash-border)}
+.dashboard-ready .manual-controls-inner{max-width:100%;display:flex;flex-direction:column;align-items:stretch}
+.dashboard-ready .manual-settings-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%;margin-bottom:12px}
+.dashboard-ready .manual-settings-row label{margin:0;min-width:0;font-size:12px;color:var(--dash-muted)}
+.dashboard-ready .manual-settings-row select{width:100%;font-size:13px;min-height:38px;padding:7px}
+.dashboard-ready .jog-pad{grid-template-columns:repeat(3,58px);grid-template-rows:repeat(3,48px);gap:6px;margin:0 auto 12px}
+.dashboard-ready .jog-btn{width:58px;height:48px;min-height:48px;border-radius:6px;font-size:14px;font-weight:600;padding:4px}
+.dashboard-ready .jog-center{font-size:12px}
+.dashboard-ready .jog-xy-minus-plus,.dashboard-ready .jog-xy-plus-plus,.dashboard-ready .jog-xy-minus-minus,.dashboard-ready .jog-xy-plus-minus{font-size:24px}
+.dashboard-ready .manual-row{border-top:1px solid var(--dash-border);padding-top:12px;margin-top:12px;gap:8px}
+.dashboard-ready .manual-preset-help{font-size:11px;line-height:1.5;margin:6px 0 0;color:var(--dash-muted)}
+.dashboard-ready .dashboard-laser-tools{margin-top:14px;border-top:1px solid var(--dash-border);padding-top:12px}
+.dashboard-ready .dashboard-laser-tools .danger-zone{border:0;margin:0;padding:0}
+.dashboard-ready .dashboard-laser-tools h3{display:none}
+.dashboard-ready #manualMsg{font-size:12px;overflow-wrap:anywhere;margin-top:10px}
+.dashboard-ready .status-top,.dashboard-ready .status-grid,.dashboard-ready .status-safety,.dashboard-ready .status-foot{display:grid;gap:7px;font-size:13px;line-height:1.6;margin:0}
+.dashboard-ready #status b{font-weight:600}
+.dashboard-ready #status>details{margin-top:12px;border-top:1px solid var(--dash-border);padding-top:12px}
+.dashboard-ready .status-safety{margin-top:8px}
+.dashboard-notice{background:#342a1b;color:#ecc587;border-left:3px solid #bc8b36;padding:13px 16px;margin-bottom:16px;font-size:13px;line-height:1.6}
+.dashboard-notice p{margin:0}
+.dashboard-notice button{margin-top:10px}
+.dashboard-ready .status-lockout{font-size:13px;line-height:1.6;margin-top:12px;color:#ecc587;overflow-wrap:anywhere}
+.dashboard-file-tabs{display:flex;gap:14px;flex-wrap:wrap;padding:0 2px 10px}
+.dashboard-file-tabs button{color:var(--dash-muted);background:transparent;border-radius:0;border-bottom:2px solid transparent;padding:6px 0;min-height:38px}
+.dashboard-file-tabs button[aria-selected="true"]{color:var(--dash-accent);border-bottom-color:var(--dash-accent);font-weight:600}
+.dashboard-ready .job-import-toolbar,.dashboard-ready .sd-upload-row{gap:8px;align-items:center}
+.dashboard-ready input[type="file"]{min-width:0!important;max-width:100%;flex-basis:220px!important}
+.dashboard-ready .job-selection-toolbar,.dashboard-ready .sd-selection-toolbar,.dashboard-ready .timelapse-selection-toolbar{gap:8px;font-size:12px;line-height:1.6}
+.dashboard-ready .table-wrap{max-width:100%;max-height:440px;overflow:auto;border:0;border-radius:0;margin-top:12px}
+.dashboard-ready table{table-layout:auto}
+.dashboard-ready th,.dashboard-ready td{padding:9px 8px!important;font-size:12px!important;vertical-align:middle}
+.dashboard-ready .jobs-table{min-width:660px}
+.dashboard-ready .jobs-table th,.dashboard-ready .timelapse-table th{width:auto!important}
+.dashboard-ready .sd-table,.dashboard-ready .timelapse-table{min-width:580px}
+.dashboard-ready .job-file-name{white-space:normal;overflow-wrap:anywhere;font-size:13px}
+.dashboard-ready td.job-actions,.dashboard-ready td.sd-actions{display:table-cell;white-space:nowrap}
+.dashboard-ready td.job-actions button,.dashboard-ready td.sd-actions button{margin:0 4px 0 0;font-size:12px;min-height:32px}
+.dashboard-ready .sd-storage-grid{grid-template-columns:repeat(auto-fit,minmax(100px,1fr))}
+.dashboard-ready .sd-storage-item{font-size:12px}
+.dashboard-ready #dashboardWorkspaceView .jobs-table,.dashboard-ready #dashboardWorkspaceView .jobs-table tbody{display:block;min-width:0;width:100%}
+.dashboard-ready #dashboardWorkspaceView .jobs-table thead{display:none}
+.dashboard-ready #dashboardWorkspaceView .jobs-table tr{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:5px 8px;padding:13px 0;border-top:1px solid var(--dash-border)}
+.dashboard-ready #dashboardWorkspaceView .jobs-table td{border:0;padding:0!important}
+.dashboard-ready #dashboardWorkspaceView .jobs-table td:nth-child(1){grid-column:1;grid-row:1}
+.dashboard-ready #dashboardWorkspaceView .jobs-table td:nth-child(2){grid-column:2/-1;grid-row:1}
+.dashboard-ready #dashboardWorkspaceView .jobs-table td:nth-child(3){grid-column:2;grid-row:2;color:var(--dash-muted)}
+.dashboard-ready #dashboardWorkspaceView .jobs-table td:nth-child(4){grid-column:3;grid-row:2;color:var(--dash-muted)}
+.dashboard-ready #dashboardWorkspaceView .jobs-table td:nth-child(5){grid-column:2/-1;grid-row:3}
+.dashboard-ready #dashboardWorkspaceView .jobs-table td:nth-child(6){grid-column:2/-1;grid-row:4;display:flex;flex-wrap:wrap;gap:6px;white-space:normal}
+.dashboard-ready #dashboardWorkspaceView .jobs-table td:nth-child(6) button{margin:0}
+.dashboard-ready #dashboardWorkspaceView .jobs-table td[colspan]{grid-column:1/-1;grid-row:auto;white-space:normal;overflow-wrap:normal;line-height:1.6}
+.dashboard-ready .job-bounds{font-size:12px;line-height:1.5;color:var(--dash-muted)}
+.dashboard-ready #jobsMsg,.dashboard-ready #sdMsg,.dashboard-ready #timelapseMsg{font-size:12px;line-height:1.6;margin-top:10px;overflow-wrap:anywhere}
+.dashboard-ready #jobWatchInfo{margin:10px 0;font-size:12px;overflow-wrap:anywhere}
+.dashboard-ready #dashboardConsoleSlot{margin-top:16px}
+.dashboard-ready .console-output{min-height:100px;max-height:240px;margin:12px 0 0;border-radius:6px;font-size:12px}
+.dashboard-ready .console-command-row input{min-width:0}
+.dashboard-ready .console-command-row{align-items:center}
+.dashboard-ready #consoleCommandStatus{font-size:12px;overflow-wrap:anywhere}
+.dashboard-ready #dashboardMessage{border-top:1px solid var(--dash-border);margin:18px 0 0;padding:14px 0;font-size:13px;line-height:1.6;color:var(--dash-muted);overflow-wrap:anywhere}
+@media(max-width:1050px){.dashboard-layout{grid-template-columns:165px minmax(0,1fr);gap:20px}.dashboard-workbench{grid-template-columns:minmax(0,1fr) 245px}.dashboard-ready .card{padding:15px}.dashboard-ready button,.dashboard-ready .camera-link-btn{font-size:12px}.dashboard-ready .manual-row{gap:6px}}
+@media(max-width:800px){.dashboard-ready header{position:static;flex-wrap:wrap}.dashboard-ready header nav{display:flex;gap:14px;flex-wrap:wrap}.dashboard-ready header nav a{margin:0}.dashboard-ready .dashboard-main{padding:14px 16px}.dashboard-heading{top:0;padding-bottom:14px}.dashboard-layout{grid-template-columns:1fr;gap:16px}.dashboard-sidebar{position:static}.dashboard-sidebar nav{display:flex;flex-direction:row;flex-wrap:wrap;gap:5px}.dashboard-sidebar button{font-size:12px;min-height:38px;padding:8px 10px}.dashboard-sidebar p{display:none}.dashboard-workbench{grid-template-columns:minmax(0,1fr) 245px;gap:12px}.dashboard-left-column,.dashboard-right-column{gap:12px}}
+@media(max-width:580px){.dashboard-workbench{grid-template-columns:1fr}.dashboard-left-column,.dashboard-right-column{display:contents}.dashboard-workbench #dashboardCameraSlot{order:0}.dashboard-workbench #dashboardManualSlot{order:1}.dashboard-workbench #dashboardStatusSlot{order:2}.dashboard-workbench #dashboardJobsSlot{order:3}.dashboard-ready .video-frame-wrap{min-height:190px}.dashboard-ready .camera-feed{max-height:340px}.dashboard-ready .card{padding:14px}.dashboard-ready .console-command-row{flex-direction:column;align-items:stretch}.dashboard-ready .timelapse-session-row{flex-direction:column}.dashboard-ready .manual-settings-row select{font-size:16px}.dashboard-actions{gap:8px}.dashboard-ready .status-top,.dashboard-ready .status-safety{font-size:13px}}

@@ -1,4 +1,17 @@
-# Web UI Demo Screenshots
+# Ray5 Pilot
+
+A local, file-based controller for the Longer Ray5 using its ESP3D-style HTTP and WebSocket interfaces. Design in your laser software, export G-code, then use Pilot to frame, upload, run, and monitor it.
+
+**Documentation status:** the usage sections describe the current working copy, including changes not yet published. `VERSION` remains `1.2.4`; the historical release notes below do not announce these changes as a new release.
+
+- [Getting started](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Getting-Started)
+- [Dashboard guide](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Dashboard)
+- [Settings reference](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Settings)
+- [Troubleshooting](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Troubleshooting)
+
+## Web UI Demo Screenshots
+
+These screenshots illustrate earlier builds; use the workflow sections below for the current sidebar layout and control locations.
 ### Dashboard
 
 <a href="https://github.com/user-attachments/assets/f01bfa7e-c205-4ba6-a21e-b0cdf8155320">
@@ -37,14 +50,14 @@ Make sure **Output** is not selected so the reference image is not included in t
   <img src="https://github.com/user-attachments/assets/a683917f-615b-4a31-be19-4062e4554d1e" width="420" alt="Output disabled reference image example">
 </a>
 
-# Ray5 Pilot
+## Overview
 A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-style HTTP/WebSocket interface.
 
 ## Features
 
 - Dashboard, Settings, GRBL, and ESP32 / ESP3D web UI
 - Live Ray5 status via ESP3D WebSocket port 8849
-- X/Y live MPos/WPos display
+- Reported X/Y coordinates and status diagnostics, when fresh controller data is available
 - System check / health status
 - Manual controls with jog pad
 - Pause, Resume, and true Stop/Abort controls
@@ -113,6 +126,19 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Release zip includes `Ray5 Pilot.exe`
 - Release zip excludes runtime folders, backups, logs, `.git`, caches, and `config.json`
 - SHA256 checksum `.txt` generated with each release zip
+
+To test packaging without replacing anything in `dist`, run:
+
+```powershell
+python tools/make_release_zip.py --output-dir build/release-package-test
+python -m unittest tools.test_release_zip
+```
+
+The ZIP contains the current application, web assets, launchers, and updater. Local
+config, `.env` files, secret-term lists, temporary files, and runtime folders are
+excluded. Packaging does not change `VERSION`, install an update, or publish a
+release. Existing output files are protected; use a different output directory or
+explicitly pass `--force` to replace a previously generated ZIP and checksum.
 
 ### Tools and Support
 
@@ -184,7 +210,19 @@ This is useful for troubleshooting because the commands are easy to inspect or e
 http://127.0.0.1:5050
 ```
 
-The EXE launcher is a convenience launcher, not a full standalone installer. Python, the Ray5 Pilot project files, and the required dependencies are still needed.
+The EXE launcher runs `Start_Ray5_Pilot.bat`, which creates a local `.venv` and installs `requirements.txt` before starting the app. Python and the complete extracted project are still required. First startup requires internet access to install the packages, including OpenCV (`cv2`). Both launchers use this same environment.
+
+The current BAT checks/upgrades pip and installs requirements on each launch. It opens the browser before Flask is guaranteed ready: wait for startup and reload if necessary. The launcher URL is fixed at 5050; after changing `web_ui.port`, open the configured URL manually. Python is not bundled, and ffmpeg for RTSP fallback/MP4 creation is a separate PATH dependency.
+
+If an older EXE fails with `ModuleNotFoundError: No module named 'cv2'`, run `Start_Ray5_Pilot.bat` from the extracted project folder. It installs the dependencies and starts Pilot using `.venv`. Continue using the BAT until you replace the old EXE with the updated launcher; installing packages into `.venv` does not repair an old EXE that selects a different Python installation.
+
+To rebuild the EXE from its source in a development environment:
+
+```cmd
+python -m pip install pyinstaller
+python -m PyInstaller --clean --onefile --name "Ray5 Pilot" --icon web/static/favicon.ico launcher.py
+copy /y "dist\Ray5 Pilot.exe" "Ray5 Pilot.exe"
+```
 
 Advanced users can still start Ray5 Pilot manually with:
 
@@ -270,19 +308,21 @@ If pip is missing, install/enable it with:
 python -m ensurepip --upgrade
 ```
 
-Then upgrade pip:
+Upgrade pip inside the virtual environment in the next step, not a different Python installation.
 
-```cmd
-python -m pip install --upgrade pip
-```
-
-### 3. Install Ray5 Pilot requirements
+### 3. Create an isolated environment and install requirements
 
 From inside the Ray5 Pilot folder, run:
 
 ```cmd
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+if not exist config.json copy config.example.json config.json
 ```
+
+Do not replace an existing `config.json`. The EXE/BAT launchers perform this setup for you; a manual `python app.py` launch does not install dependencies or open the browser.
 
 ### Release Validation
 
@@ -391,11 +431,15 @@ CTRL + C
 - WebSocket path: /
 - WebSocket subprotocol: arduino
 
+Port 8848 is HTTP/API, not a raw GRBL/Tibbo listener. Pilot is a file-based web controller, not the separate LightBurn TCP/virtual-COM bridge. Keep the two projects and their ports/configs separate.
+
 ## Stop/Pause behavior
 - Pause sends GRBL feed hold: !
 - Resume sends GRBL cycle start: ~
 - Stop Job defaults to M5 followed by Ctrl-X soft reset to terminate the run.
 - Users can change Stop Mode to hold_only in Settings if they prefer pause-only behavior.
+- Stop cancels the unsent remainder of an existing command batch. It cannot undo motion already accepted by the controller or guarantee delivery during a network failure.
+- After a reset, inspect the machine and recover with Unlock/Home as appropriate. Network Stop is not a physical emergency stop.
 
 ## Communication-loss safety behavior
 If Ray5 Pilot loses communication with the Ray5 while a job may be active, recently started, running, paused, holding, jogging, or in an uncertain state, Ray5 Pilot enters a communication-loss safety lockout.
@@ -421,6 +465,11 @@ The safety lockout is intentionally conservative. It is designed to prevent Ray5
 - Positive Source Y samples farther down.
 - Negative Source Y samples farther up.
 - Use small offset values like 10 or 20 px and retest.
+- Physical overlay width/height can determine the written DPI. Verify imported size, disable Output on the image layer, and lock the reference before exporting G-code.
+- The default snapshot folder is `camera_captures/`. Startup cleanup can remove old snapshots, including latest images, before an optional new capture; copy images you need elsewhere first.
+- With history enabled, `keep_last: 0` means unlimited timestamped history. Capture-time retention protects `latest.jpg` and `latest_raw.jpg`; this is separate from startup cleanup.
+- Video disabled does not mean the camera is disabled: snapshots and timelapse can use the configured fallback capture method. RTSP fallback using ffmpeg requires ffmpeg on PATH.
+- Multiple live viewers still use separate camera connections. Close unused tabs/popouts if the camera becomes overloaded.
 
 
 ## 3D-printer G-code safety scanner
@@ -439,6 +488,58 @@ The safety lockout is intentionally conservative. It is designed to prevent Ray5
 ## Config notes
 - config.json is local/private and is not committed.
 - config.example.json is only a template.
+
+### Organized Settings page
+
+Settings now uses category navigation: Connection, Camera & Alignment, Jobs & Files, Motion & Framing, Safety & Job Control, App & Updates, and Advanced. On narrow screens, category buttons wrap above the settings.
+
+Camera connection tuning, snapshot cleanup, image processing, preset moves, upload compatibility, and recovery options are in expandable groups. Existing settings and help text remain available. GRBL firmware and ESP32 configuration keep their separate pages.
+
+Changes remain pending when you switch categories. The bottom Save settings bar stays available while scrolling. Discard changes restores the last loaded or successfully saved values. Saving failures leave edits pending so you can retry. Restart Pilot after changing its Web UI host or port. Update checks run independently so they cannot hold up loading or saving settings.
+
+For development, `node tools/test_settings_ui.cjs` runs the settings browser regression test with Playwright installed. Set `PLAYWRIGHT_MODULE` or `PLAYWRIGHT_CHROMIUM` if using an existing Playwright installation or Chromium executable. It uses an isolated local API fixture, checks category navigation, preserved field IDs, Save/Discard/error behavior, and responsive layouts, and writes screenshots to `build/settings-ui-test/`. It does not contact a Ray5 or change your local config.
+
+## Dashboard workflow
+
+The dashboard matches the Settings, GRBL, and ESP32 pages with sidebar navigation:
+
+- **Workspace** keeps Camera & Overlay above the job actions, with Manual Controls beside the video and Connection Status below the controls. The diagonal jog buttons use arrows. Live Console stays below the workspace.
+- **Jobs & SD Files** offers a full-width view of the same Imported Jobs and Ray5 SD Files tabs. Local imported jobs retain Frame, Upload, Upload + Run, and Delete. Machine SD files retain their existing Start/Delete, upload, storage, and selection tools. Upload does not mean Upload + Run.
+- **Camera & Alignment** expands the same camera view. Snapshot/Open Folder/Open Latest/Open Raw remain below the feed. Reload, Test Camera, Calibrate Overlay, Open Video, and video enable/disable are under Video & alignment tools.
+- **Timelapse** keeps manual capture, playback, multi-file deletion, recoverable sessions, and frame cleanup. Play brings the existing video player into the workspace.
+- **Console & Diagnostics** provides the existing command sender/history and controller/system details. Reported position and connection details remain available in an expandable section.
+
+Stop Job stays in the top action bar across sections. Alarm/unlock and communication-loss safety recovery remain available, with a global warning when needed. Laser test controls are expandable and keep the configured limits and confirmation behavior. Switching views preserves the original controls, file selections, and inputs; it does not recreate the cards or detach the camera/video node.
+
+Some Ray5 firmware executes Ctrl-X but responds with HTTP 200 and the bare text `Error`. Soft-reset Stop now recognizes only that specific reset acknowledgement; the raw reply remains available. HTTP failures, timeouts, invalid-command replies, and laser-off command failures are not suppressed. Stop still uses the configured command sequence and may leave the controller alarmed until Unlock/Home. `python tools/test_stop_realtime.py` runs the isolated response-handling regression tests with the normal requirements installed.
+
+For development, `node tools/test_dashboard_ui.cjs` runs the actual dashboard scripts against isolated API fixtures (using the same optional `PLAYWRIGHT_MODULE` and `PLAYWRIGHT_CHROMIUM` settings as the other UI tests). It covers preserved IDs, all eight jog directions, Home/preset/center, air assist, pause/resume/Stop, confirmed laser-test requests, imported and SD file actions, snapshots, calibration, video controls, timelapse/recovery, console/history, alarm/lockout recovery, and responsive layouts. Media playback is stubbed; real camera playback and physical motion still require supervised hardware verification. Screenshots go to `build/dashboard-ui-test/`. No laser is contacted and no local configuration is changed.
+
+## GRBL page workflow
+
+The GRBL page groups controller settings into Motion & Travel, Homing & Limits, Laser, Controller, All settings, and Diagnostics. Search by description or `$` code across every category. Z-axis settings are hidden by default in grouped views and remain available through search or Show Z-axis settings. Firmware-specific settings remain editable as raw numbers rather than being assigned guessed controls.
+
+Read from Ray5 before editing. Edit values locally, use Changed only to inspect pending edits, and select Review changes to see current values, requested values, and exact GRBL commands. No writes occur until Apply reviewed changes is selected. The existing backend makes an automatic backup before writing; the UI then reads the controller again and marks matching values Verified. Failed, missing, or mismatched values retain their requested edits and show an explanation. If the verification read fails, another successful read is required before applying again. Refreshing with pending edits asks before replacing them.
+
+Controller reads wait for an acknowledgement after the settings payload and a short settle interval. They require the standard core settings and, for the same device, the last complete key set. An incomplete read is retried once, then reported as failed rather than publishing a partial settings table or backup. Raw partial output remains available for diagnosis; do not change firmware settings just to fix a read timeout.
+
+Download backup contains the last successfully loaded controller settings, not pending edits. Discard changes or a row's Undo restores its last controller value. Identity/network information and raw replies are available in collapsed sections.
+
+For development, `node tools/test_grbl_ui.cjs` runs the isolated Playwright test (with the same optional `PLAYWRIGHT_MODULE` and `PLAYWRIGHT_CHROMIUM` settings as the Settings test). It exercises firmware reads, reviewed writes, automatic-backup failure responses, partial writes, read-back mismatches, timeouts, draft retention, downloads, and responsive layouts. It does not contact a laser. Screenshots are written to `build/grbl-ui-test/`.
+
+## ESP32 page workflow
+
+The ESP32 page separates Device Overview, Wi-Fi & Network, Device Services, Sensors & Hardware, Backups & Compare, and Advanced Tools. These are the Ray5 Wi-Fi module's settings, not Pilot's local configuration. Fields, options, and ranges come from the device; firmware-specific settings remain searchable in Advanced Tools.
+
+Edits stay pending across categories. Choose **Review changes**, inspect the requested values, then **Apply reviewed changes**. Network changes require acknowledgement because they may disconnect Pilot. Non-secret values are read back to verify a write; failed or unverified edits remain pending. Passwords require explicit replacement, stay hidden in reviews and diagnostic displays, and are reported as accepted rather than read-back verified.
+
+Backups & Compare can create/download a backup, view masked contents, and compare non-secret settings without writing anything. Verify the download is saved locally before relying on it. The existing automatic backup still runs before writes. Masked backups do not restore stored passwords.
+
+Overview shows the last HTTP read and the age of the WebSocket status. Stale or missing controller reports show Unknown rather than a misleading Idle state. Use **Read from device** to refresh. Manual commands are locked until explicitly enabled in Advanced Tools; commands other than a status query require confirmation.
+
+The ESP32 command tool's `?` query uses the fresh live-status collection path. An HTTP acknowledgement alone is not proof that GRBL is offline or idle. If no fresh controller report arrives, show the failure/unknown state and check the WebSocket connection rather than relying on an old report.
+
+For development, `node tools/test_esp32_ui.cjs` runs isolated Playwright tests with the same optional `PLAYWRIGHT_MODULE` and `PLAYWRIGHT_CHROMIUM` settings described above. Coverage includes navigation, firmware metadata validation, draft retention, password masking, backup comparisons/downloads, reviewed saves, partial failures, read-back verification, offline states, and desktop/mobile layouts. Screenshots are saved to `build/esp32-ui-test/`. No laser is contacted and no real EEPROM is changed.
 
 ## Ray5 screen filename note
 Ray5 Pilot can upload files with long filenames, but the Longer Ray5 touchscreen may not display long filenames clearly. If you want to select and run a file directly from the Ray5 screen, keep the full filename **24 characters or less, including the extension**.
@@ -477,6 +578,28 @@ Ray5 Pilot is provided as-is and is used at your own risk. This software control
 The author/contributors are not responsible for damage, injury, loss, failed jobs, machine misconfiguration, unsafe operation, or any other consequences resulting from the use or misuse of this software.
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
+
+## Current working-copy changes (not released)
+
+- Organized Dashboard, Settings, GRBL, and ESP32 workflows, with preserved job/machine controls and reviewed firmware edits.
+- Fixed incomplete GRBL reads, ESP32 status-query reporting, Stop response handling, and reporting of HTTP 200 firmware errors such as an interface-busy failure.
+- Reduced repeated bounds parsing and watcher hashing. Improved bounded G-code scans, modal/inch coordinate handling, numeric validation, config-save isolation, snapshot resource cleanup, and dashboard read scheduling.
+- Hardened updater validation/recovery, duplicate and unsafe update guards, dependency-failure rollback, and replacement of a locked Windows launcher. File rollback does not undo pip's environment changes; backups are still necessary.
+- Hardened release packaging with private-file exclusions, required-file validation, a separate test-output option, and explicit overwrite protection. The EXE launcher delegates dependency setup to the BAT and project-local `.venv`.
+
+Offline checks passed 112 Python tests, packaging/checksum verification, updater-compatible extraction, and rendering of the four main pages from an isolated extracted copy. Supervised laser-off motion and read-only GRBL/ESP32 checks are recorded in `docs/AUDIT_2026-11-08.md`; updater isolation/recovery checks are in `docs/UPDATER_TEST_2026-11-08.md`.
+
+**Not yet verified:** a complete fresh Windows EXE first-run/dependency-install/browser-launch test. The later attempt stopped before installation; package checks alone do not prove that workflow on another PC. No release has been made for these working-copy changes.
+
+Developer checks, using the project's installed requirements:
+
+```powershell
+.venv/Scripts/python.exe -m unittest discover -s tools -p 'test_*.py'
+node tools/test_dashboard_reads.cjs
+.venv/Scripts/python.exe tools/test_release_zip_integration.py
+```
+
+The packaging integration check builds under ignored `build/release-package-test/`, verifies current files and checksum, and tests a temporary extraction without hardware/network access. It does not install over the working app. Hardware tests are opt-in and must not be included in routine test runs.
 
 ## Ray5 Pilot v1.2.4
 Ray5 Pilot v1.2.4 is a quick follow-up release to v1.2.3. It fixes release-package and update-related issues found during final fresh ZIP testing.

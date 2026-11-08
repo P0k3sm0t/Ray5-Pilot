@@ -5,6 +5,9 @@ import math
 import re
 import shutil
 import time
+from collections import OrderedDict
+from copy import deepcopy
+from threading import RLock
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +26,10 @@ class JobManager:
         self.imported_dir.mkdir(parents=True, exist_ok=True)
         self.watched_dir.mkdir(parents=True, exist_ok=True)
         self.rejected_dir.mkdir(parents=True, exist_ok=True)
-        self._watch_state: dict[str, tuple[int, int]] = {}
-        self._imported_signatures: set[tuple[str, int, str]] = set()
+        self._watch_state: dict[str, tuple[int, int, int]] = {}
+        self._watch_completed: dict[str, tuple[tuple[int, int, int], Path, tuple[int, int, int]]] = {}
+        self._bounds_cache: OrderedDict[Path, tuple[tuple[int, int, int], dict[str, Any] | None]] = OrderedDict()
+        self._bounds_cache_lock = RLock()
         self._currently_importing: set[str] = set()
         limits = cfg.get("limits", {}) if isinstance(cfg.get("limits"), dict) else {}
         self.max_upload_bytes = int(float(limits.get("max_gcode_upload_mb", 50)) * 1024 * 1024)
@@ -65,10 +70,15 @@ class JobManager:
 
     def list_jobs(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
-        for p in sorted(self.imported_dir.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True):
-            if not p.is_file() or p.suffix.lower() not in self.allowed:
+        for p in self.imported_dir.iterdir():
+            if p.suffix.lower() not in self.allowed:
                 continue
-            s = p.stat()
+            try:
+                if not p.is_file() or self.imported_dir not in p.resolve().parents:
+                    continue
+                s = p.stat()
+            except OSError:
+                continue
             bounds = self.parse_bounds_path(p)
             out.append(
                 {
@@ -85,7 +95,7 @@ class JobManager:
                     ),
                 }
             )
-        return out
+        return sorted(out, key=lambda row: row["modified"], reverse=True)
 
     def import_file(self, src_path: Path) -> dict[str, Any]:
         if src_path.suffix.lower() not in self.allowed:
@@ -101,7 +111,6 @@ class JobManager:
         target = self._safe_target(src_path.name)
         target.write_bytes(src_path.read_bytes())
         s = target.stat()
-        self._imported_signatures.add((target.name.lower(), s.st_size, self._file_sha256(target)))
         return {
             "name": target.name,
             "filename": target.name,
@@ -125,7 +134,6 @@ class JobManager:
         target = self._safe_target(filename)
         target.write_bytes(content)
         s = target.stat()
-        self._imported_signatures.add((target.name.lower(), s.st_size, self._file_sha256(target)))
         return {
             "name": target.name,
             "filename": target.name,
@@ -139,24 +147,32 @@ class JobManager:
         if self.imported_dir.resolve() == self.watched_dir.resolve():
             raise RuntimeError("watched_gcode_dir and imported_jobs_dir cannot be the same folder")
         self.watched_dir.mkdir(parents=True, exist_ok=True)
+        seen: set[str] = set()
         for p in sorted(self.watched_dir.glob("*")):
             if not p.is_file() or p.suffix.lower() not in self.allowed:
                 continue
             key = str(p.resolve()).lower()
+            seen.add(key)
             if key in self._currently_importing:
                 continue
             try:
                 stat = p.stat()
             except OSError:
                 continue
-            if stat.st_size <= 0:
+            if stat.st_size <= 0 or stat.st_size > self.max_upload_bytes:
                 continue
-            stamp = int(stat.st_mtime)
-            current = (stat.st_size, stamp)
+            current = self._file_stamp(stat)
             previous = self._watch_state.get(key)
             self._watch_state[key] = current
             if previous is None or previous != current:
                 continue
+            completed = self._watch_completed.get(key)
+            if completed and completed[0] == current:
+                try:
+                    if self._file_stamp(completed[1].stat()) == completed[2]:
+                        continue
+                except OSError:
+                    pass
             self._currently_importing.add(key)
             try:
                 meta = self._import_watched_file(p)
@@ -164,7 +180,21 @@ class JobManager:
                     imported.append(meta)
             finally:
                 self._currently_importing.discard(key)
+        for key in self._watch_state.keys() - seen:
+            self._watch_state.pop(key, None)
+            self._watch_completed.pop(key, None)
         return imported
+
+    @staticmethod
+    def _file_stamp(stat: Any) -> tuple[int, int, int]:
+        return stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+    def _remember_watched_import(self, source: Path, target: Path) -> None:
+        try:
+            key = str(source.resolve()).lower()
+            self._watch_completed[key] = (self._file_stamp(source.stat()), target, self._file_stamp(target.stat()))
+        except OSError:
+            pass
 
     def _import_watched_file(self, src: Path) -> dict[str, Any] | None:
         if src.suffix.lower() not in self.allowed:
@@ -205,6 +235,7 @@ class JobManager:
             src_sig = (target_primary.name.lower(), s2, sha)
             if existing_sig is not None and src_sig == existing_sig:
                 # Same watched content already imported to same target file; skip.
+                self._remember_watched_import(src, target_primary)
                 return None
             target = self._safe_target(src.name)
 
@@ -229,18 +260,14 @@ class JobManager:
         shutil.copy2(src, target)
         if not target.exists() or target.stat().st_size <= 0:
             return None
+        if not self.delete_watched_after_import:
+            self._remember_watched_import(src, target)
         if self.delete_watched_after_import:
             try:
                 src.unlink()
             except OSError:
                 pass
         s = target.stat()
-        try:
-            imported_sha = self._file_sha256(target)
-            self._imported_signatures.add((target.name.lower(), s.st_size, imported_sha))
-        except Exception:
-            # If hashing imported copy fails unexpectedly, keep import success path.
-            pass
         return {
             "name": target.name,
             "filename": target.name,
@@ -278,6 +305,33 @@ class JobManager:
         return self.parse_bounds_path(p)
 
     def parse_bounds_path(self, p: Path) -> dict[str, Any] | None:
+        p = p.resolve()
+        try:
+            stamp = self._file_stamp(p.stat())
+        except OSError:
+            with self._bounds_cache_lock:
+                self._bounds_cache.pop(p, None)
+            return None
+        with self._bounds_cache_lock:
+            cached = self._bounds_cache.get(p)
+            if cached and cached[0] == stamp:
+                self._bounds_cache.move_to_end(p)
+                return deepcopy(cached[1])
+        try:
+            bounds = self._parse_bounds_uncached(p)
+            unchanged = self._file_stamp(p.stat()) == stamp
+        except OSError:
+            return None
+        if not unchanged:
+            return None
+        with self._bounds_cache_lock:
+            self._bounds_cache[p] = (stamp, deepcopy(bounds))
+            self._bounds_cache.move_to_end(p)
+            while len(self._bounds_cache) > 256:
+                self._bounds_cache.popitem(last=False)
+        return bounds
+
+    def _parse_bounds_uncached(self, p: Path) -> dict[str, Any] | None:
         try:
             if p.stat().st_size > self.max_bounds_parse_bytes:
                 return None
@@ -294,6 +348,8 @@ class JobManager:
         g92_offset_x = 0.0
         g92_offset_y = 0.0
         absolute = True
+        unit_scale = 1.0
+        modal_motion = 0
         motion = re.compile(r"([A-Z])\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))", re.IGNORECASE)
         finish_marker_seen = False
         # Start in laser-off mode; bounds should not include travel until laser-on is explicit.
@@ -325,13 +381,22 @@ class JobManager:
                 if "program_pause" not in warnings:
                     warnings.append("program_pause")
                 continue
-            g_match = re.search(r"\bG0*([0-9]+)\b", clean)
-            g_num = int(g_match.group(1)) if g_match else None
+            words = list(motion.finditer(clean))
+            g_codes = [float(word.group(2)) for word in words if word.group(1).upper() == "G"]
+            if 20 in g_codes:
+                unit_scale = 25.4
+            if 21 in g_codes:
+                unit_scale = 1.0
+            explicit_motion = [int(code) for code in g_codes if code in {0, 1, 2, 3}]
+            if explicit_motion:
+                modal_motion = explicit_motion[-1]
+            # XY-only lines inherit the current G0/G1/G2/G3 mode, not a new rapid move.
+            g_num = modal_motion if not g_codes or explicit_motion or all(code in {20, 21, 90, 91} for code in g_codes) else None
             g_is_motion = g_num in {0, 1, 2, 3}
             g_is_arc = g_num in {2, 3}
             g_cw = g_num == 2
 
-            if re.search(r"\bM5\b", clean) or re.search(r"\bM9\b", clean):
+            if re.search(r"\bM5\b", clean):
                 laser_off_mode = True
             if re.search(r"\bS\s*0(?:\.0+)?\b", clean):
                 laser_off_mode = True
@@ -354,11 +419,14 @@ class JobManager:
                     except ValueError:
                         pass
 
-            if "G90" in clean:
+            if 90 in g_codes:
                 absolute = True
-            if "G91" in clean:
+            if 91 in g_codes:
                 absolute = False
-            tokens = {m.group(1).upper(): float(m.group(2)) for m in motion.finditer(clean)}
+            tokens = {word.group(1).upper(): float(word.group(2)) for word in words}
+            for axis in ("X", "Y", "I", "J", "R"):
+                if axis in tokens:
+                    tokens[axis] *= unit_scale
             g92_clear = re.search(r"\bG\s*92(?:\.1)\b", clean)
             if g92_clear:
                 # GRBL-style G92.1 clears temporary G92 offsets.
@@ -527,6 +595,11 @@ class JobManager:
         job_min_y = float(b["min_y"])
         job_max_x = float(b["max_x"])
         job_max_y = float(b["max_y"])
+        if not all(math.isfinite(v) for v in (margin_value, feed_value, min_x, min_y, max_x, max_y,
+                                               job_min_x, job_min_y, job_max_x, job_max_y)):
+            raise ValueError("Frame bounds, margin, and feedrate must be finite numbers.")
+        if feed_value <= 0 or margin_value < 0:
+            raise ValueError("Frame feedrate must be positive and margin cannot be negative.")
         requested_min_x = job_min_x - margin_value
         requested_min_y = job_min_y - margin_value
         requested_max_x = job_max_x + margin_value

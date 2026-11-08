@@ -1,9 +1,34 @@
+const readRequestsInFlight = new Map();
 async function api(url, method='GET', body=null){
+  const isRead = method === 'GET';
+  const isPollingRead = isRead && ['/api/status','/api/jobs','/api/console'].includes(url);
+  if(isPollingRead && readRequestsInFlight.has(url)) return readRequestsInFlight.get(url);
   const opt={method,headers:{}};
+  if(isRead) opt.cache = 'no-store';
   opt.headers['X-Ray5-Pilot-Request']='1';
   if(body){opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(body)}
-  const r=await fetch(url,opt);
-  return r.json();
+  const controller = isRead ? new AbortController() : null;
+  if(controller) opt.signal = controller.signal;
+  // Bound polling reads, but never abort a machine action/upload and imply it did not run.
+  const timer = controller ? setTimeout(()=>controller.abort(),15000) : null;
+  const pending = (async()=>{
+    try{
+      const r=await fetch(url,opt);
+      return await r.json();
+    }finally{
+      if(timer !== null) clearTimeout(timer);
+    }
+  })();
+  if(isPollingRead){
+    readRequestsInFlight.set(url,pending);
+    const clear = ()=>{if(readRequestsInFlight.get(url) === pending) readRequestsInFlight.delete(url);};
+    pending.then(clear,clear);
+  }
+  return pending;
+}
+
+function pollDashboard(action){
+  return Promise.resolve().then(action).catch(err=>console.warn('Dashboard refresh failed:',err.message || String(err)));
 }
 
 function fmtPos(v){return (v===null||v===undefined||v==='')?'---':v}
@@ -99,6 +124,7 @@ let lastImportedJobs = [];
 const selectedTimelapseFiles = new Set();
 let currentTimelapseItems = [];
 let currentTimelapseSessions = [];
+let timelapseListRequest = 0;
 let timelapseRuntimeState = null;
 let lastTimelapseCompletionRefreshKey = '';
 let localUploadBusyState = {active:false, reason:'', filename:'', startedAt:0, expiresAt:0};
@@ -334,15 +360,11 @@ async function refreshStatus(){
     }, 3000);
   }
   sdWasBusyForAutoRefresh = nowBusyForSd;
+  const statusDetailsOpen = document.getElementById('dashboardStatusDetails')?.open ? 'open' : '';
   document.getElementById('status').innerHTML = `
     <div class="status-top">
       <div>State: <b>${esc(stateDisplay)}</b></div>
-      <div>PageID: <b>${esc(pageDisplay)}</b></div>
-    </div>
-    <div class="status-grid">
-      <div>${esc(xLine)}</div>
-      <div>${esc(yLine)}</div>
-      <div>${esc(wcoLine)}</div>
+      <div>Connection: <b>${esc(connectionText)}</b></div>
       <div>Feed: <b>${esc(feedText)}</b></div>
       <div>Laser: <b>${esc(laserStateText)}</b></div>
       <div>Laser Power: <b>${esc(laserPowerLabel)}</b></div>
@@ -352,10 +374,17 @@ async function refreshStatus(){
       <div>Job: <b>${esc(jobText)}</b></div>
       <div>Air Pump: <b>${esc(pumpLabel)}</b></div>
       <div id="statusTimelapse">Timelapse: <b>${esc(timelapseText)}</b></div>
-      <div>Connection: <b>${esc(connectionText)}</b></div>
       ${showJobExtras ? `<div>Progress: <b>${esc(progressText || '—')}</b></div>` : ''}
       ${showJobExtras ? `<div>File: <b>${esc(jobFileDisplay)}</b></div>` : ''}
       ${showJobExtras ? `<div>Run Time: <b>${esc(jobTimeText || '—')}</b></div>` : ''}
+    </div>
+    <details id="dashboardStatusDetails" ${statusDetailsOpen}>
+    <summary>Connection &amp; system details</summary>
+    <div class="status-grid">
+      <div>PageID: <b>${esc(pageDisplay)}</b></div>
+      <div>${esc(xLine)}</div>
+      <div>${esc(yLine)}</div>
+      <div>${esc(wcoLine)}</div>
     </div>
     <div class="status-foot muted small">
       <div>Source: ${esc(sourceText)}</div>
@@ -369,8 +398,9 @@ async function refreshStatus(){
       <div>SD card list working: ${esc(yesNoUnknown(sc.sd_card_list_working))}</div>
       <div>Camera URL configured: ${esc(yesNoUnknown(sc.camera_url_configured))}</div>
       <div>Camera test passed: ${esc(yesNoUnknown(sc.camera_test_passed))}</div>
-      ${commSafetyLockout ? `<div class="warn-text"><b>Safety lockout:</b> ${esc(commSafetyMessage || 'Communication was lost while a job may have been active. Verify the Ray5 screen and machine state before continuing.')}</div><div><button id="clearCommLossLockoutBtn" type="button">Clear Safety Lockout</button></div>` : ''}
     </div>
+    </details>
+    ${commSafetyLockout ? `<div class="status-lockout"><b>Safety lockout:</b> ${esc(commSafetyMessage || 'Communication was lost while a job may have been active. Verify the Ray5 screen and machine state before continuing.')}</div><div><button id="clearCommLossLockoutBtn" type="button">Clear Safety Lockout</button></div>` : ''}
   `;
   const clearLockoutBtn = document.getElementById('clearCommLossLockoutBtn');
   if(clearLockoutBtn){
@@ -389,6 +419,9 @@ async function refreshStatus(){
     };
   }
 
+  document.dispatchEvent(new CustomEvent('ray5:status', {detail:{
+    state:stateDisplay, offline:isOfflineFallback, lockout:commSafetyLockout, message:commSafetyMessage,
+  }}));
   const cam=document.getElementById('cam');
   const timelapsePlayer = document.getElementById('timelapsePlayer');
   const off=document.getElementById('cameraOffline');
@@ -554,7 +587,7 @@ async function refreshJobs(opts={}){
     const delBtn=btn('Delete',async()=>{if(!confirm('Delete local imported job '+name+' ?')) return; const res = await fetch('/api/jobs/'+encodeURIComponent(name),{method:'DELETE',headers:{'X-Ray5-Pilot-Request':'1'}}); let data={ok:false}; try{data=await res.json();}catch(_e){} msg.textContent = data.ok ? (`Deleted imported file: ${name}`) : (`Delete failed: ${data.error||'unknown'}`); await refreshJobs({preserveMessage:true}); await refreshConsole();});
     frameBtn.classList.add('btn-sm');
     uploadBtn.classList.add('btn-sm');
-    runBtn.classList.add('btn-sm');
+    runBtn.classList.add('btn-sm','dashboard-primary-action');
     delBtn.classList.add('btn-sm','danger');
     actions.append(frameBtn, uploadBtn, runBtn, delBtn);
     row.innerHTML = `
@@ -663,6 +696,7 @@ function clearDeletedTimelapsePlayback(message='Selected timelapse was deleted.'
 }
 
 async function playTimelapse(item){
+  const msg = document.getElementById('timelapseMsg');
   const player = document.getElementById('timelapsePlayer');
   const cam = document.getElementById('cam');
   if(!player || !cam) return;
@@ -675,6 +709,7 @@ async function playTimelapse(item){
   player.style.display='block';
   player.src = item.url;
   currentTimelapsePlaybackFile = normalizeName(item.name || '');
+  document.dispatchEvent(new CustomEvent('ray5:playback'));
   updateVideoToggleButton();
   player.onended = ()=>{
     // Keep the ended timelapse visible in the video card until user action replaces it.
@@ -767,12 +802,15 @@ async function stopTimelapseManual(){
 }
 
 async function loadTimelapses(opts={}){
+  const requestId = ++timelapseListRequest;
   const preserveMessage = !!(opts && opts.preserveMessage);
   const body = document.getElementById('timelapseBody');
   if(!body) return;
   if(!preserveMessage) setTimelapseMessage('Loading timelapses...');
-  body.innerHTML = '';
   const d = await api('/api/timelapses');
+  // Only the newest response owns the table; overlapping refreshes must not append duplicates.
+  if(requestId !== timelapseListRequest) return;
+  body.innerHTML = '';
   if(!d.ok){
     const tr = document.createElement('tr');
     tr.innerHTML = '<td colspan="5" class="muted small">Unable to load timelapse files.</td>';
@@ -1286,6 +1324,8 @@ async function loadSdFiles(opts={}){
 }
 
 let manualBusy = false;
+let manualRequestsPending = 0;
+let stopRequestPending = false;
 let manualCfg = {
   confirm_dangerous_actions: true,
   enable_z_jog: false,
@@ -1353,12 +1393,17 @@ async function sendRawConsoleCommand(){
 let jobImportBusy = false;
 function setManualBusy(state){
   manualBusy = state;
-  document.querySelectorAll('#homeAll,#unlock,#xMinus,#xPlus,#yMinus,#yPlus,#xyMinusPlus,#xyPlusPlus,#xyMinusMinus,#xyPlusMinus,#centerBed,#airOn,#airOff,#testFire,#stop,#pauseBtn,#resumeBtn,#presetMoveBtn').forEach(el=>{if(el)el.disabled=state;});
+  document.querySelectorAll('#homeAll,#unlock,#xMinus,#xPlus,#yMinus,#yPlus,#xyMinusPlus,#xyPlusPlus,#xyMinusMinus,#xyPlusMinus,#centerBed,#airOn,#airOff,#testFire,#pauseBtn,#resumeBtn,#presetMoveBtn').forEach(el=>{if(el)el.disabled=state;});
+  const fire = document.getElementById('testFire');
+  if(fire) fire.disabled = state || !manualCfg.test_fire_enabled;
 }
 
 async function manualCall(url, body=null, confirmText=''){
-  if(manualBusy) return;
+  const isStop = url === '/api/stop';
+  if((manualBusy && !isStop) || (isStop && stopRequestPending)) return;
   if(confirmText && !confirm(confirmText)) return;
+  manualRequestsPending++;
+  if(isStop) stopRequestPending = true;
   setManualBusy(true);
   try{
     if(url === '/api/laser/test-fire'){
@@ -1383,7 +1428,9 @@ async function manualCall(url, body=null, confirmText=''){
     await refreshConsole();
     await refreshStatus();
   } finally {
-    setManualBusy(false);
+    manualRequestsPending--;
+    if(isStop) stopRequestPending = false;
+    setManualBusy(manualRequestsPending > 0);
   }
 }
 
@@ -1919,7 +1966,7 @@ function bind(){
 
 bind();
 loadManualConfig();
-refreshStatus();refreshJobs();loadSdFiles({manual:true});loadTimelapses();loadTimelapseState();refreshConsole();loadSnapshots();
-setInterval(refreshStatus,3000);
-setInterval(refreshConsole,5000);
-setInterval(()=>refreshJobs({preserveMessage:true}),5000);
+pollDashboard(refreshStatus);pollDashboard(refreshJobs);pollDashboard(()=>loadSdFiles({manual:true}));pollDashboard(loadTimelapses);pollDashboard(loadTimelapseState);pollDashboard(refreshConsole);pollDashboard(loadSnapshots);
+setInterval(()=>pollDashboard(refreshStatus),3000);
+setInterval(()=>pollDashboard(refreshConsole),5000);
+setInterval(()=>pollDashboard(()=>refreshJobs({preserveMessage:true})),5000);

@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import re
+import io
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
 
 def _safe_text_lines(path_or_bytes: Any, scan_lines: int) -> list[str]:
+    limit = max(1, int(scan_lines))
     if isinstance(path_or_bytes, (str, Path)):
         p = Path(path_or_bytes)
-        text = p.read_text(encoding="utf-8", errors="ignore")
+        with p.open(encoding="utf-8", errors="ignore") as stream:
+            return list(islice(stream, limit))
     elif isinstance(path_or_bytes, (bytes, bytearray)):
-        text = bytes(path_or_bytes).decode("utf-8", errors="ignore")
+        with io.TextIOWrapper(io.BytesIO(path_or_bytes), encoding="utf-8", errors="ignore", newline=None) as stream:
+            return list(islice(stream, limit))
     else:
         text = str(path_or_bytes or "")
-    lines = text.splitlines()
-    return lines[: max(1, int(scan_lines))]
+    return list(islice(io.StringIO(text), limit))
 
 
 def validate_laser_gcode_safety(path_or_bytes: Any, filename: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -64,9 +68,8 @@ def validate_laser_gcode_safety(path_or_bytes: Any, filename: str, config: dict[
     extrusion_moves = 0
     g10g11_with_e = 0
 
-    motion_with_e = re.compile(r"^\s*g0?1\b.*\be[-+]?\d", re.IGNORECASE)
-    pure_e_move = re.compile(r"^\s*g0?1\b\s*e[-+]?\d", re.IGNORECASE)
-    has_e_any = re.compile(r"\be[-+]?\d", re.IGNORECASE)
+    motion_with_e = re.compile(r"^\s*(?:n\d+\s*)?g0?[01](?=[a-z\s]|$).*?e\s*[-+]?(?:\d|\.\d)", re.IGNORECASE)
+    has_e_any = re.compile(r"e\s*[-+]?(?:\d|\.\d)", re.IGNORECASE)
 
     for raw in lines:
         line = (raw or "").strip()
@@ -81,20 +84,19 @@ def validate_laser_gcode_safety(path_or_bytes: Any, filename: str, config: dict[
             if marker in low:
                 if marker not in laser_matches:
                     laser_matches.append(marker)
-        if motion_with_e.search(low):
+        code = re.sub(r"\([^)]*\)", "", low).split(";", 1)[0].strip()
+        if motion_with_e.search(code):
             extrusion_moves += 1
-        elif pure_e_move.search(low):
-            extrusion_moves += 1
-        if (low.startswith("g10") or low.startswith("g11")) and has_e_any.search(low):
+        if (code.startswith("g10") or code.startswith("g11")) and has_e_any.search(code):
             g10g11_with_e += 1
 
     matches: list[str] = list(strong_matches)
-    if extrusion_moves >= 3:
+    if extrusion_moves > 0:
         matches.append("G1 E extrusion")
     if g10g11_with_e > 0:
         matches.append("G10/G11 with E")
 
-    if strong_matches or extrusion_moves >= 3 or g10g11_with_e > 0:
+    if strong_matches or extrusion_moves > 0 or g10g11_with_e > 0:
         return {
             "ok": False,
             "reason": "Found 3D-printer slicer markers and/or extrusion commands.",

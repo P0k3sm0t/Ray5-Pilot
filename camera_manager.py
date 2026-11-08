@@ -322,21 +322,28 @@ class CameraManager:
 
     def _capture_http_snapshot(self, url: str) -> bytes:
         try:
-            resp = self.session.get(url, timeout=self.timeout_seconds, stream=True)
+            with self.session.get(url, timeout=self.timeout_seconds, stream=True) as resp:
+                if not resp.ok:
+                    raise CameraCaptureError(f"http snapshot failed ({resp.status_code})")
+                multipart = "multipart" in str(resp.headers.get("Content-Type", "")).lower()
+                data = bytearray()
+                deadline = time.monotonic() + self.timeout_seconds
+                for chunk in resp.iter_content(chunk_size=64 * 1024):
+                    if time.monotonic() > deadline:
+                        raise CameraCaptureError("http snapshot timed out")
+                    data.extend(chunk)
+                    if len(data) > 20 * 1024 * 1024:
+                        raise CameraCaptureError("http snapshot exceeded 20 MB limit")
+                    if multipart:
+                        start = data.find(b"\xff\xd8")
+                        end = data.find(b"\xff\xd9", start + 2) if start >= 0 else -1
+                        if end >= 0:
+                            return bytes(data[start:end + 2])
+                if multipart:
+                    raise CameraCaptureError("http camera stream contained no complete JPEG frame")
+                return bytes(data)
         except requests.RequestException as exc:
             raise CameraCaptureError(f"http snapshot failed: {_sanitize_camera_error_text(str(exc))}") from exc
-        if not resp.ok:
-            raise CameraCaptureError(f"http snapshot failed ({resp.status_code})")
-        ctype = str(resp.headers.get("Content-Type", "")).lower()
-        data = resp.content
-        if "multipart" in ctype:
-            boundary = b"\xff\xd8"
-            start = data.find(boundary)
-            if start >= 0:
-                end = data.find(b"\xff\xd9", start)
-                if end > start:
-                    return data[start : end + 2]
-        return data
 
     def _capture_ffmpeg(self, stream_url: str) -> bytes:
         ffmpeg = shutil.which("ffmpeg")
@@ -387,7 +394,7 @@ class CameraManager:
 
             ok, stderr_text = _run_ffmpeg_once(raw_input_url, "raw")
             if (not ok) and rtsp_stream and (encoded_input_url != raw_input_url) and _ffmpeg_auth_failed(stderr_text):
-                self.log.warn("[CAMERA] ffmpeg auth failure on raw RTSP URL; retrying with encoded credentials.")
+                self.log.warning("[CAMERA] ffmpeg auth failure on raw RTSP URL; retrying with encoded credentials.")
                 ok, stderr_text = _run_ffmpeg_once(encoded_input_url, "encoded")
             if not ok:
                 raise CameraCaptureError(f"ffmpeg capture failed: {_sanitize_camera_error_text(stderr_text)[:180]}")
@@ -657,11 +664,21 @@ class CameraManager:
         return canvas
 
     def _prune_old(self) -> None:
-        if not self.save_history:
+        if not self.save_history or self.keep_last <= 0:
             return
-        files = sorted(self.output_dir.glob(f"{self.filename_prefix}_*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
-        for old in files[self.keep_last :] if self.keep_last > 0 else files:
-            old.unlink(missing_ok=True)
+        files = []
+        for p in self.output_dir.glob(f"{self.filename_prefix}_*.jpg"):
+            if p.name in {self.latest_raw_name, self.latest_processed_name}:
+                continue
+            try:
+                files.append((p.stat().st_mtime, p))
+            except OSError:
+                continue
+        for _, old in sorted(files, reverse=True)[self.keep_last:]:
+            try:
+                old.unlink(missing_ok=True)
+            except OSError as exc:
+                self.log.warning("[CAMERA] Old snapshot cleanup skipped: %s", exc)
 
     def _write_overlay_instructions(self) -> None:
         overlay = self.camera.get("overlay_alignment", {}) if isinstance(self.camera.get("overlay_alignment"), dict) else {}
@@ -760,9 +777,14 @@ class CameraManager:
                 if p.exists():
                     candidates.append(p)
         else:
-            candidates = sorted(self.output_dir.glob("*.jpg"), key=lambda x: x.stat().st_mtime, reverse=True)[:limit]
+            candidates = list(self.output_dir.glob("*.jpg"))
         for p in candidates:
-            s = p.stat()
+            try:
+                if not p.is_file() or self.output_dir not in p.resolve().parents:
+                    continue
+                s = p.stat()
+            except OSError:
+                continue
             is_raw = p.name.lower() == self.latest_raw_name.lower() or p.name.lower().endswith("_raw.jpg")
             rows.append(
                 {
@@ -775,7 +797,7 @@ class CameraManager:
                     "download_url": f"/api/snapshots/download/{p.name}",
                 }
             )
-        return rows
+        return sorted(rows, key=lambda row: row["modified"], reverse=True)[:limit] if self.save_history else rows
 
     def safe_snapshot_path(self, filename: str) -> Path:
         p = (self.output_dir / filename).resolve()
@@ -824,6 +846,7 @@ def mjpeg_generator(
     while True:
         cap = _open_video_capture_with_rtsp_transport(rtsp_url, transport)
         if not cap.isOpened():
+            cap.release()
             if callable(on_frame_fail):
                 try:
                     on_frame_fail("camera open failed")

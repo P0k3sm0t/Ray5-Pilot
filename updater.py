@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import hashlib
 import json
+import io
 import os
 import shutil
 import subprocess
@@ -15,7 +17,7 @@ from urllib import request as urlrequest
 
 
 PARENT_EXIT_WAIT_TIMEOUT_SECONDS = 30.0
-REQUIRED_SOURCE_ROOT_ENTRIES: tuple[str, ...] = ("app.py", "VERSION", "config.example.json", "web")
+REQUIRED_SOURCE_ROOT_ENTRIES: tuple[str, ...] = ("app.py", "VERSION", "config.example.json", "requirements.txt", "web")
 REQUIRED_TEMPLATE_PATHS: tuple[str, ...] = (
     "web/templates/index.html",
     "web/templates/setup.html",
@@ -39,6 +41,8 @@ PROTECTED_TOP_LEVEL_PATHS: tuple[str, ...] = (
     "watched_gcode",
     "imported_jobs",
     "rejected_jobs",
+    "snapshots",
+    "update_backups",
 )
 PROTECTED_SUFFIXES: tuple[str, ...] = (".pyc", ".pyo")
 
@@ -55,19 +59,19 @@ def _sha256_file(path: Path) -> str:
 
 
 def _now_stamp() -> str:
-    return dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
 
 def _safe_wait_for_parent_exit(parent_pid: int, timeout_seconds: float, log) -> None:
     if parent_pid <= 0:
         return
-    deadline = time.time() + max(1.0, timeout_seconds)
-    while time.time() < deadline:
+    deadline = time.monotonic() + max(1.0, timeout_seconds)
+    while time.monotonic() < deadline:
         if not _is_process_running(parent_pid):
             log(f"Parent process {parent_pid} exited.")
             return
         time.sleep(0.25)
-    log(f"Parent process {parent_pid} still running after {timeout_seconds:.0f}s; continuing cautiously.")
+    raise RuntimeError(f"Parent process {parent_pid} still running after {timeout_seconds:.0f}s; update blocked.")
 
 
 def _is_process_running(pid: int) -> bool:
@@ -82,9 +86,11 @@ def _is_process_running(pid: int) -> bool:
                 timeout=3,
             )
             output = (result.stdout or "").strip()
-            return bool(output and "No tasks are running" not in output)
-        except Exception:
-            return False
+            if result.returncode != 0:
+                raise RuntimeError("Could not confirm whether the existing Pilot process exited.")
+            return any(len(row) > 1 and row[1].strip() == str(pid) for row in csv.reader(io.StringIO(output)))
+        except Exception as exc:
+            raise RuntimeError("Could not confirm whether the existing Pilot process exited.") from exc
     try:
         os.kill(pid, 0)
         return True
@@ -94,7 +100,24 @@ def _is_process_running(pid: int) -> bool:
 
 def _copy_file(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
+    try:
+        shutil.copy2(src, dst)
+    except PermissionError:
+        if os.name != "nt" or dst.name.lower() != "ray5 pilot.exe" or not dst.is_file():
+            raise
+        # A launcher waiting for Pilot can keep its mapped EXE locked after app.py exits.
+        # Windows permits renaming that image; preserve it until the launcher closes.
+        retired = dst.with_name(f"{dst.name}.{time.monotonic_ns()}.bak")
+        os.replace(dst, retired)
+        try:
+            shutil.copy2(src, dst)
+        except Exception:
+            os.replace(retired, dst)
+            raise
+        try:
+            retired.unlink()
+        except OSError:
+            pass
 
 
 def _is_protected_update_relpath(rel: Path) -> bool:
@@ -246,13 +269,15 @@ def _safe_extract_zip(zip_path: Path, dest_dir: Path, log) -> None:
             raw_name = str(member.filename or "")
             if not raw_name or raw_name.strip() in {"", ".", "/"}:
                 raise RuntimeError("Invalid ZIP entry: empty member name")
-            pp = PurePosixPath(raw_name)
+            pp = PurePosixPath(raw_name.replace("\\", "/"))
             if pp.is_absolute():
                 raise RuntimeError(f"Invalid ZIP entry (absolute path): {raw_name}")
             if pp.drive:
                 raise RuntimeError(f"Invalid ZIP entry (drive path): {raw_name}")
             if any(part in {"", ".", ".."} for part in pp.parts):
                 raise RuntimeError(f"Invalid ZIP entry (path traversal): {raw_name}")
+            if any(":" in part for part in pp.parts):
+                raise RuntimeError(f"Invalid ZIP entry (drive or alternate stream): {raw_name}")
             target = (dest_root / Path(*pp.parts)).resolve()
             try:
                 target.relative_to(dest_root)
@@ -265,6 +290,31 @@ def _safe_extract_zip(zip_path: Path, dest_dir: Path, log) -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member, "r") as src, target.open("wb") as out_f:
                 shutil.copyfileobj(src, out_f)
+
+
+def _restore_update_files(project_root: Path, backup_dir: Path, backed_up: list[str],
+                          created: list[str], log) -> bool:
+    restored = True
+    for rel in reversed(created):
+        try:
+            target = (project_root / rel).resolve()
+            target.relative_to(project_root)
+            target.unlink(missing_ok=True)
+        except Exception as exc:
+            restored = False
+            log(f"ERROR: rollback could not remove {rel}: {exc}")
+    for rel in reversed(backed_up):
+        try:
+            target = (project_root / rel).resolve()
+            target.relative_to(project_root)
+            source = (backup_dir / rel).resolve()
+            source.relative_to(backup_dir)
+            _copy_file(source, target)
+        except Exception as exc:
+            restored = False
+            log(f"ERROR: rollback could not restore {rel}: {exc}")
+    log(f"[UPDATE ROLLBACK] complete={restored} restored={len(backed_up)} removed_new={len(created)}")
+    return restored
 
 
 def _run(argv: argparse.Namespace) -> int:
@@ -286,7 +336,6 @@ def _run(argv: argparse.Namespace) -> int:
     work_dir.mkdir(parents=True, exist_ok=True)
     backups_root.mkdir(parents=True, exist_ok=True)
     logs_root.mkdir(parents=True, exist_ok=True)
-    backup_dir.mkdir(parents=True, exist_ok=True)
     extract_dir.mkdir(parents=True, exist_ok=True)
 
     update_ok = False
@@ -304,37 +353,44 @@ def _run(argv: argparse.Namespace) -> int:
         log(f"Remote version: {argv.remote_version}")
         log(f"Source URL: {source_url}")
 
-        _safe_wait_for_parent_exit(
-            int(argv.parent_pid),
-            timeout_seconds=PARENT_EXIT_WAIT_TIMEOUT_SECONDS,
-            log=log,
-        )
-
-        log(f"Downloading update ZIP to {download_zip}")
-        req = urlrequest.Request(source_url, headers={"User-Agent": "Ray5-Pilot-Updater"}, method="GET")
-        with urlrequest.urlopen(req, timeout=15) as resp, download_zip.open("wb") as out_f:
-            shutil.copyfileobj(resp, out_f)
-        actual_sha256 = _sha256_file(download_zip)
-        log(f"Downloaded ZIP sha256: {actual_sha256}")
-        if not expected_sha256:
-            raise RuntimeError("Missing expected SHA-256 for update package; refusing unsafe update.")
-        if actual_sha256 != expected_sha256:
-            raise RuntimeError(
-                f"Update package checksum mismatch. expected={expected_sha256} actual={actual_sha256}"
-            )
-        log("Update package checksum verified.")
-
-        log(f"Extracting ZIP to {extract_dir}")
-        _safe_extract_zip(download_zip, extract_dir, log)
-
+        backed_up: list[str] = []
+        created: list[str] = []
+        restart_allowed = False
         try:
+            _safe_wait_for_parent_exit(
+                int(argv.parent_pid),
+                timeout_seconds=PARENT_EXIT_WAIT_TIMEOUT_SECONDS,
+                log=log,
+            )
+            restart_allowed = True
+            if len(expected_sha256) != 64 or any(c not in "0123456789abcdef" for c in expected_sha256):
+                raise RuntimeError("Missing expected SHA-256 for update package; refusing unsafe update.")
+            log(f"Downloading update ZIP to {download_zip}")
+            req = urlrequest.Request(source_url, headers={"User-Agent": "Ray5-Pilot-Updater"}, method="GET")
+            with urlrequest.urlopen(req, timeout=15) as resp, download_zip.open("wb") as out_f:
+                shutil.copyfileobj(resp, out_f)
+            actual_sha256 = _sha256_file(download_zip)
+            log(f"Downloaded ZIP sha256: {actual_sha256}")
+            if actual_sha256 != expected_sha256:
+                raise RuntimeError(f"Update package checksum mismatch. expected={expected_sha256} actual={actual_sha256}")
+            log("Update package checksum verified.")
+            log(f"Extracting ZIP to {extract_dir}")
+            _safe_extract_zip(download_zip, extract_dir, log)
             source_root = _detect_source_root(extract_dir, log)
             if not _is_valid_source_root(source_root):
                 raise RuntimeError("Invalid update package: could not find Ray5 Pilot app root.")
             log(f"Using extracted source root: {source_root}")
             log("[UPDATE COPY MODE] package_driven=true")
 
-            backed_up: list[str] = []
+            for rel in REQUIRED_TEMPLATE_PATHS:
+                if not (source_root / rel).is_file():
+                    raise RuntimeError(f"Invalid update package: required template missing: {rel}")
+            package_version = (source_root / "VERSION").read_text(encoding="utf-8-sig").strip().lstrip("vV")
+            if argv.remote_version and package_version != str(argv.remote_version).strip().lstrip("vV"):
+                raise RuntimeError("Update package VERSION does not match the requested release.")
+            for file in source_root.rglob("*.py"):
+                if not _is_protected_update_relpath(file.relative_to(source_root)):
+                    compile(file.read_bytes(), str(file), "exec")
             copied: list[str] = []
             new_files = 0
             skipped = 0
@@ -347,14 +403,17 @@ def _run(argv: argparse.Namespace) -> int:
                     log(f"[UPDATE SKIP] {rel_posix} reason=protected")
                     continue
                 dst = (project_root / rel_path).resolve()
+                dst.relative_to(project_root)
                 if dst.exists():
                     backup_target = (backup_dir / rel_path).resolve()
+                    backup_target.relative_to(backup_dir)
                     _copy_file(dst, backup_target)
                     backed_up.append(rel_posix)
                     _copy_file(src, dst)
                     copied.append(rel_posix)
                     log(f"[UPDATE FILE] {rel_posix}")
                 else:
+                    created.append(rel_posix)
                     _copy_file(src, dst)
                     copied.append(rel_posix)
                     new_files += 1
@@ -408,7 +467,7 @@ def _run(argv: argparse.Namespace) -> int:
             if len(copied) == 0:
                 raise RuntimeError("Update aborted: no files were copied.")
             if not pip_ok:
-                log("Update completed with pip warning.")
+                raise RuntimeError("Dependency installation failed; restoring the previous application files.")
             else:
                 log("Update completed successfully.")
 
@@ -416,7 +475,12 @@ def _run(argv: argparse.Namespace) -> int:
             final_message = f"Ray5 Pilot updated successfully to {argv.remote_version or 'latest'}."
         except Exception as exc:
             update_ok = False
-            final_message = "Ray5 Pilot update failed. See update log."
+            restored = _restore_update_files(project_root, backup_dir, backed_up, created, log)
+            restart_allowed = restart_allowed and restored
+            final_message = (
+                f"Update failed: {exc}. Previous application files were preserved/restored."
+                if restored else "Update failed and rollback was incomplete. Do not run Pilot until the backup is restored. See update log."
+            )
             log(f"ERROR: {exc}")
 
         _write_update_status(
@@ -432,12 +496,15 @@ def _run(argv: argparse.Namespace) -> int:
         _remove_path_safe(work_dir, log)
         if max_keep_backups <= 0:
             log("[BACKUP RETENTION SKIP] reason=disabled")
-        _rotate_old_entries(
-            backups_root,
-            keep=max_keep_backups if max_keep_backups > 0 else 10_000_000,
-            is_candidate=lambda p: p.is_dir() and p.name.startswith("update_"),
-            log=log,
-        )
+        if update_ok:
+            _rotate_old_entries(
+                backups_root,
+                keep=max_keep_backups if max_keep_backups > 0 else 10_000_000,
+                is_candidate=lambda p: p.is_dir() and p.name.startswith("update_"),
+                log=log,
+            )
+        else:
+            log("[BACKUP RETENTION SKIP] reason=failed_update")
         try:
             matched_updates = len([p for p in backups_root.iterdir() if p.is_dir() and p.name.startswith("update_")])
         except Exception:
@@ -452,6 +519,9 @@ def _run(argv: argparse.Namespace) -> int:
             log=log,
         )
 
+        if not restart_allowed:
+            log("Restart skipped: the existing process is still running or safe rollback was not confirmed.")
+            return 1
         restart_cmd = [python_exe, "app.py"]
         if not update_ok:
             log("Update failed; restarting existing app version.")
@@ -472,8 +542,18 @@ def _run(argv: argparse.Namespace) -> int:
             log("Ray5 Pilot restart launched.")
         except Exception as exc:
             log(f"ERROR: failed to restart app.py: {exc}")
+            if update_ok:
+                restored = _restore_update_files(project_root, backup_dir, backed_up, created, log)
+                _write_update_status(project_root, False, str(argv.current_version or ""), str(argv.remote_version or ""),
+                                     f"Updated app could not be launched: {exc}. Rollback complete={restored}.", log_path)
+                if restored:
+                    try:
+                        subprocess.Popen(restart_cmd, cwd=str(project_root))
+                        log("Previous application restart launched after rollback.")
+                    except Exception as retry_exc:
+                        log(f"ERROR: previous app also could not be restarted: {retry_exc}")
             return 1
-    return 0
+    return 0 if update_ok else 1
 
 
 def main() -> int:

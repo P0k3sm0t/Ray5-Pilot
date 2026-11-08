@@ -30,7 +30,10 @@ PY_FILES = [
 JS_FILES = [
     "web/static/app.js",
     "web/static/setup.js",
+    "web/static/settings-layout.js",
     "web/static/machine_settings.js",
+    "web/static/esp32.js",
+    "web/static/dashboard-layout.js",
 ]
 
 ABSENT_PATHS = [
@@ -41,7 +44,6 @@ ABSENT_PATHS = [
     "build",
     "dist",
     ".venv",
-    "launcher.py",
     "build_launcher.bat",
 ]
 

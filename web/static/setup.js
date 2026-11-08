@@ -357,6 +357,22 @@ async function init(){
   const UPDATE_REFRESH_INTERVAL_MS = 45 * 60 * 1000;
   const UPDATE_FLOW_FLAG_KEY = 'ray5_update_in_progress';
 
+  // Configuration should load independently of the network update check.
+  try{
+    const d=await api('/api/config');
+    const cfg=unwrapConfigResponse(d);
+    load(cfg);
+    settingsLoaded = true;
+    if(saveBtn) saveBtn.disabled = false;
+    document.dispatchEvent(new CustomEvent('settings:loaded'));
+  }catch(err){
+    settingsLoaded = false;
+    if(v('saveOut')) v('saveOut').textContent=`Settings failed to load: ${err && err.message ? err.message : err}`;
+    if(saveBtn) saveBtn.disabled = true;
+    document.dispatchEvent(new CustomEvent('settings:load-error'));
+    console.error('Settings init failed', err);
+  }
+
   function setUpdateButtonVisible(visible){
     updateAvailableNow = !!visible;
     if(applyUpdateWrap) applyUpdateWrap.hidden = !updateAvailableNow;
@@ -531,12 +547,14 @@ async function init(){
     updateRefreshInProgress = false;
   }
 
-  await loadUpdateStatus();
-  await maybeShowPostUpdateStatus();
-  // Trigger refresh on Settings page open so running app can detect updates without restart.
-  await triggerUpdateRefresh({force:true});
-  if(updateRefreshTimer) clearInterval(updateRefreshTimer);
-  updateRefreshTimer = setInterval(()=>{ triggerUpdateRefresh({force:false}); }, UPDATE_REFRESH_INTERVAL_MS);
+  // Keep slow or unavailable update services from blocking settings and Save.
+  (async () => {
+    await loadUpdateStatus();
+    await maybeShowPostUpdateStatus();
+    await triggerUpdateRefresh({force:true});
+    if(updateRefreshTimer) clearInterval(updateRefreshTimer);
+    updateRefreshTimer = setInterval(()=>{ triggerUpdateRefresh({force:false}); }, UPDATE_REFRESH_INTERVAL_MS);
+  })().catch(err => console.warn('Update check unavailable', err));
 
   if(applyUpdateBtn){
     applyUpdateBtn.onclick = async () => {
@@ -578,18 +596,6 @@ async function init(){
     };
   }
 
-  try{
-    const d=await api('/api/config');
-    const cfg=unwrapConfigResponse(d);
-    load(cfg);
-    settingsLoaded = true;
-    if(saveBtn) saveBtn.disabled = false;
-  }catch(err){
-    settingsLoaded = false;
-    if(v('saveOut')) v('saveOut').textContent=`Settings failed to load: ${err && err.message ? err.message : err}`;
-    if(saveBtn) saveBtn.disabled = true;
-    console.error('Settings init failed', err);
-  }
   saveBtn.onclick=async()=>{
     if(!settingsLoaded){
       v('saveOut').textContent='Save blocked: Settings did not load correctly.';
@@ -646,8 +652,19 @@ async function init(){
     payload.safety.test_fire_duration_ms = Math.min(payload.safety.test_fire_duration_ms, payload.safety.test_fire_max_duration_ms);
     payload.safety.test_fire_s_value = Math.min(payload.safety.test_fire_s_value, payload.safety.test_fire_max_s_value);
     payload.safety.test_fire_duration_seconds = payload.safety.test_fire_duration_ms/1000;
-    const r=await api('/api/config','POST',payload);
-    v('saveOut').textContent=r.ok?'Config saved successfully':('Save failed: '+(r.error||'unknown error'));
+    saveBtn.disabled = true;
+    v('saveOut').textContent='Saving settings...';
+    document.dispatchEvent(new CustomEvent('settings:saving'));
+    try{
+      const r=await api('/api/config','POST',payload);
+      v('saveOut').textContent=r.ok?'Config saved successfully. Restart Pilot if you changed the Web UI host or port.':('Save failed: '+(r.error||'unknown error'));
+      document.dispatchEvent(new CustomEvent(r.ok ? 'settings:saved' : 'settings:save-error'));
+    }catch(err){
+      v('saveOut').textContent=`Save failed: ${err && err.message ? err.message : err}`;
+      document.dispatchEvent(new CustomEvent('settings:save-error'));
+    }finally{
+      saveBtn.disabled = !settingsLoaded;
+    }
   };
 }
 init();

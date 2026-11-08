@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import ipaddress
 import os
 import re
@@ -648,7 +649,6 @@ console = ConsoleLog()
 ray5 = Ray5Client(cfg)
 camera = CameraManager(cfg, BASE_DIR)
 jobs = JobManager(BASE_DIR, cfg)
-_cached_status: dict[str, Any] = {"state": "UNKNOWN", "x": None, "y": None, "z": None, "raw": "", "source": "synthetic"}
 _last_logged_status_source: str | None = None
 _last_logged_job_progress_payload_signature: tuple[Any, ...] | None = None
 _last_logged_job_progress_raw_override_signature: tuple[Any, ...] | None = None
@@ -813,6 +813,8 @@ _watch_state: dict[str, Any] = {
     "status": "idle",
 }
 firmware_settings_collect_lock = RLock()
+firmware_read_lock = RLock()
+GRBL_CORE_SETTING_KEYS = frozenset({"0", "10", "30", "31", "32", "100", "101", "110", "111", "120", "121", "130", "131"})
 firmware_settings_collect_state: dict[str, Any] = {
     "job_id": "",
     "running": False,
@@ -826,6 +828,8 @@ firmware_settings_collect_state: dict[str, Any] = {
     "settings": [],
     "grbl_version": {},
     "grbl_identity_raw": "",
+    "complete_device": "",
+    "complete_keys": [],
 }
 console.add("info", f"CONFIG PATH: {cfg_mgr.config_path}")
 console.add("info", f"CONFIG EXISTS: {cfg_mgr.config_path.exists()}")
@@ -841,6 +845,8 @@ GITHUB_MAIN_VERSION_URL = "https://raw.githubusercontent.com/P0k3sm0t/Ray5-Pilot
 GITHUB_LATEST_RELEASE_API_URL = "https://api.github.com/repos/P0k3sm0t/Ray5-Pilot/releases/latest"
 UPDATE_STATUS_PATH = BASE_DIR / "update_logs" / "update_status.json"
 _update_shutdown_started = False
+_update_launching = False
+_laser_test_requests = 0
 calibration_lock = RLock()
 calibration_process: subprocess.Popen[Any] | None = None
 
@@ -1460,26 +1466,6 @@ def reload_components() -> None:
     except Exception:
         pass
     _ensure_watch_thread()
-
-
-def _status_fallback(live: dict[str, Any]) -> dict[str, Any]:
-    global _cached_status
-    if live.get("ok") and live.get("parsed"):
-        parsed = live["parsed"]
-        _cached_status = {
-            "state": parsed.get("state") or "UNKNOWN",
-            "x": parsed.get("x"),
-            "y": parsed.get("y"),
-            "z": parsed.get("z"),
-            "raw": live.get("raw", ""),
-            "source": "live" if live.get("raw") else "cache",
-        }
-        return _cached_status
-    if _cached_status.get("raw"):
-        s = dict(_cached_status)
-        s["source"] = "cache"
-        return s
-    return {"state": "UNKNOWN", "x": None, "y": None, "z": None, "raw": "", "source": "synthetic"}
 
 
 def _watch_state_snapshot() -> dict[str, Any]:
@@ -4472,12 +4458,14 @@ def _create_grbl_auto_backup() -> tuple[bool, dict[str, Any]]:
         snap = _firmware_settings_collect_snapshot()
         snap_settings = snap.get("settings") if isinstance(snap, dict) else None
         snap_raw = snap.get("raw") if isinstance(snap, dict) else None
-        if isinstance(snap_settings, list) and snap_settings:
+        if snap.get("ok") is True and isinstance(snap_settings, list) and snap_settings:
             source = "loaded_settings"
             settings = [s for s in snap_settings if isinstance(s, dict)]
             raw_text = str(snap_raw or "")
         else:
-            raw_text, _, _timed_out, _initial_message = _read_machine_settings_raw(timeout_seconds=6.0)
+            raw_text, initial_message, timed_out = _collect_machine_settings_raw(timeout_seconds=6.0)
+            if timed_out:
+                raise RuntimeError(initial_message or "GRBL settings backup read was incomplete.")
             settings = _parse_machine_settings_raw(raw_text)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"grbl_settings_autobackup_{ts}.json"
@@ -5234,6 +5222,42 @@ def api_esp32_eeprom_save() -> Any:
     )
 
 
+def _query_esp32_live_status(timeout_seconds: float = 2.0) -> dict[str, Any]:
+    with app_state_lock:
+        monitor = status_monitor
+    page_id = monitor.get_page_id() if monitor is not None else None
+    requested_at = time.time()
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    result = ray5.trigger_live_status(page_id)
+    status_pattern = r"<(?:Idle|Run|Hold(?::\d+)?|Jog|Alarm|Home|Door(?::\d+)?|Check|Sleep)\|[^<>\r\n]+>"
+
+    def success(raw: str, source: str) -> dict[str, Any]:
+        return {
+            "ok": True, "message": "Live status received.", "raw": raw,
+            "source": source, "synthetic": False, "upstream_http_ok": True,
+        }
+
+    if not result.get("ok"):
+        return {**result, "source": "unavailable", "upstream_http_ok": False}
+    direct = re.findall(status_pattern, str(result.get("raw") or ""), re.IGNORECASE)
+    if direct:
+        return success(direct[-1], "http")
+    # Ray5 may reply HTTP 200 "Error" while delivering the actual report via WebSocket.
+    # Only reports received after this query count; never promote an old cached Idle.
+    while monitor is not None:
+        lines = monitor.get_lines_since(requested_at)
+        reports = re.findall(status_pattern, "\n".join(lines), re.IGNORECASE)
+        if reports and monitor.is_connected():
+            return success(reports[-1], "websocket")
+        if not monitor.is_connected() or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    return {
+        "ok": False, "message": "ESP32 responded, but no fresh GRBL status was received.",
+        "raw": str(result.get("raw") or ""), "source": "unavailable", "upstream_http_ok": True,
+    }
+
+
 @app.post("/api/esp32/command")
 def api_esp32_command() -> Any:
     blocked = _require_ray5_configured()
@@ -5245,9 +5269,14 @@ def api_esp32_command() -> Any:
         return jsonify({"ok": False, "message": "command is required"}), 400
     console.add("info", f"[ESP32 COMMANDTEXT] command={command}")
     try:
-        result = ray5.send_gcode(command)
+        result = _query_esp32_live_status() if command == "?" else ray5.send_gcode(command)
     except Exception as exc:
         return jsonify(_esp32_offline_payload("command", f"Timed out waiting for ESP32 command response. ({exc})", result={})), 503
+    if command == "?":
+        console.add("info", f"[ESP32 STATUS] source={result.get('source')} ok={bool(result.get('ok'))}")
+        if not result.get("ok") and result.get("upstream_http_ok"):
+            return jsonify({"ok": False, "offline": False, "status_unavailable": True,
+                            "error": result.get("message"), "result": result}), 504
     if not result.get("ok"):
         return jsonify(_esp32_offline_payload("command", result.get("message") or "Timed out waiting for ESP32 command response.", result=result)), 503
     return jsonify({"ok": bool(result.get("ok")), "result": result})
@@ -5348,62 +5377,65 @@ def _parse_machine_settings_raw(raw_text: str) -> list[dict[str, str]]:
     return rows
 
 
-def _collect_machine_settings_raw(timeout_seconds: float = 4.0, max_lines: int = 200) -> tuple[str, str, bool]:
-    start_ts = time.time()
-    initial_result = ray5.send_gcode("$$")
-    immediate_raw = str(initial_result.get("raw", "") or "")
+def _collect_grbl_reply(command: str, timeout_seconds: float, max_lines: int,
+                        required_keys: frozenset[str] = frozenset()) -> tuple[str, str, bool]:
+    with app_state_lock:
+        client, monitor = ray5, status_monitor
+    started_at = time.time()
+    initial = client.send_gcode(command)
+    immediate = str(initial.get("raw") or "").strip()
+    if not initial.get("ok") and immediate.lower() != "error":
+        return immediate, str(initial.get("message") or "GRBL read request failed."), True
+    direct_lines = [line.strip() for line in immediate.splitlines() if line.strip()]
+    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+    changed_at = time.monotonic()
+    previous_payload: tuple[str, ...] = ()
+    complete = False
     lines: list[str] = []
-    seen_settings = False
-    saw_ok = False
-    end_at = start_ts + max(1.0, float(timeout_seconds))
-    while time.time() < end_at:
-        if status_monitor is not None:
-            new_lines = status_monitor.get_lines_since(start_ts)
-            if new_lines:
-                lines = new_lines[-max(1, int(max_lines)) :]
-                seen_settings = any(re.match(r"^\$(\d+)=(.+)$", str(x).strip()) for x in lines)
-                saw_ok = any(str(x).strip().lower() == "ok" for x in lines)
-        # If settings already arrived and stream has signaled completion, stop early.
-        if seen_settings and saw_ok:
+    while True:
+        sideband = monitor.get_lines_since(started_at) if monitor is not None else []
+        # HTTP 'ok' precedes sideband payload and must never terminate that payload.
+        lines = direct_lines + [str(line).strip() for line in sideband]
+        setting_rows = [(index, re.match(r"^\$(\d+)=(.+)$", line)) for index, line in enumerate(lines)]
+        settings = [(index, match.group(1)) for index, match in setting_rows if match]
+        if command == "$$":
+            payload_indices = [index for index, _ in settings]
+            has_payload = bool(settings) and required_keys.issubset({key for _, key in settings})
+        else:
+            payload_indices = [index for index, line in enumerate(lines) if line.startswith("[")]
+            has_payload = any(line.startswith("[VER:") for line in lines)
+        payload = tuple(lines[index] for index in payload_indices)
+        now = time.monotonic()
+        if payload != previous_payload:
+            changed_at = now
+            previous_payload = payload
+        last_payload = payload_indices[-1] if payload_indices else -1
+        trailing_ok = any(line.lower() == "ok" for line in lines[last_payload + 1:]) if last_payload >= 0 else False
+        complete = has_payload and trailing_ok and now - changed_at >= 0.4
+        if complete or now >= deadline:
             break
-        time.sleep(0.1)
+        time.sleep(0.05)
+    raw = "\n".join(lines[-max(1, int(max_lines)):]).strip()
+    # Truncation must not silently discard required settings from a successful read.
+    if command == "$$" and not required_keys.issubset({row["key"] for row in _parse_machine_settings_raw(raw)}):
+        complete = False
+    message = str(initial.get("message") or "") if complete else f"Incomplete {command} response: waiting for all settings/data and a trailing ok."
+    return raw, message, not complete
 
-    combined_parts = [immediate_raw]
-    if lines:
-        combined_parts.append("\n".join(lines))
-    combined = "\n".join([p for p in combined_parts if str(p).strip()]).strip()
-    if not combined:
-        combined = immediate_raw.strip()
-    timed_out = (time.time() >= end_at) and not seen_settings
-    return combined, str(initial_result.get("message") or ""), timed_out
+
+def _collect_machine_settings_raw(timeout_seconds: float = 4.0, max_lines: int = 200) -> tuple[str, str, bool]:
+    with firmware_read_lock:
+        with app_state_lock:
+            device = ray5._base()
+        with firmware_settings_collect_lock:
+            known_keys = firmware_settings_collect_state.get("complete_keys", []) if firmware_settings_collect_state.get("complete_device") == device else []
+        required = GRBL_CORE_SETTING_KEYS | frozenset(known_keys)
+        return _collect_grbl_reply("$$", timeout_seconds, max_lines, required)
 
 
 def _collect_grbl_identity_raw(timeout_seconds: float = 3.0, max_lines: int = 120) -> tuple[str, str, bool]:
-    start_ts = time.time()
-    initial_result = ray5.send_gcode("$I")
-    immediate_raw = str(initial_result.get("raw", "") or "")
-    lines: list[str] = []
-    saw_identity = False
-    saw_ok = False
-    end_at = start_ts + max(1.0, float(timeout_seconds))
-    while time.time() < end_at:
-        if status_monitor is not None:
-            new_lines = status_monitor.get_lines_since(start_ts)
-            if new_lines:
-                lines = new_lines[-max(1, int(max_lines)) :]
-                saw_identity = any(str(x).strip().startswith("[") for x in lines)
-                saw_ok = any(str(x).strip().lower() == "ok" for x in lines)
-        if saw_identity and saw_ok:
-            break
-        time.sleep(0.1)
-    combined_parts = [immediate_raw]
-    if lines:
-        combined_parts.append("\n".join(lines))
-    combined = "\n".join([p for p in combined_parts if str(p).strip()]).strip()
-    if not combined:
-        combined = immediate_raw.strip()
-    timed_out = (time.time() >= end_at) and not saw_identity
-    return combined, str(initial_result.get("message") or ""), timed_out
+    with firmware_read_lock:
+        return _collect_grbl_reply("$I", timeout_seconds, max_lines)
 
 
 def _parse_grbl_identity_raw(raw_text: str, *, timed_out: bool = False) -> dict[str, Any]:
@@ -5512,10 +5544,26 @@ def _firmware_settings_collect_snapshot() -> dict[str, Any]:
 
 def _firmware_settings_collect_worker(job_id: str) -> None:
     try:
-        raw_text, initial_message, timed_out = _collect_machine_settings_raw(timeout_seconds=4.0, max_lines=200)
-        settings = _parse_machine_settings_raw(raw_text)
-        identity_raw, _identity_message, identity_timed_out = _collect_grbl_identity_raw(timeout_seconds=3.0, max_lines=120)
-        grbl_version = _parse_grbl_identity_raw(identity_raw, timed_out=identity_timed_out)
+        with firmware_read_lock:
+            with app_state_lock:
+                device = ray5._base()
+            for attempt in range(2):
+                raw_text, initial_message, timed_out = _collect_machine_settings_raw(timeout_seconds=4.0, max_lines=200)
+                settings = _parse_machine_settings_raw(raw_text)
+                console.add("info", f"[GRBL READ] attempt={attempt + 1} settings={len(settings)} complete={not timed_out}")
+                if not timed_out:
+                    break
+                if attempt == 0:
+                    time.sleep(0.2)
+            if not timed_out:
+                identity_raw, _identity_message, identity_timed_out = _collect_grbl_identity_raw(timeout_seconds=3.0, max_lines=120)
+                grbl_version = _parse_grbl_identity_raw(identity_raw, timed_out=identity_timed_out)
+                if identity_timed_out:
+                    grbl_version["ok"] = False
+                    grbl_version["error"] = "GRBL identity response was incomplete."
+            else:
+                identity_raw = ""
+                grbl_version = {"ok": False, "error": "Settings read was incomplete.", "raw": ""}
         now_ts = time.time()
         with firmware_settings_collect_lock:
             if firmware_settings_collect_state.get("job_id") != job_id:
@@ -5523,11 +5571,13 @@ def _firmware_settings_collect_worker(job_id: str) -> None:
             firmware_settings_collect_state["running"] = False
             firmware_settings_collect_state["completed_at"] = now_ts
             firmware_settings_collect_state["raw"] = raw_text
-            firmware_settings_collect_state["settings"] = settings
+            firmware_settings_collect_state["settings"] = settings if not timed_out else []
             firmware_settings_collect_state["grbl_identity_raw"] = identity_raw
             firmware_settings_collect_state["grbl_version"] = grbl_version
             firmware_settings_collect_state["timed_out"] = bool(timed_out)
-            if settings:
+            if settings and not timed_out:
+                firmware_settings_collect_state["complete_device"] = device
+                firmware_settings_collect_state["complete_keys"] = [setting["key"] for setting in settings]
                 firmware_settings_collect_state["ok"] = True
                 firmware_settings_collect_state["error"] = ""
                 firmware_settings_collect_state["message"] = f"Loaded {len(settings)} setting(s)."
@@ -5535,7 +5585,7 @@ def _firmware_settings_collect_worker(job_id: str) -> None:
                 detail = str(raw_text or initial_message or "No response text received.").strip()
                 firmware_settings_collect_state["ok"] = False
                 firmware_settings_collect_state["error"] = (
-                    "Timed out waiting for GRBL settings response."
+                    "Incomplete GRBL settings response after retry. Please read from Ray5 again."
                     if timed_out
                     else f"No GRBL settings were found in the $$ response. Device output: {detail[:3000]}"
                 )
@@ -6242,7 +6292,7 @@ def api_jobs_import() -> Any:
     ext = Path(f.filename or "").suffix.lower()
     if ext not in jobs.allowed:
         return jsonify({"ok": False, "error": f"extension {ext!r} not allowed"}), 400
-    content = f.read()
+    content = f.read(_max_upload_bytes() + 1)
     if len(content) > _max_upload_bytes():
         return jsonify({"ok": False, "error": "file exceeds upload size limit"}), 400
     safety = jobs.validate_gcode_bytes(str(f.filename or ""), content)
@@ -6636,7 +6686,9 @@ def api_jobs_start() -> Any:
         if ok:
             _record_job_activity(source="imported_start", name=filename)
             timelapse_arm = _timelapse_arm(job_name=filename, job_source="imported")
-        run_message = "Upload verified after reconnect; starting job." if bool(upload_detail.get("verified_after_timeout")) else ""
+        run_message = str(resp or "Start command was rejected.") if not ok else (
+            "Upload verified after reconnect; starting job." if bool(upload_detail.get("verified_after_timeout")) else ""
+        )
         return jsonify(
             {
                 "ok": ok,
@@ -6779,19 +6831,26 @@ def api_move() -> Any:
     body = request.get_json(silent=True) or {}
     controls = cfg.get("manual_controls", {})
     axis = str(body.get("axis", "")).strip().lower()
-    distance = float(body.get("distance", controls.get("default_jog_step", controls.get("default_jog_step_mm", 10))))
-    feedrate = float(body.get("feedrate", controls.get("default_feedrate", 3000)))
+    try:
+        distance = float(body.get("distance", controls.get("default_jog_step", controls.get("default_jog_step_mm", 10))))
+        feedrate = float(body.get("feedrate", controls.get("default_feedrate", 3000)))
+        dx = float(body.get("dx") or 0.0)
+        dy = float(body.get("dy") or 0.0)
+    except (TypeError, ValueError, OverflowError):
+        return jsonify({"ok": False, "message": "Move distance and feedrate must be finite numbers."}), 400
+    if not all(math.isfinite(value) for value in (distance, feedrate, dx, dy)) or feedrate <= 0:
+        return jsonify({"ok": False, "message": "Move values must be finite and feedrate must be positive."}), 400
     dx_in = body.get("dx")
     dy_in = body.get("dy")
     has_dx = dx_in is not None
     has_dy = dy_in is not None
     if has_dx or has_dy:
-        dx = float(dx_in or 0.0)
-        dy = float(dy_in or 0.0)
         if dx == 0.0 and dy == 0.0:
             return jsonify({"ok": False, "message": "dx/dy move requires non-zero delta", "raw": ""}), 400
         if bool(controls.get("force_laser_off_before_move", True)):
-            ray5.laser_off()
+            off_result = ray5.laser_off()
+            if not off_result.get("ok"):
+                return jsonify({"ok": False, "message": "Move blocked: laser-off command failed.", "result": off_result}), 503
         console.add("info", f"Manual move XY X{dx:.3f} Y{dy:.3f} F{feedrate:.0f}")
         cmd = f"$J=G91 G21 X{dx:.3f} Y{dy:.3f} F{feedrate:.0f}"
         result = ray5.send_gcode(cmd)
@@ -6800,7 +6859,9 @@ def api_move() -> Any:
     if axis == "z" and not bool(controls.get("enable_z_jog", controls.get("enable_jog_z", False))):
         return jsonify({"ok": False, "message": "Z jog is disabled in config", "raw": ""}), 400
     if bool(controls.get("force_laser_off_before_move", True)):
-        ray5.laser_off()
+        off_result = ray5.laser_off()
+        if not off_result.get("ok"):
+            return jsonify({"ok": False, "message": "Move blocked: laser-off command failed.", "result": off_result}), 503
     console.add("info", f"Manual move {axis.upper()} {distance}mm F{feedrate}")
     result = ray5.move(axis=axis, distance=distance, feedrate=feedrate)
     console.add("info", f"Move result: {'ok' if result.get('ok') else 'fail'} {str(result.get('message',''))[:120]}")
@@ -6872,6 +6933,7 @@ def api_laser_off() -> Any:
 
 @app.post("/api/laser/test-fire")
 def api_test_fire() -> Any:
+    global _laser_test_requests
     guard = _require_ray5_configured()
     if guard:
         return guard
@@ -6923,17 +6985,25 @@ def api_test_fire() -> Any:
             console.add("error", msg)
             return jsonify({"ok": False, "message": msg, "power_percent": power_percent, "s_value": s_value, "duration_ms": duration_ms}), 400
         console.add("warn", f"Test Fire clamped: percent={power_percent} s_value={s_value} duration_ms={duration_ms}")
-        _set_laser_commanded_s(s_value, "command")
-        _set_laser_test_active(s_value, duration_ms)
-        result = ray5.test_fire(
-            s_value=s_value,
-            duration_ms=duration_ms,
-            command=test_cmd,
-            mode=test_mode,
-            motion_axis=motion_axis,
-            motion_mm=motion_mm,
-            motion_feedrate=motion_feedrate,
-        )
+        with app_state_lock:
+            if _update_launching:
+                return jsonify({"ok": False, "message": "Laser test blocked while an update is starting."}), 409
+            _laser_test_requests += 1
+        try:
+            _set_laser_commanded_s(s_value, "command")
+            _set_laser_test_active(s_value, duration_ms)
+            result = ray5.test_fire(
+                s_value=s_value,
+                duration_ms=duration_ms,
+                command=test_cmd,
+                mode=test_mode,
+                motion_axis=motion_axis,
+                motion_mm=motion_mm,
+                motion_feedrate=motion_feedrate,
+            )
+        finally:
+            with app_state_lock:
+                _laser_test_requests -= 1
         page_id_used = str(
             result.get("page_id_used")
             or result.get("page_id")
@@ -7149,7 +7219,7 @@ def api_files_upload() -> Any:
     if ext not in {".gc", ".nc", ".gcode"}:
         return jsonify({"ok": False, "message": f"extension {ext!r} not allowed"}), 400
     req_path = str(request.form.get("path", cfg.get("ray5", {}).get("sd_path", "/")) or "/")
-    data = f.read()
+    data = f.read(_max_upload_bytes() + 1)
     if len(data) > _max_upload_bytes():
         return jsonify({"ok": False, "message": "file exceeds upload size limit"}), 400
     safety = jobs.validate_gcode_bytes(filename, data)
@@ -7541,6 +7611,10 @@ def api_safety_clear_comm_loss() -> Any:
 
 @app.post("/api/github/apply-update")
 def api_github_apply_update() -> Any:
+    global _update_launching
+    with app_state_lock:
+        if _update_launching or _update_shutdown_started:
+            return jsonify({"ok": False, "message": "An update is already starting."}), 409
     # Use a fresh check before apply-update safety decisions.
     update_info = _check_source_update()
     cached_state = _update_github_check_cache_from_result(update_info, checking=False)
@@ -7569,12 +7643,17 @@ def api_github_apply_update() -> Any:
 
     state_raw = _get_machine_state_for_update_guard()
     state_norm = _timelapse_normalize_state(state_raw).lower()
-    if state_norm in {"run", "hold"}:
+    upload_active = _snapshot_upload_transfer_state().get("upload_in_progress", False)
+    tl_state = _timelapse_snapshot_state()
+    timelapse_active = any(tl_state.get(key, False) for key in ("active", "armed", "stopping", "stop_pending", "build_in_progress"))
+    with app_state_lock:
+        laser_busy = _laser_test_requests > 0 or bool(laser_runtime_state.get("active"))
+    if state_norm in {"run", "hold", "jog", "home", "door"} or upload_active or timelapse_active or laser_busy or _snapshot_comm_safety_state().get("comm_lost_during_job", False):
         return (
             jsonify(
                 {
                     "ok": False,
-                    "message": "Update blocked because the Ray5 appears to be running or paused. Stop the job before updating.",
+                    "message": "Update blocked: turn the laser off, finish machine motion, transfers and timelapse saving, and resolve any communication safety lockout first.",
                     "update_status": cached_state,
                 }
             ),
@@ -7658,9 +7737,17 @@ def api_github_apply_update() -> Any:
         "--remote-version",
         str(update_info.get("latest_version") or ""),
     ]
+    with app_state_lock:
+        if _update_launching or _update_shutdown_started:
+            return jsonify({"ok": False, "message": "An update is already starting."}), 409
+        if _laser_test_requests > 0:
+            return jsonify({"ok": False, "message": "Update blocked while a laser test is in progress."}), 409
+        _update_launching = True
     try:
         subprocess.Popen(args, cwd=str(BASE_DIR))
     except Exception as exc:
+        with app_state_lock:
+            _update_launching = False
         console.add("error", f"Failed to launch updater: {exc}")
         return jsonify({"ok": False, "message": f"Failed to launch updater: {exc}", "update_status": cached_state}), 500
 

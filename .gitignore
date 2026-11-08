@@ -19,11 +19,11 @@ imported_jobs/*
 watched_gcode/*
 rejected_jobs/*
 *.tmp
+*.bak
 .DS_Store
 Thumbs.db
 
 # Windows launcher / PyInstaller local-only files
-launcher.py
 build_launcher.bat
 build/
 dist/

@@ -7,15 +7,55 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="alternate icon" href="/static/favicon.ico">
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/dashboard.css?v=1.2.4-layout1">
 </head>
-<body>
+<body class="dashboard-page">
 <header>
   <div class="brand brand-logo-only">
     <img src="/static/logo.svg" alt="Ray5 Pilot" class="brand-logo-main">
   </div>
   <nav><a href="/">Dashboard</a><a href="/setup">Settings</a><a href="/machine-settings">GRBL</a><a href="/esp32">ESP32</a></nav>
 </header>
-<main>
+<main class="dashboard-main">
+  <div id="dashboardShell" hidden>
+    <div class="dashboard-heading">
+      <div><h1>Dashboard</h1><p>Camera, job workflow, and machine controls.</p></div>
+      <div id="dashboardTopActions" class="dashboard-actions">
+        <span id="machineStateBadge" class="dashboard-state" data-kind="unknown" role="status">Connecting...</span>
+        <button id="dashboardUnlock" type="button" hidden>Unlock / Clear Alarm</button>
+      </div>
+    </div>
+    <div class="dashboard-layout">
+      <aside class="dashboard-sidebar">
+        <nav id="dashboardNav" aria-label="Dashboard sections">
+          <button type="button" data-dashboard-page="workspace" aria-controls="dashboardWorkspaceView" aria-pressed="true">Workspace</button>
+          <button type="button" data-dashboard-page="files" aria-controls="dashboardFilesView" aria-pressed="false">Jobs &amp; SD Files</button>
+          <button type="button" data-dashboard-page="camera" aria-controls="cameraCard" aria-pressed="false">Camera &amp; Alignment</button>
+          <button type="button" data-dashboard-page="timelapse" aria-controls="dashboardTimelapseView" aria-pressed="false">Timelapse</button>
+          <button type="button" data-dashboard-page="console" aria-controls="dashboardDiagnosticsView" aria-pressed="false">Console &amp; Diagnostics</button>
+        </nav>
+        <p>Daily controls together. Libraries, recovery tools, and diagnostics one click away.</p>
+      </aside>
+      <div class="dashboard-content">
+        <div id="dashboardMachineAlert" class="dashboard-notice" hidden role="alert">
+          <p id="dashboardMachineAlertText"></p>
+          <button id="dashboardClearLockout" type="button" hidden>Clear Safety Lockout</button>
+        </div>
+        <div id="dashboardWorkspaceView" data-dashboard-view="workspace">
+          <div class="dashboard-workbench">
+            <div class="dashboard-left-column"><div id="dashboardCameraSlot"></div><div id="dashboardJobsSlot"></div></div>
+            <div class="dashboard-right-column"><div id="dashboardManualSlot"></div><div id="dashboardStatusSlot"></div></div>
+          </div>
+          <div id="dashboardConsoleSlot"></div>
+        </div>
+        <div id="dashboardFilesView" data-dashboard-view="files" hidden><div id="dashboardLibrarySlot"></div></div>
+        <div id="dashboardTimelapseView" data-dashboard-view="timelapse" hidden><div id="dashboardTimelapseSlot"></div></div>
+        <div id="dashboardDiagnosticsView" data-dashboard-view="console" hidden><div id="dashboardConsoleFullSlot"></div><div id="dashboardStatusFullSlot"></div></div>
+      </div>
+    </div>
+    <p id="dashboardMessage" role="status" aria-live="polite">Frame to verify placement before starting a job.</p>
+  </div>
+  <div id="dashboardOriginalCards">
   <section id="timelapseCard" class="card timelapse-card full-width-card">
     <div class="card-header">
       <h2>Timelapse</h2>
@@ -56,17 +96,10 @@
     </div>
   </section>
   <div class="dashboard-middle-grid">
-    <section id="statusCard" class="card status-card"><h2>Status</h2><div id="status"></div></section>
-    <section class="card video-card">
+    <section id="statusCard" class="card status-card"><h2>Connection Status</h2><div id="status"></div></section>
+    <section id="cameraCard" class="card video-card">
       <div class="video-card-title">
-        <h2>Video / Camera</h2>
-      </div>
-      <div class="camera-top-actions">
-        <button id="camRefresh">Reload Camera</button>
-        <button id="camTest">Test Camera</button>
-        <button id="camCalibrate">Calibrate Overlay</button>
-        <button id="camPopout">Open Video</button>
-        <button id="camVideoToggle">Disable Video</button>
+        <h2>Camera &amp; Overlay</h2>
       </div>
       <div id="camera-test-status" class="camera-test-status muted small"></div>
       <div class="video-frame-wrap">
@@ -88,6 +121,16 @@
           <a id="downloadLatestRaw" href="#" target="_blank" class="camera-action-hidden" aria-hidden="true" tabindex="-1">Download Raw</a>
         </div>
       </div>
+      <details class="dashboard-camera-tools">
+        <summary>Video &amp; alignment tools</summary>
+        <div class="camera-top-actions">
+          <button id="camRefresh">Reload Camera</button>
+          <button id="camTest">Test Camera</button>
+          <button id="camCalibrate">Calibrate Overlay</button>
+          <button id="camPopout">Open Video</button>
+          <button id="camVideoToggle">Disable Video</button>
+        </div>
+      </details>
     </section>
     <section id="manualControlsCard" class="card manual-card">
       <h2>Manual Controls</h2>
@@ -138,12 +181,12 @@
           <button class="danger" id="stop">Stop Job</button>
         </div>
 
-        <div class="manual-section danger-zone">
+        <details class="dashboard-laser-tools"><summary>Laser test / low power &amp; timed</summary><div class="manual-section danger-zone">
           <h3>Laser Test</h3>
           <div class="button-row">
             <button id="testFire" class="danger">Test Fire (low power/timed)</button>
           </div>
-        </div>
+        </div></details>
 
         <div id="manualMsg"></div>
       </div>
@@ -244,6 +287,7 @@
       <div id="consoleCommandStatus" class="muted small"></div>
     </div>
   </section>
+  </div>
 </main>
 <div id="camera-calibration-modal" class="modal-backdrop hidden" aria-hidden="true">
   <div class="calibration-modal" role="dialog" aria-modal="true" aria-label="Camera Overlay Calibration">
@@ -257,6 +301,7 @@
     <iframe id="camera-calibration-frame" title="Camera Overlay Calibration"></iframe>
   </div>
 </div>
-<script src="/static/app.js"></script>
+<script src="/static/dashboard-layout.js?v=1.2.4-layout1"></script>
+<script src="/static/app.js?v=1.2.4-layout1"></script>
 </body>
 </html>

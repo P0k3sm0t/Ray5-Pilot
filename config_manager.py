@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import math
+import tempfile
+from copy import deepcopy
+from threading import RLock
 from pathlib import Path
 from typing import Any
 
@@ -227,6 +231,7 @@ class ConfigManager:
         self.base_dir = base_dir
         self.config_path = base_dir / "config.json"
         self.example_path = base_dir / "config.example.json"
+        self._save_lock = RLock()
 
     def ensure_config(self) -> dict[str, Any]:
         if self.config_path.exists():
@@ -242,26 +247,32 @@ class ConfigManager:
             data = json.loads(self.config_path.read_text(encoding="utf-8-sig"))
         except Exception:
             data = {}
-        return self._merged(DEFAULT_CONFIG, data)
+        return self._merged(DEFAULT_CONFIG, data if isinstance(data, dict) else {})
 
     def save(self, data: dict[str, Any]) -> None:
+        with self._save_lock:
+            self._save_locked(data)
+
+    def _save_locked(self, data: dict[str, Any]) -> None:
         try:
             current_raw = json.loads(self.config_path.read_text(encoding="utf-8-sig")) if self.config_path.exists() else {}
         except Exception:
             current_raw = {}
         merged_current = self._merged(DEFAULT_CONFIG, current_raw if isinstance(current_raw, dict) else {})
         merged_final = self._merged(merged_current, data)
-        temp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
-        payload = json.dumps(merged_final, indent=2)
+        payload = json.dumps(merged_final, indent=2, allow_nan=False)
+        temp_path = None
         try:
-            with open(temp_path, "w", encoding="utf-8") as f:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.base_dir,
+                                             prefix=".config_", suffix=".tmp", delete=False) as f:
+                temp_path = Path(f.name)
                 f.write(payload)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(temp_path, self.config_path)
         except Exception:
             try:
-                if temp_path.exists():
+                if temp_path is not None and temp_path.exists():
                     temp_path.unlink()
             except Exception:
                 pass
@@ -269,6 +280,17 @@ class ConfigManager:
 
     def validate(self, data: dict[str, Any]) -> tuple[bool, str]:
         try:
+            if not isinstance(data, dict):
+                return False, "Config must be a JSON object"
+            pending = [("config", data)]
+            while pending:
+                key, value = pending.pop()
+                if isinstance(value, dict):
+                    pending.extend((f"{key}.{k}", v) for k, v in value.items())
+                elif isinstance(value, list):
+                    pending.extend((f"{key}[{i}]", v) for i, v in enumerate(value))
+                elif isinstance(value, float) and not math.isfinite(value):
+                    return False, f"{key} must be a finite number"
             ray_host = str(data.get("ray5", {}).get("host", "")).strip()
             if not ray_host:
                 return False, "ray5.host cannot be empty"
@@ -285,7 +307,7 @@ class ConfigManager:
             if web_debug and not _is_local_web_host(web_host):
                 return False, "web_ui.debug can only be enabled when web_ui.host is localhost or 127.0.0.1."
             timeout = float(data.get("ray5", {}).get("request_timeout_seconds", 4))
-            if timeout <= 0:
+            if not math.isfinite(timeout) or timeout <= 0:
                 return False, "ray5.request_timeout_seconds must be > 0"
             jobs = data.get("jobs", {})
             imported_dir = str(jobs.get("imported_jobs_dir") or jobs.get("imported_jobs_folder") or "").strip()
@@ -295,7 +317,7 @@ class ConfigManager:
             if not watched_dir:
                 return False, "jobs.watched_gcode_dir cannot be empty"
             poll_seconds = float(jobs.get("watch_poll_seconds", 3))
-            if poll_seconds < 1:
+            if not math.isfinite(poll_seconds) or poll_seconds < 1:
                 return False, "jobs.watch_poll_seconds must be >= 1"
             camera = data.get("camera", {})
             if not bool(camera.get("enabled", False)):
@@ -319,16 +341,18 @@ class ConfigManager:
             if tl_source not in {"processed", "raw"}:
                 return False, "timelapse.frame_source must be 'processed' or 'raw'"
             tl_fps = float(timelapse.get("playback_fps", 10) or 10)
-            if tl_fps < 1 or tl_fps > 60:
+            if not math.isfinite(tl_fps) or tl_fps < 1 or tl_fps > 60:
                 return False, "timelapse.playback_fps must be between 1 and 60"
             tl_final_delay = float(timelapse.get("final_capture_delay_seconds", 3) or 0)
-            if tl_final_delay < 0 or tl_final_delay > 30:
+            if not math.isfinite(tl_final_delay) or tl_final_delay < 0 or tl_final_delay > 30:
                 return False, "timelapse.final_capture_delay_seconds must be between 0 and 30"
             machine = data.get("machine", {})
             min_x = float(machine.get("min_x", 0))
             max_x = float(machine.get("max_x", 390))
             min_y = float(machine.get("min_y", 0))
             max_y = float(machine.get("max_y", 360))
+            if not all(math.isfinite(v) for v in (min_x, max_x, min_y, max_y)):
+                return False, "Machine bounds must be finite numbers."
             if min_x >= max_x:
                 return False, "Machine min X must be less than machine max X."
             if min_y >= max_y:
@@ -338,10 +362,10 @@ class ConfigManager:
             return False, str(exc)
 
     def _merged(self, default: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
-        out: dict[str, Any] = dict(default)
+        out: dict[str, Any] = deepcopy(default)
         for k, v in current.items():
             if isinstance(v, dict) and isinstance(out.get(k), dict):
                 out[k] = self._merged(out[k], v)
             else:
-                out[k] = v
+                out[k] = deepcopy(v)
         return out
