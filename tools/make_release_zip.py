@@ -30,6 +30,7 @@ INCLUDE_PATHS = [
     "updater.py",
     "config.example.json",
     "README.md",
+    "RELEASE_NOTES.md",
     "requirements.txt",
     "LICENSE",
     "web",

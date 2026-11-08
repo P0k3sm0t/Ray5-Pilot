@@ -2,7 +2,7 @@
 
 A local, file-based controller for the Longer Ray5 using its ESP3D-style HTTP and WebSocket interfaces. Design in your laser software, export G-code, then use Pilot to frame, upload, run, and monitor it.
 
-**Documentation status:** the usage sections describe the current working copy, including changes not yet published. `VERSION` remains `1.2.4`; the historical release notes below do not announce these changes as a new release.
+**Version:** `1.2.5`. The usage sections describe this version's workflows; older release notes are preserved below. See [V1.2.5 release summary](RELEASE_NOTES.md) for highlights, validation, and important limitations.
 
 - [Getting started](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Getting-Started)
 - [Dashboard guide](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Dashboard)
@@ -580,7 +580,9 @@ The author/contributors are not responsible for damage, injury, loss, failed job
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
 
-## Current working-copy changes (not released)
+## Ray5 Pilot V1.2.5
+
+Dashboard, firmware-tools, performance, and recovery update.
 
 - Organized Dashboard, Settings, GRBL, and ESP32 workflows, with preserved job/machine controls and reviewed firmware edits.
 - Fixed incomplete GRBL reads, ESP32 status-query reporting, Stop response handling, and reporting of HTTP 200 firmware errors such as an interface-busy failure.
@@ -590,7 +592,7 @@ Always supervise laser operation, verify all files and settings before running a
 
 Offline checks passed 112 Python tests, packaging/checksum verification, updater-compatible extraction, and rendering of the four main pages from an isolated extracted copy. Supervised laser-off motion and read-only GRBL/ESP32 checks are recorded in `docs/AUDIT_2026-11-08.md`; updater isolation/recovery checks are in `docs/UPDATER_TEST_2026-11-08.md`.
 
-**Not yet verified:** a complete fresh Windows EXE first-run/dependency-install/browser-launch test. The later attempt stopped before installation; package checks alone do not prove that workflow on another PC. No release has been made for these working-copy changes.
+**Not yet verified:** a complete fresh Windows EXE first-run/dependency-install/browser-launch test. The later attempt stopped before installation; package checks alone do not prove that workflow on another PC. Python and the complete extracted project are still required; ffmpeg is a separate dependency for ffmpeg capture and MP4 output.
 
 Developer checks, using the project's installed requirements:
 
