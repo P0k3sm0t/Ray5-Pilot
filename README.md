@@ -11,29 +11,30 @@ A local, file-based controller for the Longer Ray5 using its ESP3D-style HTTP an
 
 ## Web UI Demo Screenshots
 
-These screenshots illustrate earlier builds; use the workflow sections below for the current sidebar layout and control locations.
+The four interface screenshots show the current sidebar layouts. Click a preview to view the full-page image. The Dashboard uses an illustrative camera placeholder and example imported job; private details are masked.
+
 ### Dashboard
 
-<a href="https://github.com/user-attachments/assets/f01bfa7e-c205-4ba6-a21e-b0cdf8155320">
-  <img src="https://github.com/user-attachments/assets/f01bfa7e-c205-4ba6-a21e-b0cdf8155320" width="420" alt="Ray5 Pilot dashboard screenshot">
+<a href="https://github.com/user-attachments/assets/ffa26d1b-f13b-46e4-bbfd-7f8e50e070c6">
+  <img src="https://github.com/user-attachments/assets/ffa26d1b-f13b-46e4-bbfd-7f8e50e070c6" width="420" alt="Ray5 Pilot dashboard with camera placeholder and example imported job">
 </a>
 
 ### Settings
 
-<a href="https://github.com/user-attachments/assets/c9ab85da-c22a-471f-a403-151bad736fe1">
-  <img src="https://github.com/user-attachments/assets/c9ab85da-c22a-471f-a403-151bad736fe1" width="420" alt="Ray5 Pilot settings screenshot">
+<a href="https://github.com/user-attachments/assets/d6cbe383-4fd3-41de-88a6-917165bb4179">
+  <img src="https://github.com/user-attachments/assets/d6cbe383-4fd3-41de-88a6-917165bb4179" width="420" alt="Ray5 Pilot settings screenshot">
 </a>
 
 ### GRBL Settings
 
-<a href="https://github.com/user-attachments/assets/7feac8cb-c26b-4ad5-b767-cf576de72868">
-  <img src="https://github.com/user-attachments/assets/7feac8cb-c26b-4ad5-b767-cf576de72868" width="420" alt="Ray5 Pilot firmware settings screenshot">
+<a href="https://github.com/user-attachments/assets/ad5208fc-b1f0-49af-8489-88eea3aa00f6">
+  <img src="https://github.com/user-attachments/assets/ad5208fc-b1f0-49af-8489-88eea3aa00f6" width="420" alt="Ray5 Pilot GRBL settings screenshot">
 </a>
 
 ### ESP32 Settings
 
-<a href="https://github.com/user-attachments/assets/1742ba9b-e8f6-490c-adab-dcc286533380">
-  <img src="https://github.com/user-attachments/assets/1742ba9b-e8f6-490c-adab-dcc286533380" width="420" alt="Ray5 Pilot firmware settings screenshot">
+<a href="https://github.com/user-attachments/assets/3a3e1331-ea86-4c8f-94da-9b092cea4cb9">
+  <img src="https://github.com/user-attachments/assets/3a3e1331-ea86-4c8f-94da-9b092cea4cb9" width="420" alt="Ray5 Pilot ESP32 and ESP3D settings screenshot">
 </a>
 
 ### Overlay Accuracy Preview
