@@ -1,3 +1,16 @@
+
+
+
+<img width="2400" height="2807" alt="01-dashboard-full" src="https://github.com/user-attachments/assets/ffa26d1b-f13b-46e4-bbfd-7f8e50e070c6" />
+
+<img width="2400" height="1811" alt="02-settings-full" src="https://github.com/user-attachments/assets/d6cbe383-4fd3-41de-88a6-917165bb4179" />
+
+<img width="2400" height="1893" alt="03-grbl-full" src="https://github.com/user-attachments/assets/ad5208fc-b1f0-49af-8489-88eea3aa00f6" />
+
+<img width="2400" height="1686" alt="04-esp32-full" src="https://github.com/user-attachments/assets/3a3e1331-ea86-4c8f-94da-9b092cea4cb9" />
+
+
+
 # Ray5 Pilot
 
 A local, file-based controller for the Longer Ray5 using its ESP3D-style HTTP and WebSocket interfaces. Design in your laser software, export G-code, then use Pilot to frame, upload, run, and monitor it.
