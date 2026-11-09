@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ray5 Pilot Settings</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="alternate icon" href="/static/favicon.ico"><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/settings.css?v=1.2.5"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ray5 Pilot Settings</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="alternate icon" href="/static/favicon.ico"><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/settings.css?v=2.0.0"></head>
 <body class="settings-page">
 <header><div class="brand brand-logo-only"><img src="/static/logo.svg" alt="Ray5 Pilot" class="brand-logo-main"></div><nav><a href="/">Dashboard</a><a href="/setup">Settings</a><a href="/machine-settings">GRBL</a><a href="/esp32">ESP32</a></nav></header>
 <main class="settings-main">
@@ -11,7 +11,7 @@
 <div id="settingsCategoryHeading" class="settings-category-heading" hidden><h2 id="settingsCategoryTitle"></h2><p id="settingsCategoryDescription"></p></div>
 <div class="settings-grid" id="settingsSections">
 <section class="card"><h3>Ray5 Network</h3><p>Connection settings for the Ray5 ESP32 web interface. The Ray5 usually uses HTTP port 8848.</p><label>Host <input id="ray_host"></label><p class="field-help">IP address of your Ray5 on your local network. Example: 192.168.1.50</p><label>Port <input id="ray_port" type="number"></label><p class="field-help">ESP3D HTTP port. Longer Ray5 commonly uses 8848.</p><label>Timeout <input id="ray_timeout" type="number" step="0.1"></label><p class="field-help">How long Ray5 Pilot waits for a response before treating the request as failed.</p><label>WebSocket Ping Interval <input id="status_ws_ping_interval" type="number" step="0.1"></label><p class="field-help">Automatic WebSocket ping interval in seconds. Use 0 to disable automatic pings.</p><label>WebSocket Ping Timeout <input id="status_ws_ping_timeout" type="number" step="0.1"></label><p class="field-help">Seconds to wait for a WebSocket ping response when pings are enabled.</p></section>
-<section class="card"><h3>Web UI</h3><p>Where Ray5 Pilot itself runs on this computer.</p><label>Host <input id="web_host"></label><p class="field-help">127.0.0.1 means this computer only. 0.0.0.0 allows other LAN devices to access the UI.</p><p class="field-help">Do not expose Ray5 Pilot to the internet. No authentication is currently included.</p><label>Port <input id="web_port" type="number"></label><p class="field-help">Browser port for Ray5 Pilot. Default: 5050.</p><label>Active Job Poll Interval <input id="status_active_poll_seconds" type="number" step="0.1"></label><p class="field-help">How often Ray5 Pilot polls status while the machine is running, holding, jogging, or door-active.</p></section>
+<section class="card"><h3>Web UI</h3><p>Where Ray5 Pilot itself runs on this computer.</p><label>Host <input id="web_host"></label><p class="field-help">127.0.0.1 means this computer only. 0.0.0.0 allows other LAN devices to access the UI.</p><p class="field-help">Do not expose Ray5 Pilot to the internet. No authentication is currently included.</p><label>Port <input id="web_port" type="number"></label><p class="field-help">Browser port for Ray5 Pilot. Default: 5050.</p><label><input id="web_open_browser" type="checkbox"> Open browser on startup</label><p class="field-help">Opens the configured Web UI address once the server is ready. Disable for headless use. Restart Pilot to apply.</p><label>Active Job Poll Interval <input id="status_active_poll_seconds" type="number" step="0.1"></label><p class="field-help">How often Ray5 Pilot polls status while the machine is running, holding, jogging, or door-active.</p></section>
 <section class="card">
 <h3>Camera</h3>
 <p>Optional RTSP or snapshot camera used for live view and laser software overlay snapshots.</p>
@@ -123,8 +123,8 @@
 </div></div>
 <div class="settings-savebar"><div><span id="settingsDirtyState" role="status" aria-live="polite">Loading settings...</span><p id="saveOut" role="status" aria-live="polite"></p></div><div class="settings-save-actions"><button id="discardCfg" class="settings-secondary" type="button" disabled>Discard changes</button><button id="saveCfg" type="button" disabled>Save settings</button></div></div>
 </main>
-<script src="/static/settings-layout.js?v=1.2.5"></script>
-<script src="/static/setup.js?v=1.2.5"></script>
+<script src="/static/settings-layout.js?v=2.0.0"></script>
+<script src="/static/setup.js?v=2.0.0"></script>
 </body></html>
 
 

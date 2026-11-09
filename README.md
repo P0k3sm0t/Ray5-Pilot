@@ -2,11 +2,13 @@
 
 A local, file-based controller for the Longer Ray5 using its ESP3D-style HTTP and WebSocket interfaces. Design in your laser software, export G-code, then use Pilot to frame, upload, run, and monitor it.
 
-**Version:** `1.2.5`. The usage sections describe this version's workflows; older release notes are preserved below. See [V1.2.5 release summary](RELEASE_NOTES.md) for highlights, validation, and important limitations.
+**Version:** `2.0.0`. This major update brings SD-file framing, shared camera streaming for pop-out/timelapse, refreshed camera tools, faster repeat startup, and audited stability fixes. Existing local config is preserved; no firmware update is required for the verified Ray5. See the [V2.0.0 release summary](RELEASE_NOTES.md) and [audit report](docs/AUDIT_2.0.0.md) for validation and limitations. Older release notes below remain historical.
 
 - [Getting started](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Getting-Started)
 - [Dashboard guide](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Dashboard)
 - [Settings reference](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Settings)
+- [SD files and framing](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/SD-Card-Files)
+- [Camera and calibration](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Camera-Overlay-Calibration)
 - [Troubleshooting](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Troubleshooting)
 
 ## Web UI Demo Screenshots
@@ -96,6 +98,7 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Imported Jobs workflow: import, frame, upload, upload + run, delete
 - Direct SD card upload
 - SD card file list, start, delete, and refresh
+- **SD Frame:** reads the actual selected SD file, then generates a laser-off rectangular boundary path. Requires fresh live Idle status, successful retrieval/validation, and movement confirmation; no local filename-match fallback. See [SD file framing](#sd-file-framing-v200).
 - SD Card Files auto-refresh pauses during active/busy machine states
 - Auto-shorten long filenames when enabled
 - Communication-loss safety lockout for active or recently started jobs
@@ -114,6 +117,9 @@ A local Flask web controller for Longer Ray5 laser engravers using the ESP3D-sty
 - Camera Overlay Alignment card with source X/Y offset and scaling explanations
 - Enable/Disable Video button near the camera controls
 - Full-size pop-out window for live camera video
+- **Camera tools:** site-matched pop-out and calibration pages, responsive layouts, live/connecting/unavailable feedback, and clearer calibration guidance. See [Camera pages](#camera-pages-v200).
+- Shared camera reader across Dashboard/pop-out viewers keeps timelapse's live-frame cache available during handoff, without opening one RTSP connection per viewer.
+- Failed capture/processing preserves the last good snapshots; images are staged before publication and capture-time cleanup runs only after success.
 - Disabled-video placeholder when camera preview is turned off
 
 ### Backups and Release Packaging
@@ -213,7 +219,7 @@ http://127.0.0.1:5050
 
 The EXE launcher runs `Start_Ray5_Pilot.bat`, which creates a local `.venv` and installs `requirements.txt` before starting the app. Python and the complete extracted project are still required. First startup requires internet access to install the packages, including OpenCV (`cv2`). Both launchers use this same environment.
 
-The current BAT checks/upgrades pip and installs requirements on each launch. It opens the browser before Flask is guaranteed ready: wait for startup and reload if necessary. The launcher URL is fixed at 5050; after changing `web_ui.port`, open the configured URL manually. Python is not bundled, and ffmpeg for RTSP fallback/MP4 creation is a separate PATH dependency.
+The BAT checks cached dependency setup and installs requirements only when the environment needs setup or repair. Pilot opens the configured browser address once the server is ready; set `web_ui.open_browser_on_start` to false for headless use. Python is not bundled, and ffmpeg for RTSP fallback/MP4 creation is a separate PATH dependency.
 
 If an older EXE fails with `ModuleNotFoundError: No module named 'cv2'`, run `Start_Ray5_Pilot.bat` from the extracted project folder. It installs the dependencies and starts Pilot using `.venv`. Continue using the BAT until you replace the old EXE with the updated launcher; installing packages into `.venv` does not repair an old EXE that selects a different Python installation.
 
@@ -505,7 +511,7 @@ For development, `node tools/test_settings_ui.cjs` runs the settings browser reg
 The dashboard matches the Settings, GRBL, and ESP32 pages with sidebar navigation:
 
 - **Workspace** keeps Camera & Overlay above the job actions, with Manual Controls beside the video and Connection Status below the controls. The diagonal jog buttons use arrows. Live Console stays below the workspace.
-- **Jobs & SD Files** offers a full-width view of the same Imported Jobs and Ray5 SD Files tabs. Local imported jobs retain Frame, Upload, Upload + Run, and Delete. Machine SD files retain their existing Start/Delete, upload, storage, and selection tools. Upload does not mean Upload + Run.
+- **Jobs & SD Files** offers a full-width view of the same Imported Jobs and Ray5 SD Files tabs. Local imported jobs retain Frame, Upload, Upload + Run, and Delete. Machine SD files retain Start/Delete, upload, storage, and selection tools; SD Frame reads the machine file before framing. Upload does not mean Upload + Run.
 - **Camera & Alignment** expands the same camera view. Snapshot/Open Folder/Open Latest/Open Raw remain below the feed. Reload, Test Camera, Calibrate Overlay, Open Video, and video enable/disable are under Video & alignment tools.
 - **Timelapse** keeps manual capture, playback, multi-file deletion, recoverable sessions, and frame cleanup. Play brings the existing video player into the workspace.
 - **Console & Diagnostics** provides the existing command sender/history and controller/system details. Reported position and connection details remain available in an expandable section.
@@ -515,6 +521,59 @@ Stop Job stays in the top action bar across sections. Alarm/unlock and communica
 Some Ray5 firmware executes Ctrl-X but responds with HTTP 200 and the bare text `Error`. Soft-reset Stop now recognizes only that specific reset acknowledgement; the raw reply remains available. HTTP failures, timeouts, invalid-command replies, and laser-off command failures are not suppressed. Stop still uses the configured command sequence and may leave the controller alarmed until Unlock/Home. `python tools/test_stop_realtime.py` runs the isolated response-handling regression tests with the normal requirements installed.
 
 For development, `node tools/test_dashboard_ui.cjs` runs the actual dashboard scripts against isolated API fixtures (using the same optional `PLAYWRIGHT_MODULE` and `PLAYWRIGHT_CHROMIUM` settings as the other UI tests). It covers preserved IDs, all eight jog directions, Home/preset/center, air assist, pause/resume/Stop, confirmed laser-test requests, imported and SD file actions, snapshots, calibration, video controls, timelapse/recovery, console/history, alarm/lockout recovery, and responsive layouts. Media playback is stubbed; real camera playback and physical motion still require supervised hardware verification. Screenshots go to `build/dashboard-ui-test/`. No laser is contacted and no local configuration is changed.
+
+## SD file framing (V2.0.0)
+
+This feature frames a file already on the Ray5 SD card. It is separate from Imported Jobs Frame, which uses a local imported file. Restart Pilot after updating and refresh the browser if the new button is missing; no firmware update is required for the verified Ray5.
+
+1. Open **Jobs & SD Files > Ray5 SD Files**, or the SD tab below the camera in Workspace.
+2. Wait for fresh online **Idle** status, then refresh the SD list.
+3. Find the intended `.gc`, `.gcode`, or `.nc` file and choose its row's **Frame** button.
+4. Check that the head can move safely, then confirm the laser-off movement prompt.
+5. Pilot reads and validates that SD file, calculates its bounds, applies the configured frame margin/feed, and sends a generated rectangle. Watch the machine until it returns to Idle.
+6. Use **Start** separately when ready to engrave. Frame does not start or upload the engraving job.
+
+Pilot first tries `GET /SD/<exact-path>`. If the native download is unavailable, it tries `GET /command?plain=[ESP221]/<exact-path>` with URL-encoded query parameters. `[ESP221]` displays SD file contents; it is not the `[ESP220]` run command. Filename case and directory come from a fresh SD listing. Nothing is inferred from a same-named local export.
+
+The frame path starts and ends with `M5`; original laser-on/power commands from the file are not executed. A live WebSocket Idle report received within five seconds is required before reading and again before sending moves. Alarm, Run/Hold/Home, stale/offline status, safety lockout, active laser tests, updates, and transfers block the request. Read/size/time failures, HTML/error replies, rejected G-code, missing bounds, or invalid workspace bounds also block movement. Workspace validation cannot be bypassed through the imported-frame setting. Configure `framing.margin_mm`, `framing.feedrate`, and machine limits under **Settings > Motion & Framing**; parsing is not a full G-code interpreter, so verify the boundary physically.
+
+**Frame sent** means the command batch was accepted, not that motion has finished. **Stop Job** stays available and cancels unsent frame commands; firmware-accepted motion cannot be retracted, and network Stop is not a physical emergency stop. If a file's Frame button becomes unavailable after a read failure, fix the cause and use **Refresh** on SD Files to retry. If neither SD read method is supported, SD Frame remains unavailable; explicitly import the original file to use the separate Imported Jobs workflow instead.
+
+Hardware verification retrieved two real SD files and completed a supervised 94 x 94 mm laser-off frame at feed 700, with reported power zero and a final Idle state. That verifies the tested Ray5, not every firmware or arbitrary G-code file. Isolated regressions: `python -m unittest tools.test_sd_frame` and `node tools/test_dashboard_ui.cjs` (no hardware accessed).
+
+## Camera pages (V2.0.0)
+
+The pop-out video and browser calibration tools now share Pilot's header/navigation, card styling, centered controls, and responsive layouts. Existing camera capture/processing settings and machine controls are unchanged.
+
+### Live camera pop-out
+
+Choose **Camera & Overlay > Video & alignment tools > Open Video** to open `/camera/popout`. The page shows Connecting, Live, or unavailable feedback, with **Refresh Stream**, **Back to Dashboard**, and **Close** controls. Esc also requests closing the pop-out; manually opened tabs may need the browser's close control. The feed retains its aspect ratio, stops when leaving the page, and reconnects when restored through browser history. Closing a Dashboard-launched pop-out allows the Dashboard to restore its preview. The pop-out is view-only; machine controls and Stop remain on the Dashboard. Keep supervising the actual laser.
+
+### Browser overlay calibration
+
+1. Keep the camera fixed and place a known rectangular reference on the bed.
+2. Choose **Calibrate Overlay** under Video & alignment tools. Use the embedded tool or its **Open In New Window** action; `/camera/calibration` and the existing `/camera-calibration` alias show the same tool. Standalone pages include site navigation; embedded mode hides the duplicate header.
+3. Choose **Take Snapshot**, or **Reload Image** to load `latest_raw.jpg`. A missing image shows instructions rather than a blank stage.
+4. Choose **Reset** if replacing existing points, then click top-left, top-right, bottom-right, bottom-left. Numbered markers and the reference-corner list show points in raw-image pixels even when the preview is resized.
+5. Review the rotation/source-offset/fine-rotation summary. Adjust processing in **Settings > Camera & Alignment** if needed.
+6. Choose **Save Calibration** to enable deskew and save the four points to local `config.json`. Reset only clears draft points; closing without saving does not replace the saved calibration. Save/capture failures are shown and can be retried.
+7. Take a new Dashboard snapshot, open **Latest**, and verify the corrected image's geometry and physical size in your laser software. Keep its layer's Output off and lock it before placing artwork.
+
+Calibration changes camera reference images, not GRBL settings or machine coordinates. The optional `calibrate_camera.py` desktop tool remains separate and unchanged. Browser regression coverage: `node tools/test_camera_tools_ui.cjs` with the same Playwright environment options above; it checks pop-out lifecycle, both calibration URLs, embedded layout, point mapping, Save/Reset/error handling, and desktop/mobile layouts without accessing the real camera or config.
+
+### Pop-out recording and recovery
+
+Dashboard and pop-out viewers now share one camera publisher for the same source. It keeps only the latest frame and stays warm briefly during viewer handoff, so timelapse can keep using the live-frame cache instead of opening another RTSP connection. A successful capture clears a previous transient recording error. Stream opens/reads have bounded RTSP timeouts; configured fallback capture still applies when there is no fresh cached frame. Camera failure cannot guarantee uninterrupted recording, and opening an external camera app still uses a separate connection.
+
+### Air assist status
+
+Pilot ignores cached accessory reports older than the last pump command. Once accessory reporting has been observed, a fresh status without `A:F` correctly confirms pump Off. This fixes the stale On indicator that could make one M9 appear ineffective. The hardware check confirmed that a single M9 cleared the Ray5's flood-assist flag; no blind duplicate pump commands were added. Check the physical pump if firmware reports and hardware disagree.
+
+### Startup and upgrade notes
+
+The Windows BAT/EXE and Linux/macOS launcher cache successful requirements setup inside `.venv`. Unchanged requirements, package versions, and working imports skip pip/network setup on later launches. Changed/missing/broken dependencies are checked/installed again; first setup needs internet and Python already installed. Pilot, not the launchers, opens the configured browser address once the server is ready. Disable **Settings > App & Updates > Web UI > Open browser on startup** for headless use (`web_ui.open_browser_on_start: false`). No repeated forced pip upgrade is needed.
+
+Back up local config and valuable images before updating. Normal configured startup snapshot cleanup is separate from updater preservation; failed manual captures now preserve existing images, but startup cleanup can still remove them. V2 uses the existing config shape with defaults for new keys and keeps the current controller command routes. Stop is still a network soft reset, not a physical emergency stop. Pilot remains an unauthenticated local single-user tool, not an Internet-facing service.
 
 ## GRBL page workflow
 
@@ -579,6 +638,10 @@ Ray5 Pilot is provided as-is and is used at your own risk. This software control
 The author/contributors are not responsible for damage, injury, loss, failed jobs, machine misconfiguration, unsafe operation, or any other consequences resulting from the use or misuse of this software.
 
 Always supervise laser operation, verify all files and settings before running a job, keep proper fire safety equipment nearby, use appropriate eye protection/enclosure/ventilation, and test all machine-control features carefully on your own hardware before relying on them.
+
+## Ray5 Pilot V2.0.0
+
+V2.0 adds actual-SD-file laser-off framing, shared camera streaming across pop-out and Dashboard viewers, refreshed camera/calibration pages, and faster cached startup. The audit fixes snapshot preservation, atomic/concurrent job imports, invalid-request handling, stale Air Off reporting, RTSP timeouts, and localhost debug checks. See [release notes](RELEASE_NOTES.md) and the [2.0 audit](docs/AUDIT_2.0.0.md). Earlier versions below are historical records, not current behavior.
 
 ## Ray5 Pilot V1.2.5
 

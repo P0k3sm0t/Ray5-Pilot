@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import re
 import shutil
 import time
+import tempfile
 from collections import OrderedDict
 from copy import deepcopy
 from threading import RLock
@@ -31,6 +33,7 @@ class JobManager:
         self._bounds_cache: OrderedDict[Path, tuple[tuple[int, int, int], dict[str, Any] | None]] = OrderedDict()
         self._bounds_cache_lock = RLock()
         self._currently_importing: set[str] = set()
+        self._import_lock = RLock()
         limits = cfg.get("limits", {}) if isinstance(cfg.get("limits"), dict) else {}
         self.max_upload_bytes = int(float(limits.get("max_gcode_upload_mb", 50)) * 1024 * 1024)
         self.max_bounds_parse_bytes = int(float(limits.get("max_bounds_parse_mb", 50)) * 1024 * 1024)
@@ -102,24 +105,15 @@ class JobManager:
             raise ValueError("File extension not allowed")
         if src_path.stat().st_size > self.max_upload_bytes:
             raise ValueError(f"File exceeds upload limit ({self.max_upload_bytes} bytes)")
-        safety = self.validate_gcode_path(src_path)
-        if not safety.get("ok"):
-            raise ValueError(
-                f"Blocked: this looks like 3D printer G-code, not laser G-code. "
-                f"reason={safety.get('reason','')} matches={','.join(safety.get('matches',[]))}"
-            )
-        target = self._safe_target(src_path.name)
-        target.write_bytes(src_path.read_bytes())
-        s = target.stat()
-        return {
-            "name": target.name,
-            "filename": target.name,
-            "size_bytes": s.st_size,
-            "modified": s.st_mtime,
-            "bounds": self.parse_bounds_path(target),
-        }
+        with src_path.open("rb") as source:
+            content = source.read(self.max_upload_bytes + 1)
+        return self.import_uploaded_bytes(src_path.name, content)
 
     def import_uploaded_bytes(self, filename: str, content: bytes) -> dict[str, Any]:
+        with self._import_lock:
+            return self._import_uploaded_bytes_locked(filename, content)
+
+    def _import_uploaded_bytes_locked(self, filename: str, content: bytes) -> dict[str, Any]:
         ext = Path(filename).suffix.lower()
         if ext not in self.allowed:
             raise ValueError("File extension not allowed")
@@ -132,7 +126,15 @@ class JobManager:
                 f"reason={safety.get('reason','')} matches={','.join(safety.get('matches',[]))}"
             )
         target = self._safe_target(filename)
-        target.write_bytes(content)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=self.imported_dir, suffix=".tmp", delete=False) as temp:
+                temp_path = Path(temp.name)
+                temp.write(content)
+            os.replace(temp_path, target)
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
         s = target.stat()
         return {
             "name": target.name,
@@ -197,6 +199,10 @@ class JobManager:
             pass
 
     def _import_watched_file(self, src: Path) -> dict[str, Any] | None:
+        with self._import_lock:
+            return self._import_watched_file_locked(src)
+
+    def _import_watched_file_locked(self, src: Path) -> dict[str, Any] | None:
         if src.suffix.lower() not in self.allowed:
             return None
         if not src.exists():
@@ -257,7 +263,17 @@ class JobManager:
                 "matches": safety.get("matches", []),
                 "rejected_path": str(rej_target),
             }
-        shutil.copy2(src, target)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=self.imported_dir, suffix=".tmp", delete=False) as temp:
+                temp_path = Path(temp.name)
+            shutil.copy2(src, temp_path)
+            if self._file_sha256(temp_path) != sha:
+                return None  # The source changed during validation/copy; retry next scan.
+            os.replace(temp_path, target)
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
         if not target.exists() or target.stat().st_size <= 0:
             return None
         if not self.delete_watched_after_import:
@@ -578,6 +594,9 @@ class JobManager:
         b = self.parse_bounds(filename)
         if not b:
             raise ValueError("Could not determine XY bounds for this job.")
+        return self.frame_commands_from_bounds(b, cfg, margin=margin, feed=feed)
+
+    def frame_commands_from_bounds(self, b: dict[str, Any], cfg: dict[str, Any], margin: float | None = None, feed: float | None = None) -> dict[str, Any]:
         framing = cfg.get("framing", {})
         machine = cfg.get("machine", {})
 

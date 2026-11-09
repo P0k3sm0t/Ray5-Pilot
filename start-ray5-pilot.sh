@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "Starting Ray5 Pilot..."
-echo "Web UI should open at: http://127.0.0.1:5050"
+echo "Web UI opens at the configured address after the server is ready."
 echo "If needed on Linux: chmod +x start-ray5-pilot.sh"
 echo
 
@@ -55,19 +55,11 @@ if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Upgrading pip (best effort)..."
-"$PYTHON_BIN" -m pip install --upgrade pip >/dev/null 2>&1 || true
-
-echo "Installing requirements..."
-"$PYTHON_BIN" -m pip install -r requirements.txt
+"$PYTHON_BIN" tools/prepare_environment.py
 
 if [ ! -f "config.json" ] && [ -f "config.example.json" ]; then
   cp "config.example.json" "config.json"
   echo "Created config.json from config.example.json"
-fi
-
-if command -v xdg-open >/dev/null 2>&1; then
-  xdg-open "http://127.0.0.1:5050" >/dev/null 2>&1 || true
 fi
 
 "$PYTHON_BIN" app.py

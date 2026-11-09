@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import webbrowser
 from datetime import datetime
@@ -23,12 +24,13 @@ import cv2
 from flask import Flask, jsonify, render_template, render_template_string, request, send_file
 from jinja2 import TemplateNotFound
 
-from camera_manager import CameraCaptureError, CameraManager, mask_camera_url, mjpeg_generator
+from camera_manager import CameraCaptureError, CameraManager, SharedCameraStream, mask_camera_url, mjpeg_generator
 from config_manager import ConfigManager
 from console_log import ConsoleLog
 from job_manager import JobManager
 from ray5_client import Ray5Client
 from ray5_status_monitor import Ray5StatusMonitor
+from platform_utils import open_dashboard_when_ready
 
 BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__, template_folder=str(BASE_DIR / "web" / "templates"), static_folder=str(BASE_DIR / "web" / "static"))
@@ -38,9 +40,9 @@ app = Flask(__name__, template_folder=str(BASE_DIR / "web" / "templates"), stati
 def guard_state_changing_requests():
     if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
         return None
-    if request.headers.get("X-Ray5-Pilot-Request") == "1":
-        return None
-    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+    if request.headers.get("X-Ray5-Pilot-Request") == "1" or request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        if request.is_json and not isinstance(request.get_json(silent=True), dict):
+            return jsonify({"ok": False, "error": "Request body must be a valid JSON object."}), 400
         return None
     console.add(
         "warn",
@@ -663,6 +665,7 @@ _placeholder_host_warned = False
 _placeholder_api_warned = False
 app_state_lock = RLock()
 sd_list_lock = RLock()
+sd_frame_lock = threading.Lock()
 runtime_started = False
 ray5_comm_busy_lock = RLock()
 ray5_comm_busy_state: dict[str, Any] = {
@@ -800,6 +803,7 @@ github_update_check_thread: threading.Thread | None = None
 GITHUB_UPDATE_CACHE_TTL_SECONDS = 1800.0
 camera_stream_clients = 0
 camera_stream_clients_lock = RLock()
+camera_stream_hub = SharedCameraStream()
 watch_state_lock = RLock()
 watched_import_lock = RLock()
 _watch_state: dict[str, Any] = {
@@ -2101,12 +2105,7 @@ def _debug_endpoints_enabled() -> bool:
 
 def _is_local_request() -> bool:
     addr = str(request.remote_addr or "").strip().lower()
-    if addr in {"127.0.0.1", "::1"}:
-        return True
-    host = str(request.host or "").split(":", 1)[0].strip().lower()
-    if host in {"localhost", "127.0.0.1", "::1"}:
-        return True
-    return False
+    return addr in {"127.0.0.1", "::1"}
 
 
 def _guard_debug_endpoint():
@@ -2438,6 +2437,7 @@ def _timelapse_worker() -> None:
             with timelapse_lock:
                 timelapse_state["snapshot_count"] = snap_count
                 timelapse_state["last_snapshot_at"] = time.time()
+                timelapse_state["error"] = ""
             console.add("info", f"Timelapse frame captured: {frame_target.name}")
         except Exception as exc:
             _set_camera_check_result(False, "timelapse frame capture failed")
@@ -2965,8 +2965,7 @@ def api_status() -> Any:
         job_progress_source = monitor_status.get("job_progress_source")
         accessory_state = str(monitor_status.get("accessory_state", "") or "")
         accessory_flags = monitor_status.get("accessory_flags") if isinstance(monitor_status.get("accessory_flags"), list) else []
-        if accessory_state:
-            _track_air_pump_from_accessory_state(accessory_state)
+        _track_air_pump_from_accessory_state(accessory_state, monitor_status.get("timestamp"))
     elif busy_snap.get("active", False):
         source = "upload_busy"
         state = "Busy / Uploading"
@@ -2988,8 +2987,6 @@ def api_status() -> Any:
         job_progress_source = monitor_status.get("job_progress_source") if monitor_status else None
         accessory_state = str(monitor_status.get("accessory_state", "") or "") if monitor_status else ""
         accessory_flags = monitor_status.get("accessory_flags") if (monitor_status and isinstance(monitor_status.get("accessory_flags"), list)) else []
-        if accessory_state:
-            _track_air_pump_from_accessory_state(accessory_state)
         online = True
     elif monitor_status:
         source = "fallback_offline"
@@ -3760,6 +3757,8 @@ def _set_air_pump_state(state: str, source: str) -> None:
         air_pump_state["state"] = normalized_state
         air_pump_state["source"] = normalized_source
         air_pump_state["updated_at"] = time.time()
+        if normalized_source == "command":
+            air_pump_state["last_command_at"] = air_pump_state["updated_at"]
 
 
 def _track_air_pump_from_command(command: str) -> None:
@@ -3784,26 +3783,27 @@ def _track_air_pump_from_parser_state(raw_text: str) -> None:
         _set_air_pump_state("off", "parser_state")
 
 
-def _track_air_pump_from_accessory_state(accessory_state: str) -> None:
+def _track_air_pump_from_accessory_state(accessory_state: str, reported_at: float | None = None) -> None:
     flags = [ch for ch in str(accessory_state or "").strip().upper() if ch.isalpha()]
-    if not flags:
+    if not isinstance(reported_at, (int, float)) or not math.isfinite(reported_at):
         return
     flags_text = "".join(flags)
     with app_state_lock:
+        if reported_at <= max(float(air_pump_state.get("last_command_at") or 0),
+                              float(air_pump_state.get("last_accessory_report_at") or 0)):
+            return  # A cached pre-command report must not undo the requested pump state.
+        air_pump_state["last_accessory_report_at"] = reported_at
+        if flags:
+            air_pump_state["accessory_supported"] = True
+        if not air_pump_state.get("accessory_supported"):
+            return
         previous_flags = str(air_pump_state.get("last_accessory_flags", "") or "")
         air_pump_state["last_accessory_flags"] = flags_text
-    if previous_flags == flags_text:
-        if "F" in flags:
-            _set_air_pump_state("on", "accessory_state")
-        else:
-            _set_air_pump_state("off", "accessory_state")
-        return
-    if "F" in flags:
-        _set_air_pump_state("on", "accessory_state")
-        console.add("info", f"[AIR PUMP STATUS PARSED] state=on source=accessory_state flags={flags_text}")
-    else:
-        _set_air_pump_state("off", "accessory_state")
-        console.add("info", f"[AIR PUMP STATUS PARSED] state=off source=accessory_state flags={flags_text}")
+        # GRBL omits A entirely when all accessories are off, including after M9.
+        state = "on" if "F" in flags else "off"
+        _set_air_pump_state(state, "accessory_state")
+    if previous_flags != flags_text:
+        console.add("info", f"[AIR PUMP STATUS PARSED] state={state} source=accessory_state flags={flags_text or 'none'}")
 
 
 def _normalize_laser_job_key(name: str) -> str:
@@ -5843,13 +5843,21 @@ def camera_stream() -> Any:
     def _stream_wrapper():
         global camera_stream_clients
         try:
-            yield from mjpeg_generator(
-                cam["url"],
-                cam["reconnect_seconds"],
-                rtsp_transport=str(cam.get("rtsp_transport", "tcp") or "tcp"),
-                on_frame_ok=_on_stream_frame_ok,
-                on_frame_fail=_on_stream_frame_fail,
-                on_frame_jpeg=camera.update_live_frame,
+            def publish_frame(jpeg: bytes) -> None:
+                # A Settings save can replace CameraManager while a pop-out remains open.
+                with app_state_lock:
+                    current_camera = camera
+                if current_camera.stream_url() == cam["url"]:
+                    current_camera.update_live_frame(jpeg)
+
+            transport = str(cam.get("rtsp_transport", "tcp") or "tcp")
+            yield from camera_stream_hub.subscribe(
+                (cam["url"], transport, cam["reconnect_seconds"]),
+                lambda stop: mjpeg_generator(
+                    cam["url"], cam["reconnect_seconds"], rtsp_transport=transport,
+                    on_frame_ok=_on_stream_frame_ok, on_frame_fail=_on_stream_frame_fail,
+                    on_frame_jpeg=publish_frame, stop_event=stop,
+                ),
             )
         finally:
             with camera_stream_clients_lock:
@@ -6330,11 +6338,11 @@ def api_jobs_frame() -> Any:
     body = request.get_json(silent=True) or {}
     filename = str(body.get("filename", "")).strip()
     framing = cfg.get("framing", {})
-    margin = float(body.get("margin", framing.get("margin_mm", framing.get("frame_margin_mm", 2.0))))
-    feed = float(body.get("feed", framing.get("feedrate", framing.get("frame_feedrate", 3000))))
     try:
+        margin = float(body.get("margin", framing.get("margin_mm", framing.get("frame_margin_mm", 2.0))))
+        feed = float(body.get("feed", framing.get("feedrate", framing.get("frame_feedrate", 3000))))
         frame_plan = jobs.frame_commands(filename=filename, cfg=cfg, margin=margin, feed=feed)
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
         console.add("error", f"Frame failed for {filename}: {exc}")
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -7176,6 +7184,107 @@ def api_files() -> Any:
     return jsonify(data)
 
 
+def _sd_frame_ready_error() -> str | None:
+    with app_state_lock:
+        monitor = status_monitor
+        blocked = (_laser_test_requests > 0 or _update_launching or _update_shutdown_started
+                   or bool(ray5_comm_safety_state.get("comm_lost_during_job")))
+    if blocked or _is_ray5_comm_busy() or bool(_snapshot_upload_transfer_state().get("upload_in_progress")):
+        return "SD Frame is blocked by a safety lockout, laser test, update, or transfer."
+    live = monitor.get_latest_status() if monitor is not None else None
+    if not isinstance(live, dict) or not live.get("websocket_connected") or live.get("stale"):
+        return "SD Frame requires a fresh online Idle status. No motion sent."
+    age = live.get("age_seconds")
+    if not isinstance(age, (int, float)) or not math.isfinite(age) or not 0 <= age <= 5:
+        return "SD Frame requires a live status received within five seconds. No motion sent."
+    if str(live.get("state", "")).strip().lower() != "idle":
+        return "SD Frame requires the machine to be Idle, not running, held, homing, or alarmed."
+    return None
+
+
+@app.post("/api/files/frame")
+def api_files_frame() -> Any:
+    guard = _require_ray5_configured()
+    if guard:
+        return guard
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or body.get("confirmed") is not True:
+        return jsonify({"ok": False, "message": "Confirm laser-off SD framing before moving."}), 400
+    filename = str(body.get("filename", ""))
+    req_path = str(body.get("path", "/") or "/")
+    if (not filename or "\\" in req_path or ":" in req_path or ".." in req_path.split("/")
+            or any(ord(c) < 32 or ord(c) == 127 for c in filename + req_path)):
+        return jsonify({"ok": False, "message": "Invalid SD file selection."}), 400
+    if not sd_frame_lock.acquire(blocking=False):
+        return jsonify({"ok": False, "message": "Another SD frame request is already in progress."}), 409
+    motion_attempted = False
+    with app_state_lock:
+        client, manager, active_cfg = ray5, jobs, cfg
+    try:
+        blocked = _sd_frame_ready_error()
+        if blocked:
+            return jsonify({"ok": False, "message": blocked}), 409
+        generation = client.command_generation()
+        listing = client.list_files(path=req_path)
+        if not listing.get("ok"):
+            return jsonify({"ok": False, "message": "Could not validate the selected SD file from a fresh listing."}), 502
+        selected = next((f for f in listing.get("files", []) if f.get("name") == filename), None)
+        if not selected or selected.get("is_directory") or Path(filename).suffix.lower() not in {".gc", ".gcode", ".nc"}:
+            return jsonify({"ok": False, "message": "Select a supported G-code file from the SD listing."}), 400
+        console.add("info", f"SD frame read requested: {filename}")
+        target = str(selected.get("path") or filename)
+        raw_entry = selected.get("raw")
+        if isinstance(raw_entry, dict) and not raw_entry.get("path") and "/" not in filename:
+            target = str(listing.get("path") or req_path).rstrip("/") + "/" + filename
+        downloaded = client.read_sd_file(target, min(manager.max_bounds_parse_bytes, manager.max_upload_bytes))
+        if not downloaded.get("ok"):
+            console.add("warn", f"SD frame unavailable: {downloaded.get('message', 'Download failed')}")
+            return jsonify({"ok": False, "message": downloaded.get("message", "SD download failed."),
+                            "download_unavailable": bool(downloaded.get("download_unavailable"))}), 422
+        content = downloaded["data"]
+        console.add("info", f"SD file read: {filename} via {downloaded.get('source', 'sd_http')} ({len(content)} bytes)")
+        safety = manager.validate_gcode_bytes(filename, content)
+        if not safety.get("ok"):
+            return jsonify({"ok": False, "message": "SD file rejected by the G-code safety scan. No motion sent."}), 400
+        with tempfile.TemporaryDirectory(prefix="ray5_sd_frame_") as temp:
+            source = Path(temp) / "download.gc"
+            source.write_bytes(content)
+            bounds = manager.parse_bounds_path(source)
+        if not bounds:
+            return jsonify({"ok": False, "message": "Could not determine XY bounds from the downloaded SD file. No motion sent."}), 400
+        frame_cfg = active_cfg | {"framing": active_cfg.get("framing", {}) | {"force_laser_off": True, "validate_bounds": True}}
+        plan = manager.frame_commands_from_bounds(bounds, frame_cfg, margin=body.get("margin"), feed=body.get("feed"))
+        blocked = _sd_frame_ready_error()
+        if blocked:
+            return jsonify({"ok": False, "message": blocked}), 409
+        with app_state_lock:
+            if client is not ray5 or manager is not jobs or active_cfg is not cfg:
+                return jsonify({"ok": False, "message": "Configuration changed during SD analysis. Please retry."}), 409
+        motion_attempted = True
+        result = client.send_gcode(plan["commands"], expected_generation=generation)
+        if not result.get("ok"):
+            return jsonify({"ok": False, "message": str(result.get("message") or "SD frame command batch failed."),
+                            "raw": str(result.get("raw", ""))[:500]}), 502
+        off = client.send_gcode("M5")
+        motion_attempted = False
+        if not off.get("ok"):
+            return jsonify({"ok": False, "message": "Frame was sent, but final laser-off acknowledgement failed."}), 502
+        console.add("info", f"SD frame sent with laser off: {filename}")
+        return jsonify({"ok": True, "message": f"Frame sent for SD file: {filename}. Laser remains off.",
+                        "bounds": plan["safe_frame_bounds"], "clamped": plan["clamped"],
+                        "warnings": bounds.get("warnings", []), "source_sha256": downloaded["sha256"]})
+    except (ValueError, TypeError, OSError) as exc:
+        console.add("warn", f"SD frame failed: {exc}")
+        return jsonify({"ok": False, "message": f"SD frame failed: {exc}"}), 400
+    finally:
+        if motion_attempted:
+            try:
+                client.send_gcode("M5")
+            except Exception:
+                console.add("error", "SD frame final laser-off request failed.")
+        sd_frame_lock.release()
+
+
 @app.post("/api/files/start")
 def api_files_start() -> Any:
     guard = _require_ray5_configured()
@@ -7820,6 +7929,10 @@ if __name__ == "__main__":
             "warn",
             f"web_ui.debug requested with non-local host '{run_host}'. For safety, debug mode has been forced off.",
         )
+    if bool(c.get("web_ui", {}).get("open_browser_on_start", True)):
+        threading.Thread(target=open_dashboard_when_ready,
+                         args=(run_host, int(c.get("web_ui", {}).get("port", 5050))),
+                         daemon=True, name="dashboard-browser-launch").start()
     app.run(
         host=run_host,
         port=int(c.get("web_ui", {}).get("port", 5050)),

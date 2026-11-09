@@ -337,6 +337,9 @@ async function refreshStatus(){
   const sc = (d && d.system_check) ? d.system_check : {};
   const commSafety = (d && d.comm_safety) ? d.comm_safety : {};
   commSafetyLockout = !!commSafety.comm_lost_during_job;
+  sdFrameOnlineIdle = d.online === true && effectiveSource === 'live_websocket' && !isOfflineFallback && !commSafetyLockout && String(d.state_base || d.state || '').toLowerCase() === 'idle';
+  sdFrameStatusAt = Date.now();
+  updateSdFrameButtons();
   commSafetyMessage = String(commSafety.message || '').trim();
   const sdWorkingNow = (sc.sd_card_list_working === true);
   const httpReachableNow = (sc.ray5_http_reachable === true);
@@ -989,6 +992,15 @@ let sdAutoRefreshInProgress = false;
 let lastSdAutoRefreshAt = 0;
 const SD_AUTO_REFRESH_MIN_INTERVAL_MS = 15000;
 let latestMachineStateForSd = 'unknown';
+let sdFrameOnlineIdle = false;
+let sdFrameStatusAt = 0;
+let sdFrameBusy = false;
+
+function updateSdFrameButtons(){
+  document.querySelectorAll('.sd-frame-btn').forEach(button=>{
+    button.disabled = sdFrameBusy || manualBusy || !sdFrameOnlineIdle || Date.now()-sdFrameStatusAt > 5000 || button.dataset.downloadUnavailable === 'true';
+  });
+}
 let sdAutoRefreshPausedNoticeAt = 0;
 let sdWasBusyForAutoRefresh = false;
 let sdAutoRefreshSeconds = 0;
@@ -1122,6 +1134,33 @@ async function startSdFile(filename, path='/'){
   await refreshStatus();
 }
 
+async function frameSdFile(filename, path='/', button=null){
+  if(sdFrameBusy) return;
+  const msg=document.getElementById('sdMsg');
+  sdFrameBusy=true;updateSdFrameButtons();
+  try{
+    await refreshStatus();
+    if(!sdFrameOnlineIdle) throw new Error('SD Frame requires a fresh online Idle status.');
+    if(!confirm(`Read and frame SD file '${filename}'? This will move the laser head around its boundary only if the file downloads successfully. Laser will remain OFF.`)){
+      msg.textContent='SD frame canceled.';return;
+    }
+    if(manualBusy) throw new Error('Another manual command is in progress.');
+    setManualBusy(true);
+    msg.textContent='Reading SD file and preparing laser-off frame: '+filename;
+    console.info('Frame clicked for SD file:',filename);
+    const result=await api('/api/files/frame','POST',{filename,path,confirmed:true});
+    msg.textContent=result.message || result.error || (result.ok?'SD frame sent. Laser remains off.':'Could not frame the SD file.');
+    if(result.download_unavailable && button){
+      button.dataset.downloadUnavailable='true';
+      button.title='This SD file cannot be downloaded by the controller. Refresh SD Files to retry. Use Imported Jobs Frame instead.';
+    }
+  }catch(error){msg.textContent='SD frame failed: '+(error.message||String(error));}
+  finally{
+    sdFrameBusy=false;setManualBusy(manualRequestsPending>0);updateSdFrameButtons();
+    await Promise.allSettled([refreshConsole(),refreshStatus()]);
+  }
+}
+
 async function deleteSdFile(filename, path='/'){
   if(!confirm('Delete SD file '+filename+' ?')) return;
   const r = await api('/api/files/delete','POST',{filename, path});
@@ -1233,6 +1272,12 @@ function renderSdFiles(d){
       startBtn.classList.add('btn-sm');
       actionTd.append(startBtn);
     }
+    if(!f.is_directory && f.can_start && /\.(?:gcode|gc|nc)$/i.test(name)){
+      const frameBtn=btn('Frame',()=>frameSdFile(name,currentSdPath,frameBtn));
+      frameBtn.classList.add('btn-sm','sd-frame-btn');
+      frameBtn.title='Read this SD file and frame its bounds with the laser off. Requires a successful download and fresh Idle status.';
+      actionTd.append(frameBtn);
+    }
     if(sdEnableDelete && f.can_delete){
       const delBtn=btn('Delete',()=>deleteSdFile(name, currentSdPath));
       delBtn.classList.add('btn-sm','danger');
@@ -1259,6 +1304,7 @@ function renderSdFiles(d){
     };
     filesEl.append(row);
   });
+  updateSdFrameButtons();
   updateSdSelectionUi();
 }
 
@@ -1392,10 +1438,11 @@ async function sendRawConsoleCommand(){
 }
 let jobImportBusy = false;
 function setManualBusy(state){
-  manualBusy = state;
-  document.querySelectorAll('#homeAll,#unlock,#xMinus,#xPlus,#yMinus,#yPlus,#xyMinusPlus,#xyPlusPlus,#xyMinusMinus,#xyPlusMinus,#centerBed,#airOn,#airOff,#testFire,#pauseBtn,#resumeBtn,#presetMoveBtn').forEach(el=>{if(el)el.disabled=state;});
+  manualBusy = state || sdFrameBusy;
+  document.querySelectorAll('#homeAll,#unlock,#xMinus,#xPlus,#yMinus,#yPlus,#xyMinusPlus,#xyPlusPlus,#xyMinusMinus,#xyPlusMinus,#centerBed,#airOn,#airOff,#testFire,#pauseBtn,#resumeBtn,#presetMoveBtn').forEach(el=>{if(el)el.disabled=manualBusy;});
   const fire = document.getElementById('testFire');
-  if(fire) fire.disabled = state || !manualCfg.test_fire_enabled;
+  if(fire) fire.disabled = manualBusy || !manualCfg.test_fire_enabled;
+  updateSdFrameButtons();
 }
 
 async function manualCall(url, body=null, confirmText=''){

@@ -34,6 +34,7 @@ INCLUDE_PATHS = [
     "requirements.txt",
     "LICENSE",
     "web",
+    "docs",
     "tools",
     "Start_Ray5_Pilot.bat",
     "launcher.py",
@@ -86,6 +87,10 @@ REQUIRED_FILES = tuple(p for p in INCLUDE_PATHS if Path(p).suffix == ".py") + (
     "web/templates/machine_settings.html", "web/templates/esp32.html",
     "web/static/app.js", "web/static/setup.js", "web/static/esp32.js",
     "web/static/machine_settings.js",
+    "tools/prepare_environment.py",
+    "web/static/camera-tools.css",
+    "web/templates/camera_popout.html",
+    "web/templates/camera_calibration.html",
 )
 
 

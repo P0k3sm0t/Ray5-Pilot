@@ -48,7 +48,7 @@
 .dashboard-ready .manual-settings-row label{margin:0;min-width:0;font-size:12px;color:var(--dash-muted)}
 .dashboard-ready .manual-settings-row select{width:100%;font-size:13px;min-height:38px;padding:7px}
 .dashboard-ready .jog-pad{grid-template-columns:repeat(3,58px);grid-template-rows:repeat(3,48px);gap:6px;margin:0 auto 12px}
-.dashboard-ready .jog-btn{width:58px;height:48px;min-height:48px;border-radius:6px;font-size:14px;font-weight:600;padding:4px}
+.dashboard-ready .jog-btn{display:flex;align-items:center;justify-content:center;text-align:center;width:58px;height:48px;min-height:48px;border-radius:6px;font-size:14px;font-weight:600;padding:4px}
 .dashboard-ready .jog-center{font-size:12px}
 .dashboard-ready .jog-xy-minus-plus,.dashboard-ready .jog-xy-plus-plus,.dashboard-ready .jog-xy-minus-minus,.dashboard-ready .jog-xy-plus-minus{font-size:24px}
 .dashboard-ready .manual-row{border-top:1px solid var(--dash-border);padding-top:12px;margin-top:12px;gap:8px}

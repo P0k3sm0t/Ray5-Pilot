@@ -35,7 +35,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "grbl_template": "$sd/run=/{filename}",
         "grbl_zip_template": "$sd/runzip=/{filename}",
     },
-    "web_ui": {"host": "127.0.0.1", "port": 5050, "debug": False},
+    "web_ui": {"host": "127.0.0.1", "port": 5050, "debug": False, "open_browser_on_start": True},
     "camera": {
         "enabled": False,
         "video_enabled": True,

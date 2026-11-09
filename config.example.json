@@ -21,7 +21,8 @@
     "web_ui":  {
                    "host":  "127.0.0.1",
                    "port":  5050,
-                   "debug":  false
+                   "debug":  false,
+                   "open_browser_on_start":  true
                },
     "camera":  {
                    "enabled":  false,

@@ -2,6 +2,10 @@ import os
 import shutil
 import subprocess
 import sys
+import time
+import webbrowser
+from urllib import request as urlrequest
+from urllib.error import URLError
 from pathlib import Path
 
 
@@ -33,4 +37,26 @@ def open_folder(path_like: str | Path) -> Path:
         raise RuntimeError(f"Path is not a folder: {path}")
     _open_with_platform(path)
     return path
+
+
+def open_dashboard_when_ready(host: str, port: int, timeout_seconds: float = 20) -> bool:
+    host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    authority = f"[{host}]" if ":" in host else host
+    url = f"http://{authority}:{port}/"
+    opener = urlrequest.build_opener(urlrequest.ProxyHandler({}))
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            with opener.open(url, timeout=1) as response:
+                if response.status == 200:
+                    try:
+                        return bool(webbrowser.open(url, new=2))
+                    except Exception:
+                        print(f"Could not open a browser. Open {url} manually.", flush=True)
+                        return False
+        except (OSError, URLError):
+            pass
+        time.sleep(.25)
+    print(f"Web UI did not become ready for automatic opening. Open {url} manually.", flush=True)
+    return False
 

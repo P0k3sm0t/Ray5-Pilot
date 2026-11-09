@@ -36,6 +36,7 @@ function load(cfg){
   setVal('ray_timeout', ray.request_timeout_seconds ?? ray.timeout ?? 4, 4);
   setVal('web_host', web.host, '127.0.0.1');
   setVal('web_port', web.port, 5050);
+  setChecked('web_open_browser', web.open_browser_on_start !== false, true);
 
   setChecked('cam_enabled', !!cam.enabled, false);
   setChecked('cam_video_enabled', (cam.video_enabled !== false), true);
@@ -174,7 +175,7 @@ function collect(){
   try{ deskewPoints = JSON.parse(v('cam_deskew_points').value||'[]'); }catch(_e){ deskewPoints=[]; }
   return {
     ray5:{host:v('ray_host').value.trim(),port:Number(v('ray_port').value),timeout:Number(v('ray_timeout').value),request_timeout_seconds:Number(v('ray_timeout').value),sd_path:'/'},
-    web_ui:{host:v('web_host').value.trim(),port:Number(v('web_port').value)},
+    web_ui:{host:v('web_host').value.trim(),port:Number(v('web_port').value),open_browser_on_start:v('web_open_browser').checked},
     camera:{
       enabled:v('cam_enabled').checked,
       video_enabled:v('cam_video_enabled').checked,

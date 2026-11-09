@@ -1,0 +1,57 @@
+/* Shared presentation for standalone camera tools and embedded calibration. */
+.camera-tool-page{--camera-border:#2b3345;--camera-muted:#a3afc2;--camera-accent:#9cbfff}
+.camera-tool-page [hidden]{display:none!important}
+.camera-tool-page .camera-tool-main{max-width:1440px;margin:auto;padding:24px;overflow:visible}
+.camera-tool-heading{display:flex;justify-content:space-between;align-items:center;gap:18px;flex-wrap:wrap;margin:4px 0 24px}
+.camera-tool-heading h1{margin:0;font-size:26px;letter-spacing:-.5px}
+.camera-tool-heading p{margin:7px 0 0;color:var(--camera-muted);font-size:14px;line-height:1.6}
+.camera-tool-page .camera-tool-card{display:block;text-align:left;margin:0;padding:20px;background:#1a1f2b;border:1px solid var(--camera-border);border-radius:10px;overflow:visible}
+.camera-tool-page .camera-tool-card *{text-align:inherit}
+.camera-tool-card h2{margin:0 0 16px;font-size:17px}
+.camera-tool-page button,.camera-tool-link{display:inline-flex;align-items:center;justify-content:center;text-align:center;font:inherit;font-size:13px;line-height:1.4;min-height:40px;padding:9px 13px;border:1px solid var(--camera-border);border-radius:6px;background:#101723;color:#e5e7eb;cursor:pointer;text-decoration:none}
+.camera-tool-page .camera-primary{background:#2563eb;border-color:#2563eb;color:#fff}
+.camera-tool-page button:disabled{opacity:.5;cursor:default}
+.camera-tool-page button:hover:not(:disabled),.camera-tool-link:hover{border-color:var(--camera-accent)}
+.camera-tool-page button:focus-visible,.camera-tool-page a:focus-visible{outline:2px solid var(--camera-accent);outline-offset:3px}
+.camera-tool-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.camera-tool-actions{display:flex;gap:8px;flex-wrap:wrap}
+.camera-tool-muted,.camera-tool-note{color:var(--camera-muted);font-size:13px;line-height:1.6}
+.camera-tool-note{margin:16px 0 0}
+.camera-tool-badge{display:inline-block;font-size:13px;line-height:1.5;padding:7px 11px;border:1px solid var(--camera-border);border-radius:6px;color:var(--camera-muted);background:#101723;overflow-wrap:anywhere;max-width:100%}
+.camera-tool-badge[data-state="live"]{background:#183529;color:#9ed8b2;border-color:#264b38}
+.camera-tool-badge[data-state="connecting"]{background:#233859;color:#9cbfff}
+.camera-tool-badge[data-state="offline"]{background:#421f29;color:#f5abb0;border-color:#653342}
+.popout-frame{width:100%;height:calc(100dvh - 335px);min-height:260px;max-height:1000px;background:#05070c;border:1px solid var(--camera-border);border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.popout-feed{display:block;max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain}
+.camera-tool-page .popout-placeholder{color:var(--camera-muted);text-align:center;padding:24px;line-height:1.7}
+.calibration-layout{display:grid;grid-template-columns:minmax(0,1fr) 285px;gap:20px;align-items:start}
+.calibration-workspace,.calibration-sidebar{min-width:0}
+.calibration-sidebar{display:grid;gap:16px}
+.camera-tool-page .msg{min-height:24px;margin:0 0 14px;font-size:13px;line-height:1.6;color:var(--camera-muted);overflow-wrap:anywhere}
+.camera-tool-page .msg.ok{color:#9ed8b2}.camera-tool-page .msg.err{color:#f5abb0}.camera-tool-page .msg.warn{color:#ecc587}
+.imgWrap{position:relative;border:1px solid var(--camera-border);border-radius:8px;overflow:auto;max-height:64vh;background:#05070c;min-height:160px}
+.imgStage{position:relative;display:inline-block;max-width:100%;line-height:0;vertical-align:top}
+#calImg{display:block;max-width:100%;height:auto;cursor:crosshair}
+#ov{position:absolute;inset:0;pointer-events:none}
+.calibration-empty{display:grid;place-content:center;gap:8px;min-height:260px;padding:24px;color:var(--camera-muted);text-align:center!important;font-size:14px;line-height:1.6}
+.calibration-empty strong{color:#e5e7eb;font-size:16px}
+.camera-tool-page .pts{display:grid;gap:0;margin:0;padding:0;list-style:none;counter-reset:corners}
+.camera-tool-page .pt{padding:13px 0;border-top:1px solid var(--camera-border);font-size:13px;line-height:1.7;overflow-wrap:anywhere}
+.camera-tool-page .pt:first-child{border-top:0;padding-top:0}
+.camera-tool-page .pt span{display:block;color:var(--camera-muted);font-variant-numeric:tabular-nums}
+.camera-tool-page .meta{display:grid;gap:12px}
+.camera-tool-page .meta .k{color:var(--camera-muted);font-size:12px;margin-bottom:3px}
+.camera-tool-page .meta .v{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
+.calibration-help{border-top:1px solid var(--camera-border);padding-top:14px;margin-top:16px}
+.camera-tools-embedded>header,.camera-tools-embedded .camera-return-link{display:none}
+.camera-tool-page.camera-tools-embedded .camera-tool-main{padding:16px}
+.camera-tools-embedded .camera-tool-heading{margin-top:0;margin-bottom:16px}
+.camera-tools-embedded .camera-tool-heading h1{font-size:22px}
+@media(max-width:900px){.calibration-layout{grid-template-columns:1fr}.calibration-sidebar{grid-template-columns:1fr 1fr}.imgWrap{max-height:58vh}}
+@media(max-width:720px){
+  .camera-tool-page header{position:static;flex-wrap:wrap}.camera-tool-page header nav{display:flex;gap:14px;flex-wrap:wrap}.camera-tool-page header nav a{margin:0}
+  .camera-tool-page .camera-tool-main{padding:16px}.camera-tool-heading{margin-bottom:18px}.camera-tool-heading h1{font-size:23px}
+  .camera-tool-page .camera-tool-card{padding:16px}.camera-tool-toolbar{align-items:flex-start}.camera-tool-actions{width:100%}
+  .camera-tool-page .camera-tool-actions button,.camera-tool-page .camera-tool-actions a{flex:1 1 auto}
+  .calibration-sidebar{grid-template-columns:1fr}.popout-frame{height:clamp(200px,56vw,400px);min-height:200px}.camera-tool-badge{font-size:12px}
+}

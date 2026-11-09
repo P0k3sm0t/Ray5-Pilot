@@ -31,15 +31,18 @@ _opencv_ffmpeg_env_lock = threading.Lock()
 def mask_camera_url(url: str) -> str:
     try:
         parsed = urlsplit(str(url or "").strip())
+        host = parsed.hostname or ""
+        port = parsed.port
     except Exception:
         return ""
     if not parsed.scheme or not parsed.netloc:
         return str(url or "")
     if parsed.username is None and parsed.password is None:
         return urlunsplit(parsed)
-    host = parsed.hostname or ""
-    if parsed.port:
-        host = f"{host}:{parsed.port}"
+    if ":" in host:
+        host = f"[{host}]"
+    if port:
+        host = f"{host}:{port}"
     auth = "****:****@" + host
     return urlunsplit((parsed.scheme, auth, parsed.path, parsed.query, parsed.fragment))
 
@@ -112,8 +115,10 @@ def _opencv_ffmpeg_capture_options(rtsp_transport: str, url: str) -> str | None:
 
 def _open_video_capture_with_rtsp_transport(stream_url: str, rtsp_transport: str = "auto") -> cv2.VideoCapture:
     capture_opts = _opencv_ffmpeg_capture_options(rtsp_transport, stream_url)
+    is_rtsp = str(stream_url or "").lower().startswith(("rtsp://", "rtsps://"))
+    options = [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000]
     if not capture_opts:
-        return cv2.VideoCapture(stream_url)
+        return cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG, options) if is_rtsp else cv2.VideoCapture(stream_url)
     with _opencv_ffmpeg_env_lock:
         env_key = "OPENCV_FFMPEG_CAPTURE_OPTIONS"
         previous = os.environ.get(env_key)
@@ -121,7 +126,7 @@ def _open_video_capture_with_rtsp_transport(stream_url: str, rtsp_transport: str
         # Set it only for constructor scope, then restore previous process env immediately.
         os.environ[env_key] = capture_opts
         try:
-            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG, options)
         finally:
             if previous is None:
                 os.environ.pop(env_key, None)
@@ -187,8 +192,6 @@ class CameraManager:
             self._reload_camera_config()
             if not self.enabled():
                 raise CameraCaptureError("camera is disabled")
-            if self.cleanup_on_capture and not self.save_history:
-                self.cleanup_snapshots(mode="capture", keep_latest=False)
             content, source_label = self._capture_bytes_with_source(prefer_live_cache=(str(reason or "").strip().lower() == "manual"))
             self.log.info("[CAMERA] Snapshot source: %s", source_label)
             raw_image = Image.open(io.BytesIO(content)).convert("RGB")
@@ -196,10 +199,16 @@ class CameraManager:
             ts = time.strftime("%Y%m%d_%H%M%S")
             self.latest_raw_path = self.output_dir / self.latest_raw_name
             self.latest_path = self.output_dir / self.latest_processed_name
-            raw_image.save(self.latest_raw_path, format="JPEG", quality=90)
+            # Publish complete images only; a failed capture/transform keeps the last good pair.
+            with tempfile.TemporaryDirectory(prefix=".snapshot-", dir=self.output_dir) as temp:
+                staged_raw = Path(temp) / "raw.jpg"
+                staged_final = Path(temp) / "final.jpg"
+                raw_image.save(staged_raw, format="JPEG", quality=90)
+                corrected = self._create_corrected_from_raw(staged_raw, staged_final)
+                os.replace(staged_raw, self.latest_raw_path)
+                os.replace(staged_final, self.latest_path)
             self.log.info("[CAMERA] Raw snapshot saved: %s", self._camera_display_path(self.latest_raw_path))
             self.log.info("[CAMERA] Raw image size: %sx%s", raw_w, raw_h)
-            corrected = self._create_corrected_from_raw()
             out_path = self.latest_path
             if self.save_history:
                 ts_processed = self.output_dir / f"{self.filename_prefix}_{ts}.jpg"
@@ -210,7 +219,7 @@ class CameraManager:
             self._write_overlay_instructions()
             self._prune_old()
             removed = 0
-            if not self.save_history:
+            if self.cleanup_on_capture and not self.save_history:
                 removed = self.cleanup_snapshots(mode="capture", keep_latest=True)
                 self.log.info("[CAMERA] Cleanup removed %s old image(s)", removed)
             processed_size = [0, 0]
@@ -508,15 +517,17 @@ class CameraManager:
             self.log.info("[CAMERA] Overlay guides drawn")
         return image, deskew_applied, postprocess_applied
 
-    def _create_corrected_from_raw(self) -> dict[str, Any]:
-        image = cv2.imread(str(self.latest_raw_path))
+    def _create_corrected_from_raw(self, raw_path: Path | None = None, final_path: Path | None = None) -> dict[str, Any]:
+        raw_path = raw_path or self.latest_raw_path
+        final_path = final_path or self.latest_path
+        image = cv2.imread(str(raw_path))
         if image is None:
-            self.latest_path.write_bytes(self.latest_raw_path.read_bytes())
+            final_path.write_bytes(raw_path.read_bytes())
             return {"deskew_applied": False, "postprocess_applied": False}
         image, deskew_applied, postprocess_applied = self._create_corrected_from_image(image)
-        if not cv2.imwrite(str(self.latest_path), image):
-            raise CameraCaptureError(f"failed to write final image {self.latest_path}")
-        self._write_dpi_metadata(self.latest_path)
+        if not cv2.imwrite(str(final_path), image):
+            raise CameraCaptureError(f"failed to write final image {final_path.name}")
+        self._write_dpi_metadata(final_path)
         self.log.info("[CAMERA] Final image saved: %s", self._camera_display_path(self.latest_path))
         return {"deskew_applied": deskew_applied, "postprocess_applied": postprocess_applied}
 
@@ -836,6 +847,7 @@ def mjpeg_generator(
     on_frame_ok: Any | None = None,
     on_frame_fail: Any | None = None,
     on_frame_jpeg: Any | None = None,
+    stop_event: threading.Event | None = None,
 ) -> Iterator[bytes]:
     delay = max(1.0, float(reconnect_seconds))
     transport = str(rtsp_transport or "auto").strip().lower()
@@ -843,7 +855,7 @@ def mjpeg_generator(
         transport = "auto"
     if rtsp_url.strip().lower().startswith("rtsp://") and transport in {"tcp", "udp"}:
         logging.getLogger("CameraManager").info("RTSP live stream transport: %s", transport)
-    while True:
+    while stop_event is None or not stop_event.is_set():
         cap = _open_video_capture_with_rtsp_transport(rtsp_url, transport)
         if not cap.isOpened():
             cap.release()
@@ -854,10 +866,13 @@ def mjpeg_generator(
                     pass
             frame = offline_frame_jpeg("Camera stream unavailable")
             yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-            time.sleep(delay)
+            if stop_event is not None:
+                stop_event.wait(delay)
+            else:
+                time.sleep(delay)
             continue
         try:
-            while True:
+            while stop_event is None or not stop_event.is_set():
                 ok, img = cap.read()
                 if not ok or img is None:
                     if callable(on_frame_fail):
@@ -885,4 +900,100 @@ def mjpeg_generator(
             cap.release()
         frame = offline_frame_jpeg("Reconnecting camera...")
         yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-        time.sleep(delay)
+        if stop_event is not None:
+            stop_event.wait(delay)
+        else:
+            time.sleep(delay)
+
+
+class SharedCameraStream:
+    """One bounded latest-frame publisher per source; viewers never queue camera frames."""
+
+    def __init__(self, idle_seconds: float = 5.0) -> None:
+        self.idle_seconds = idle_seconds
+        self._lock = threading.Lock()
+        self._sources: dict[tuple[Any, ...], Any] = {}
+
+    def subscribe(self, key: tuple[Any, ...], factory: Any) -> Iterator[bytes]:
+        with self._lock:
+            for old_key, entry in list(self._sources.items()):
+                if not entry.running and not entry.clients:
+                    self._sources.pop(old_key, None)
+            entry = self._sources.get(key)
+            if entry is None:
+                entry = _SharedCameraSource(factory, self.idle_seconds)
+                self._sources[key] = entry
+            # Reserve the source before releasing the registry lock.
+            entry.reserve()
+        yield from entry.frames()
+
+    def close(self) -> None:
+        with self._lock:
+            for entry in self._sources.values():
+                entry.stop.set()
+
+
+class _SharedCameraSource:
+    def __init__(self, factory: Any, idle_seconds: float) -> None:
+        self.factory = factory
+        self.idle_seconds = idle_seconds
+        self.condition = threading.Condition()
+        self.stop = threading.Event()
+        self.clients = 0
+        self.running = False
+        self.closing = False
+        self.last_client_at = time.monotonic()
+        self.sequence = 0
+        self.packet: bytes | None = None
+
+    def reserve(self) -> None:
+        with self.condition:
+            self.condition.wait_for(lambda: not self.closing)
+            self.clients += 1
+            self.last_client_at = time.monotonic()
+            if not self.running:
+                self.running = True
+                threading.Thread(target=self._produce, daemon=True, name="camera-frame-publisher").start()
+
+    def _produce(self) -> None:
+        source = None
+        try:
+            source = self.factory(self.stop)
+            for packet in source:
+                with self.condition:
+                    self.packet = packet
+                    self.sequence += 1
+                    self.condition.notify_all()
+                    if not self.clients and time.monotonic() - self.last_client_at >= self.idle_seconds:
+                        self.closing = True
+                        break
+        except Exception as exc:
+            logging.getLogger("CameraManager").warning("Camera publisher stopped: %s", _sanitize_camera_error_text(str(exc)))
+        finally:
+            try:
+                if source is not None:
+                    source.close()
+            finally:
+                with self.condition:
+                    self.running = False
+                    self.closing = False
+                    self.condition.notify_all()
+
+    def frames(self) -> Iterator[bytes]:
+        seen = 0
+        try:
+            while True:
+                with self.condition:
+                    self.condition.wait_for(lambda: self.sequence != seen or not self.running, timeout=6)
+                    if self.sequence == seen:
+                        if not self.running:
+                            return
+                        continue
+                    seen = self.sequence
+                    packet = self.packet
+                if packet is not None:
+                    yield packet
+        finally:
+            with self.condition:
+                self.clients = max(0, self.clients - 1)
+                self.last_client_at = time.monotonic()

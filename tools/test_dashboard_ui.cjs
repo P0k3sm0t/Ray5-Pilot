@@ -13,6 +13,7 @@ config.safety.test_fire_enabled=true;config.safety.confirm_dangerous_actions=tru
 config.sd_files.auto_refresh_seconds=0;
 let commands=[],unexpected=[],failRoute='',holdRoute='',releaseHold;
 let emptyJobs=false;
+let sdFrameUnavailable=false;
 let holdTimelapseList=false,releaseTimelapseList;
 let machineState='Idle',online=true,lockout=false,videoEnabled=true,cameraConfigured=true;
 let timelapseState={enabled:true,active:false,armed:false};
@@ -55,6 +56,7 @@ const server=http.createServer(async(req,res)=>{
   if(url.pathname==='/api/console/clear'){consoleItems=[];return json({ok:true});}
   if(url.pathname==='/api/console/command'){consoleItems.push({ts:'10:42:02',level:'info',message:body.command+' -> ok'});return json({ok:true,command:body.command});}
   if(url.pathname==='/api/files/upload')return json({ok:true,filename:'upload_fixture.gc'});
+  if(url.pathname==='/api/files/frame')return json(sdFrameUnavailable?{ok:false,download_unavailable:true,message:'Ray5 returned a web page instead of SD G-code. No motion sent.'}:{ok:true,message:'Frame sent for SD file. Laser remains off.'},sdFrameUnavailable?422:200);
   if(url.pathname==='/api/jobs/refresh-watched')return json({ok:true,imported:0,rejected:0});
   if(url.pathname==='/api/camera/capture')return json({ok:true,filename:'latest.jpg'});
   if(['/api/home','/api/preset-move','/api/manual/center','/api/move','/api/air/on','/api/air/off','/api/stop','/api/pause','/api/resume','/api/jobs/frame','/api/jobs/upload','/api/jobs/start','/api/jobs/import','/api/imported-files/delete','/api/files/start','/api/files/delete','/api/sd-files/delete','/api/timelapses/delete','/api/timelapses/recover','/api/timelapses/delete-session','/api/camera/test','/api/snapshots/open-folder'].includes(url.pathname)||(/^\/api\/jobs\/[^/]+$/.test(url.pathname)&&req.method==='DELETE'))return json({ok:true,message:'Fixture action accepted',deleted:[],failed:[]});
@@ -149,6 +151,34 @@ const server=http.createServer(async(req,res)=>{
  assert(await page.locator('#jobsClearSelection').isDisabled());await page.locator('#jobsSelectAll').check();await page.waitForFunction(()=>!document.getElementById('jobsClearSelection').disabled);await page.locator('#jobsClearSelection').click();
  // SD actions use the machine filename/path, never an imported-job name.
  await fileTab('sd');await call('#sdFilesBody tr:first-child button:first-child','/api/files/start',{filename:'LightBurn_001.gc',path:'/'},true);
+ const sdFrame=page.locator('#sdFilesBody tr:first-child .sd-frame-btn');
+ assert(await sdFrame.isEnabled());
+ const beforeFrameCancel=commands.length;page.once('dialog',d=>d.dismiss());await sdFrame.click();await page.waitForFunction(()=>!sdFrameBusy);assert.equal(commands.length,beforeFrameCancel);
+ const runSdFrame=async()=>{
+   const response=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/files/frame');
+   page.once('dialog',d=>d.accept());await sdFrame.click();await response;await page.waitForFunction(()=>!sdFrameBusy);
+ };
+ await runSdFrame();assert.deepEqual(commands.findLast(c=>c.url==='/api/files/frame').body,{filename:'LightBurn_001.gc',path:'/',confirmed:true});
+ assert((await page.locator('#sdMsg').textContent()).includes('Laser remains off'));
+ sdFrameUnavailable=true;await runSdFrame();assert(await sdFrame.isDisabled());assert((await page.locator('#sdMsg').textContent()).includes('No motion sent'));
+ sdFrameUnavailable=false;await page.evaluate(()=>loadSdFiles({preserveMessage:true}));assert(await sdFrame.isEnabled());
+ machineState='Alarm';await page.evaluate(()=>refreshStatus());assert(await sdFrame.isDisabled());
+ machineState='Run';await page.evaluate(()=>refreshStatus());assert(await sdFrame.isDisabled());
+ machineState='Idle';online=false;await page.evaluate(()=>refreshStatus());assert(await sdFrame.isDisabled());
+ online=true;await page.evaluate(()=>refreshStatus());assert(await sdFrame.isEnabled());
+ // Stop stays usable during an SD read/frame and does not release the motion lock early.
+ holdRoute='/api/files/frame';releaseHold=null;
+ page.once('dialog',d=>d.accept());await sdFrame.click();
+ await page.waitForFunction(()=>sdFrameBusy&&manualBusy);
+ for(let n=0;!releaseHold&&n<100;n++)await new Promise(resolve=>setTimeout(resolve,10));
+ assert(releaseHold,'SD frame request should be held');
+ assert(await page.locator('#stop').isEnabled());
+ const sdStopsBefore=commands.filter(c=>c.url==='/api/stop').length;
+ page.once('dialog',d=>d.accept());await page.locator('#stop').click();
+ await page.waitForFunction(()=>!stopRequestPending);
+ assert.equal(commands.filter(c=>c.url==='/api/stop').length,sdStopsBefore+1);
+ assert(await page.evaluate(()=>manualBusy),'Pending SD frame must keep jog locked after Stop');
+ holdRoute='';releaseHold();await page.waitForFunction(()=>!sdFrameBusy&&!manualBusy);
  await call('#sdFilesBody tr:first-child button:last-child','/api/files/delete',{filename:'LightBurn_001.gc',path:'/'},true);
  await page.locator('#sdUploadFile').setInputFiles({name:'upload_fixture.gc',mimeType:'text/plain',buffer:Buffer.from('M5\nG0 X0 Y0\n')});await call('#sdUploadBtn','/api/files/upload');
  assert(commands.findLast(c=>c.url==='/api/files/upload').body.multipart.includes('upload_fixture.gc'));
@@ -193,6 +223,20 @@ const server=http.createServer(async(req,res)=>{
  emptyJobs=true;await page.evaluate(()=>refreshJobs());
  for(const width of [1280,1024,768,375,320]){
    await page.setViewportSize({width,height:1000});await nav('workspace');await fileTab('imported');
+   const jogAlignment=await page.locator('.jog-btn').evaluateAll(buttons=>buttons.map(button=>{
+     const style=getComputedStyle(button),box=button.getBoundingClientRect();
+     const range=document.createRange();range.selectNodeContents(button);const text=range.getBoundingClientRect();
+     return {id:button.id,align:style.alignItems,justify:style.justifyContent,textAlign:style.textAlign,
+       offsetX:Math.abs((text.left+text.right-box.left-box.right)/2),offsetY:Math.abs((text.top+text.bottom-box.top-box.bottom)/2)};
+   }));
+   assert.equal(jogAlignment.length,9);
+   for(const button of jogAlignment){
+     assert.equal(button.align,'center',`${button.id} vertical alignment at ${width}`);
+     assert.equal(button.justify,'center',`${button.id} horizontal alignment at ${width}`);
+     assert.equal(button.textAlign,'center');
+     assert(button.offsetX<=1&&button.offsetY<=3,`Off-center jog content at ${width}: ${JSON.stringify(button)}`);
+   }
+   if(width===1280||width===375)await page.locator('.jog-pad').screenshot({path:path.join(output,`centered-jog-${width}.png`)});
    const empty=page.locator('#jobsBody td[colspan]');
    assert((await empty.textContent()).startsWith('No imported jobs yet.'));
    const sizes=await empty.evaluate(td=>({width:td.getBoundingClientRect().width,height:td.getBoundingClientRect().height,bodyWidth:td.closest('tbody').getBoundingClientRect().width}));

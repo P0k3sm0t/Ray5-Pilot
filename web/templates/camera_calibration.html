@@ -3,75 +3,51 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Camera Overlay Calibration</title>
-  <style>
-    *{box-sizing:border-box}
-    body{margin:0;background:#0b1020;color:#e5e7eb;font:14px/1.4 Segoe UI,Arial,sans-serif}
-    .wrap{padding:12px}
-    .card{background:#111827;border:1px solid rgba(255,255,255,.14);border-radius:12px;padding:12px}
-    .head{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
-    .head h1{margin:0;font-size:1.05rem}
-    .row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
-    button{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:8px 10px;cursor:pointer}
-    button.secondary{background:#334155}
-    button.warn{background:#b45309}
-    button:disabled{opacity:.6;cursor:not-allowed}
-    .msg{margin-top:10px;color:#94a3b8;min-height:20px}
-    .msg.ok{color:#86efac}
-    .msg.err{color:#fca5a5}
-    .msg.warn{color:#fde68a}
-    .imgWrap{margin-top:12px;border:1px solid rgba(255,255,255,.12);border-radius:10px;overflow:auto;max-height:64vh;background:#05070c}
-    .imgStage{position:relative;display:inline-block;line-height:0}
-    #calImg{display:block;max-width:100%;height:auto}
-    #ov{position:absolute;inset:0;pointer-events:none}
-    .pts{margin-top:10px;display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:8px}
-    .pt{background:#0f172a;border:1px solid #243041;border-radius:8px;padding:8px}
-    .muted{color:#94a3b8}
-    .meta{margin-top:10px;display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:8px}
-    .meta .k{color:#93c5fd}
-    .meta .v{font-weight:600}
-    code{background:#0f172a;padding:2px 6px;border-radius:6px}
-    @media (max-width:900px){.pts,.meta{grid-template-columns:1fr}}
-  </style>
+  <title>Ray5 Pilot Camera Calibration</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="alternate icon" href="/static/favicon.ico">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/camera-tools.css?v=2.0.0">
 </head>
-<body>
-  <div class="wrap">
-    <section class="card">
-      <div class="head">
-        <h1>Camera Overlay Calibration</h1>
-        <div class="muted">Point order: top-left, top-right, bottom-right, bottom-left</div>
-      </div>
-
-      <div class="row">
-        <button id="takeSnap">Take Snapshot</button>
-        <button id="reloadImg" class="secondary">Reload Image</button>
-        <button id="savePts">Save Calibration</button>
-        <button id="resetPts" class="warn">Reset</button>
-      </div>
-
-      <div id="msg" class="msg">Capture a snapshot, then click 4 points on the image.</div>
-
+<body class="camera-tool-page camera-calibration-page">
+  <script>if(window.self !== window.top) document.body.classList.add('camera-tools-embedded');</script>
+  <header><div class="brand brand-logo-only"><img src="/static/logo.svg" alt="Ray5 Pilot" class="brand-logo-main"></div><nav aria-label="Main navigation"><a href="/">Dashboard</a><a href="/setup">Settings</a><a href="/machine-settings">GRBL</a><a href="/esp32">ESP32</a></nav></header>
+  <main class="camera-tool-main">
+    <div class="camera-tool-heading"><div><h1>Camera Overlay Calibration</h1><p>Match four reference corners to your fixed camera view.</p></div><a href="/" class="camera-tool-link camera-return-link">Back to Dashboard</a></div>
+    <div class="calibration-layout">
+    <section class="card camera-tool-card calibration-workspace" aria-label="Calibration image">
+      <div class="camera-tool-toolbar"><div class="camera-tool-actions">
+        <button id="takeSnap" type="button">Take Snapshot</button>
+        <button id="reloadImg" type="button">Reload Image</button>
+        <button id="savePts" class="camera-primary" type="button">Save Calibration</button>
+        <button id="resetPts" type="button">Reset</button>
+      </div></div>
+      <div id="msg" class="msg" role="status" aria-live="polite">Capture a snapshot, then click 4 points on the image.</div>
       <div class="imgWrap">
-        <div id="stage" class="imgStage">
+        <div id="calibrationEmpty" class="calibration-empty"><strong>No calibration image loaded</strong><span>Take a snapshot or reload your latest raw image.</span></div>
+        <div id="stage" class="imgStage" hidden>
           <img id="calImg" alt="latest raw snapshot">
           <svg id="ov"></svg>
         </div>
       </div>
 
-      <div class="pts">
-        <div class="pt"><b>1.</b> Top-left: <span id="p0" class="muted">not set</span></div>
-        <div class="pt"><b>2.</b> Top-right: <span id="p1" class="muted">not set</span></div>
-        <div class="pt"><b>3.</b> Bottom-right: <span id="p2" class="muted">not set</span></div>
-        <div class="pt"><b>4.</b> Bottom-left: <span id="p3" class="muted">not set</span></div>
-      </div>
-
-      <div class="meta">
+      <p class="camera-tool-note">Pick top-left, top-right, bottom-right, then bottom-left. Changes are only applied when you choose Save Calibration.</p>
+    </section>
+    <aside class="calibration-sidebar" aria-label="Calibration guidance">
+      <section class="card camera-tool-card"><h2>Reference corners</h2><ol class="pts">
+        <li class="pt"><b>1. Top-left</b><span id="p0">not set</span></li>
+        <li class="pt"><b>2. Top-right</b><span id="p1">not set</span></li>
+        <li class="pt"><b>3. Bottom-right</b><span id="p2">not set</span></li>
+        <li class="pt"><b>4. Bottom-left</b><span id="p3">not set</span></li>
+      </ol><p class="camera-tool-note calibration-help">Use a known rectangle on the bed and keep the camera fixed. Reset clears your draft points, not the saved calibration.</p></section>
+      <section class="card camera-tool-card"><h2>Current processing</h2><div class="meta">
         <div class="pt"><div class="k">Overlay Rotation</div><div id="metaRot" class="v">---</div></div>
         <div class="pt"><div class="k">Source Offset X/Y</div><div id="metaOff" class="v">---</div></div>
         <div class="pt"><div class="k">Fine Rotation</div><div id="metaFine" class="v">---</div></div>
-      </div>
-    </section>
-  </div>
+      </div><p class="camera-tool-note calibration-help">Fine-tune rotation, size, and source offsets in Settings &gt; Camera &amp; Alignment. Calibration affects reference images, not machine coordinates.</p></section>
+    </aside>
+    </div>
+  </main>
 
   <script>
     const img = document.getElementById('calImg');
@@ -155,6 +131,7 @@
     async function loadConfig(){
       const r = await fetch('/api/config');
       const d = await r.json();
+      if(!r.ok || d.ok === false) throw new Error(d.error || d.message || 'Camera settings could not be loaded.');
       cfg = d && d.config ? d.config : d;
       const cam = (cfg && cfg.camera) || {};
       const deskew = cam.deskew || {};
@@ -169,11 +146,15 @@
     }
 
     img.addEventListener('load', ()=> {
+      document.getElementById('stage').hidden = false;
+      document.getElementById('calibrationEmpty').hidden = true;
       redrawScaled();
       setMsg('Image loaded. Click points in order: top-left, top-right, bottom-right, bottom-left.');
     });
 
     img.addEventListener('error', ()=> {
+      document.getElementById('stage').hidden = true;
+      document.getElementById('calibrationEmpty').hidden = false;
       setMsg('No latest_raw.jpg found yet. Click "Take Snapshot" first.', 'warn');
     });
 
@@ -234,7 +215,7 @@
         cfg.camera.deskew.source_points = points.map(p => [Number(p.x.toFixed(3)), Number(p.y.toFixed(3))]);
         const resp = await fetch('/api/config', {
           method: 'POST',
-          headers: {'Content-Type':'application/json'},
+          headers: {'Content-Type':'application/json', 'X-Ray5-Pilot-Request':'1'},
           body: JSON.stringify(cfg),
         });
         const out = await resp.json();
@@ -253,8 +234,12 @@
     window.addEventListener('resize', ()=> redrawScaled());
 
     (async()=>{
-      await loadConfig();
-      reloadImage();
+      try{
+        await loadConfig();
+        reloadImage();
+      }catch(err){
+        setMsg(`Camera settings unavailable: ${err && err.message ? err.message : err}`, 'err');
+      }
     })();
   </script>
 </body>

@@ -7,6 +7,7 @@ import hashlib
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -44,7 +45,7 @@ class Ray5Client:
         raw = ray.get("request_timeout_seconds", ray.get("timeout", 4))
         return float(raw)
 
-    def _request_command(self, commands: str | list[str]) -> dict[str, Any]:
+    def _request_command(self, commands: str | list[str], *, expected_generation: int | None = None) -> dict[str, Any]:
         if isinstance(commands, str):
             return self._request_single_command(commands)
         cleaned = [str(c).strip() for c in commands if str(c).strip()]
@@ -52,7 +53,7 @@ class Ray5Client:
             return {"ok": False, "message": "no commands provided", "raw": "", "endpoint": "/command", "param": "commandText", "count": 0}
         previews: list[str] = []
         with self._batch_state_lock:
-            batch_generation = self._batch_cancel_generation
+            batch_generation = self._batch_cancel_generation if expected_generation is None else expected_generation
         page_id_used: str | None = None
         page_id_fallback = False
         for cmd in cleaned:
@@ -389,8 +390,12 @@ class Ray5Client:
         r = self._request_command(command)
         return bool(r.get("ok")), str(r.get("raw", ""))
 
-    def send_gcode(self, commands: str | list[str]) -> dict[str, Any]:
-        return self._request_command(commands)
+    def send_gcode(self, commands: str | list[str], *, expected_generation: int | None = None) -> dict[str, Any]:
+        return self._request_command(commands, expected_generation=expected_generation)
+
+    def command_generation(self) -> int:
+        with self._batch_state_lock:
+            return self._batch_cancel_generation
 
     def home(self, axis: str = "all") -> dict[str, Any]:
         axis_norm = str(axis or "all").strip().lower()
@@ -689,6 +694,67 @@ class Ray5Client:
                 "status_code": None,
                 "preview": "",
             }
+
+    def read_sd_file(self, filename_or_path: str, max_bytes: int) -> dict[str, Any]:
+        target = str(filename_or_path or "")
+        parts = target.lstrip("/").split("/")
+        if (not target or any(c in target for c in "\\[]") or any(ord(c) < 32 or ord(c) == 127 for c in target)
+                or any(p in {"", ".", ".."} for p in parts) or ":" in target
+                or Path(target).suffix.lower() not in {".gc", ".gcode", ".nc"}):
+            return {"ok": False, "message": "Invalid SD G-code path."}
+        if not isinstance(max_bytes, int) or max_bytes <= 0:
+            return {"ok": False, "message": "Invalid SD download size limit."}
+        # Some Ray5 firmware lacks /SD/ serving but implements the read-only ESP221 command.
+        url = self._base() + "/SD/" + quote("/".join(parts), safe="/")
+        result = self._read_sd_gcode_response(url, target, max_bytes, source="sd_http")
+        if result.get("ok") or not result.get("download_unavailable"):
+            return result
+        return self._read_sd_gcode_response(
+            self._base() + "/command", target, max_bytes,
+            source="esp221_sd_read", params={"plain": "[ESP221]/" + "/".join(parts)},
+        )
+
+    def _read_sd_gcode_response(self, url: str, target: str, max_bytes: int, *,
+                                source: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+        try:
+            with self.http_request_lock:
+                kwargs: dict[str, Any] = {"timeout": self._timeout(), "stream": True, "allow_redirects": False}
+                if params is not None:
+                    kwargs["params"] = params
+                with self.session.get(url, **kwargs) as response:
+                    if response.status_code != 200:
+                        return {"ok": False, "download_unavailable": True,
+                                "message": f"SD download failed with HTTP {response.status_code}. No motion sent."}
+                    declared = str(response.headers.get("Content-Length", ""))
+                    if declared.isdigit() and int(declared) > max_bytes:
+                        return {"ok": False, "message": "SD file exceeds the configured analysis size limit."}
+                    data = bytearray()
+                    deadline = time.monotonic() + max(5.0, self._timeout() * 2)
+                    for chunk in response.iter_content(8192):
+                        if time.monotonic() > deadline:
+                            return {"ok": False, "message": "SD download exceeded its time limit. No motion sent."}
+                        if len(data) + len(chunk) > max_bytes:
+                            return {"ok": False, "message": "SD file exceeds the configured analysis size limit."}
+                        data.extend(chunk)
+                        prefix = bytes(data[:1024]).lstrip(b"\xef\xbb\xbf \r\n\t").lower()
+                        if prefix.startswith((b"<", b"{", b"[")):
+                            return {"ok": False, "download_unavailable": True,
+                                    "message": "The Ray5 returned a web/error page instead of SD G-code. No motion sent; the selected file could not be read."}
+            content = bytes(data)
+            try:
+                text = content.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                return {"ok": False, "message": "SD download is not plain UTF-8/ASCII G-code."}
+            if "\x00" in text or not re.search(r"(?im)^\s*(?:N\d+\s*)?(?:[GM]\s*\d|[XYZFS]\s*[+\-\d.]|[;(])", text):
+                return {"ok": False, "download_unavailable": True,
+                        "message": "SD download did not contain recognizable G-code. No motion sent."}
+            if re.search(r"(?im)^\s*(?:error(?:\s|:|$)|alarm(?:\s|:|$)|<|\[(?:msg|error):)", text):
+                return {"ok": False, "download_unavailable": True,
+                        "message": "SD read returned an error or console response instead of a complete G-code file. No motion sent."}
+            return {"ok": True, "data": content, "bytes": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(), "path": target, "source": source}
+        except requests.RequestException as exc:
+            return {"ok": False, "message": f"SD download failed: {exc}. No motion sent."}
 
     def connectivity(self) -> dict[str, Any]:
         files = self.list_files()

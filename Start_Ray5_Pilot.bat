@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 echo Starting Ray5 Pilot...
-echo Web UI: http://127.0.0.1:5050
+echo Web UI opens at the configured address after the server is ready.
 echo.
 
 where python >nul 2>&1
@@ -36,15 +36,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-python -m pip install --upgrade pip
-if errorlevel 1 (
-  echo ERROR: pip upgrade failed inside .venv
-  echo.
-  pause
-  exit /b 1
-)
-
-pip install -r requirements.txt
+python tools\prepare_environment.py
 if errorlevel 1 (
   echo ERROR: requirements install failed.
   echo Check internet access and Python package availability, then retry.
@@ -63,7 +55,6 @@ if not exist "config.json" (
   )
 )
 
-start "" "http://127.0.0.1:5050"
 python app.py
 if errorlevel 1 (
   echo.

@@ -630,7 +630,7 @@ def check_rtsp_transport_hardening(r: Result) -> None:
     missing += [f"config_manager.py: {x}" for x in _check_markers(ROOT / "config_manager.py", config_markers)]
     missing += [f"config.example.json: {x}" for x in _check_markers(ROOT / "config.example.json", example_markers)]
     missing += [f"camera_manager.py: {x}" for x in _check_markers(ROOT / "camera_manager.py", manager_markers)]
-    missing += [f"app.py: {x}" for x in _check_markers(ROOT / "app.py", [("mjpeg_generator receives rtsp_transport", "rtsp_transport=str(cam.get(\"rtsp_transport\", \"tcp\") or \"tcp\")")])]
+    missing += [f"app.py: {x}" for x in _check_markers(ROOT / "app.py", [("mjpeg_generator receives normalized rtsp_transport", "rtsp_transport=transport")])]
     missing += [f"web/templates/setup.html: {x}" for x in _check_markers(ROOT / "web/templates/setup.html", setup_template_markers)]
     missing += [f"web/static/setup.js: {x}" for x in _check_markers(ROOT / "web/static/setup.js", setup_js_markers)]
 
@@ -1157,7 +1157,9 @@ def check_camera_snapshot_architecture_markers(r: Result) -> None:
         ("mjpeg callback invoke", "on_frame_jpeg(frame_bytes)"),
     ]
     app_markers = [
-        ("camera stream passes cache callback", "on_frame_jpeg=camera.update_live_frame"),
+        ("camera stream passes reload-safe cache callback", "on_frame_jpeg=publish_frame"),
+        ("shared camera publisher", "camera_stream_hub.subscribe"),
+        ("ready browser launch", "target=open_dashboard_when_ready"),
     ]
     release_markers = [
         ("release includes linux launcher", "\"start-ray5-pilot.sh\""),
@@ -1165,9 +1167,8 @@ def check_camera_snapshot_architecture_markers(r: Result) -> None:
     launcher_markers = [
         ("launcher creates venv", "python3 -m venv .venv"),
         ("launcher uses venv python", "PYTHON_BIN=\".venv/bin/python\""),
-        ("launcher installs requirements", "pip install -r requirements.txt"),
+        ("launcher cached dependency setup", "tools/prepare_environment.py"),
         ("launcher config bootstrap", "cp \"config.example.json\" \"config.json\""),
-        ("launcher opens URL with xdg-open", "xdg-open \"http://127.0.0.1:5050\""),
     ]
     missing += [f"camera_manager.py: {x}" for x in _check_markers(cam_path, cam_markers)]
     missing += [f"app.py: {x}" for x in _check_markers(app_path, app_markers)]
