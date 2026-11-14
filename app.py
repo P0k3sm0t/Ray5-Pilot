@@ -13,6 +13,7 @@ import tempfile
 import time
 import webbrowser
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -789,6 +790,7 @@ github_update_status: dict[str, Any] = {
     "message": "Checking...",
     "checked_at": None,
     "last_checked": None,
+    "retry_at": None,
     "error": "",
     "release_url": GITHUB_REPO_URL if "GITHUB_REPO_URL" in globals() else "",
     "source_zip_url": "",
@@ -1054,6 +1056,30 @@ def _log_github_http_diagnostics(err: HTTPError) -> None:
     console.add("warn", f"GitHub update check HTTP error: {code} {err.reason}")
 
 
+def _github_rate_limit_retry_at(err: HTTPError, now: float) -> float | None:
+    headers = err.headers or {}
+    retry_after = str(headers.get("Retry-After", "") or "").strip()
+    exhausted = str(headers.get("X-RateLimit-Remaining", "")).strip() == "0"
+    if err.code != 429 and not (err.code == 403 and (exhausted or retry_after)):
+        return None
+    deadlines = []
+    if retry_after:
+        try:
+            deadlines.append(now + int(retry_after))
+        except ValueError:
+            try:
+                deadlines.append(parsedate_to_datetime(retry_after).timestamp())
+            except (ValueError, OverflowError, OSError):
+                pass
+    if exhausted:
+        try:
+            deadlines.append(float(int(headers.get("X-RateLimit-Reset", ""))))
+        except (TypeError, ValueError, OverflowError):
+            pass
+    future = [deadline for deadline in deadlines if deadline > now]
+    return max(future) + 1 if future else now + 60
+
+
 def _fetch_latest_release_update_info(timeout_seconds: float = 8.0) -> dict[str, Any]:
     req = urlrequest.Request(
         GITHUB_LATEST_RELEASE_API_URL,
@@ -1205,9 +1231,12 @@ def _check_source_update() -> dict[str, Any]:
         }
     except HTTPError as exc:
         _log_github_http_diagnostics(exc)
+        retry_at = _github_rate_limit_retry_at(exc, time.time())
         message = "Unable to check for updates right now."
-        if int(getattr(exc, "code", 0) or 0) == 403:
-            message = "GitHub update check was rate-limited. Try again later."
+        if retry_at is not None:
+            message = "GitHub temporarily rate-limited update checks."
+        elif exc.code == 403:
+            message = "GitHub refused the update check. Open the latest release to check manually."
         elif int(getattr(exc, "code", 0) or 0) == 404:
             message = "No GitHub release was found for update checking."
         return {
@@ -1222,6 +1251,7 @@ def _check_source_update() -> dict[str, Any]:
             "source_zip_sha256": "",
             "checksum_source": "",
             "checksum_url": "",
+            "retry_at": retry_at,
             "message": message,
         }
     except URLError as exc:
@@ -1305,6 +1335,7 @@ def _update_github_check_cache_from_result(result: dict[str, Any], checking: boo
         "update_available": update_available,
         "checked_at": checked_at_iso,
         "last_checked": checked_at_epoch,
+        "retry_at": result.get("retry_at"),
         "release_url": release_url,
         "source_zip_url": source_zip_url,
         "source_zip_url_fallback": GITHUB_SOURCE_ZIP_FALLBACK_URL,
@@ -1336,6 +1367,8 @@ def _github_update_refresh_needed(snapshot: dict[str, Any] | None = None, ttl_se
     s = snapshot if isinstance(snapshot, dict) else _github_update_cache_snapshot()
     if bool(s.get("checking", False)):
         return False
+    if s.get("retry_at") is not None:
+        return time.time() >= s["retry_at"]
     if not bool(s.get("checked", False)):
         return True
     last_checked_raw = s.get("last_checked")
@@ -1358,6 +1391,8 @@ def _start_github_update_check(force: bool = False, ttl_seconds: float = GITHUB_
     global github_update_check_thread
     with github_update_lock:
         snapshot = _github_update_cache_snapshot()
+        if (snapshot.get("retry_at") or 0) > time.time():
+            return snapshot
         thread_alive = bool(github_update_check_thread is not None and github_update_check_thread.is_alive())
         if thread_alive:
             return snapshot
@@ -7768,6 +7803,9 @@ def api_github_apply_update() -> Any:
     with app_state_lock:
         if _update_launching or _update_shutdown_started:
             return jsonify({"ok": False, "message": "An update is already starting."}), 409
+    snapshot = _github_update_cache_snapshot()
+    if (snapshot.get("retry_at") or 0) > time.time():
+        return jsonify({"ok": False, "message": "GitHub has rate-limited the update check. Use the latest release link or wait until the next check.", "update_status": snapshot}), 503
     # Use a fresh check before apply-update safety decisions.
     update_info = _check_source_update()
     cached_state = _update_github_check_cache_from_result(update_info, checking=False)

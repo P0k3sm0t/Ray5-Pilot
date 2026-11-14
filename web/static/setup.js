@@ -354,6 +354,7 @@ async function init(){
   const downloadLatestSource = v('githubDownloadLatestSource');
   let updateAvailableNow = false;
   let updateRefreshTimer = null;
+  let updateRetryTimer = null;
   let updateRefreshInProgress = false;
   const UPDATE_REFRESH_INTERVAL_MS = 45 * 60 * 1000;
   const UPDATE_FLOW_FLAG_KEY = 'ray5_update_in_progress';
@@ -393,13 +394,17 @@ async function init(){
     const installMetadataMissing = !!state.install_metadata_missing;
     const backendMessage = String(state.message || '').trim();
     const sourceZipUrl = String(state.source_zip_url || '').trim();
-    const fallbackSourceZipUrl = String(state.source_zip_url_fallback || '').trim();
+    const retryAtMs = Number(state.retry_at || 0) * 1000;
+    const hasRetryTime = Number.isFinite(retryAtMs) && retryAtMs > 0;
+    clearTimeout(updateRetryTimer);
+    updateRetryTimer = null;
     versionEl.textContent = currentVersion;
     if(downloadLatestSource){
-      const href = sourceZipUrl || fallbackSourceZipUrl;
-      if(href){
-        downloadLatestSource.href = href;
-      }
+      const hasReleaseZip = ok && !checking && !!sourceZipUrl;
+      downloadLatestSource.href = hasReleaseZip
+        ? sourceZipUrl
+        : 'https://github.com/P0k3sm0t/Ray5-Pilot/releases/latest';
+      downloadLatestSource.textContent = hasReleaseZip ? 'Download Release ZIP' : 'View Latest Release';
     }
     if(checking){
       updateAvailEl.textContent = 'Unknown';
@@ -409,7 +414,23 @@ async function init(){
     }
     if(!ok){
       updateAvailEl.textContent = 'Unknown';
-      updateStatus.textContent = backendMessage || 'Could not check for updates. Check your internet connection or try again later.';
+      const detail = String(state.error || '').trim() || backendMessage || 'Could not check for updates. Check your internet connection or try again later.';
+      if(hasRetryTime){
+        const retryTime = new Date(retryAtMs).toLocaleString(undefined, {
+          month:'short', day:'numeric', hour:'numeric', minute:'2-digit', second:'2-digit', timeZoneName:'short'
+        });
+        updateStatus.textContent = `${detail} Next check: ${retryTime}.`;
+        const retry = ()=>{
+          if(updateRefreshInProgress || Date.now() < retryAtMs){
+            updateRetryTimer = setTimeout(retry, Math.max(1000, Math.min(retryAtMs - Date.now(), UPDATE_REFRESH_INTERVAL_MS)));
+            return;
+          }
+          triggerUpdateRefresh();
+        };
+        updateRetryTimer = setTimeout(retry, Math.max(1000, Math.min(retryAtMs - Date.now(), UPDATE_REFRESH_INTERVAL_MS)));
+      }else{
+        updateStatus.textContent = detail;
+      }
       setUpdateButtonVisible(false);
       return;
     }
@@ -481,12 +502,10 @@ async function init(){
 
   async function loadUpdateStatus(){
     if(!updateStatus || !versionEl || !updateAvailEl) return;
-    versionEl.textContent = 'unknown';
-    updateAvailEl.textContent = 'Unknown';
-    updateStatus.textContent = 'Checking update status...';
     try{
       const us = await api('/api/github/check-updates');
       renderGithubUpdateState(us);
+      return us;
     }catch(_err){
       updateAvailEl.textContent = 'Unknown';
       updateStatus.textContent = 'Could not check for updates. Check your internet connection or try again later.';
@@ -520,7 +539,6 @@ async function init(){
     updateRefreshInProgress = true;
     const force = !!opts.force;
     try{
-      if(updateStatus) updateStatus.textContent = 'Checking for updates...';
       // Trigger refresh/check using backend cached-refresh mode.
       await fetch(`/api/github/check-updates?mode=refresh${force ? '&force=true' : ''}&ts=${Date.now()}`, {
         method: 'GET',
@@ -533,16 +551,8 @@ async function init(){
 
     // Briefly poll cached status to pick up completion without hammering.
     for(let i=0;i<8;i++){
-      await loadUpdateStatus();
-      try{
-        const us = await api('/api/github/check-updates');
-        if(us && us.checked === true && us.checking !== true){
-          renderGithubUpdateState(us);
-          break;
-        }
-      }catch(_err){
-        // keep polling
-      }
+      const us = await loadUpdateStatus();
+      if(us && us.checked === true && us.checking !== true) break;
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
     updateRefreshInProgress = false;
@@ -550,9 +560,11 @@ async function init(){
 
   // Keep slow or unavailable update services from blocking settings and Save.
   (async () => {
-    await loadUpdateStatus();
+    const initial = await loadUpdateStatus();
     await maybeShowPostUpdateStatus();
-    await triggerUpdateRefresh({force:true});
+    if(!initial || initial.checking === true || initial.checked !== true){
+      await triggerUpdateRefresh();
+    }
     if(updateRefreshTimer) clearInterval(updateRefreshTimer);
     updateRefreshTimer = setInterval(()=>{ triggerUpdateRefresh({force:false}); }, UPDATE_REFRESH_INTERVAL_MS);
   })().catch(err => console.warn('Update check unavailable', err));

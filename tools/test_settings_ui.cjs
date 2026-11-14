@@ -19,6 +19,8 @@ let failLoad = false;
 let delaySave = 0;
 let posted = null;
 let saveCount = 0;
+let updateRetryAt = null;
+let updateRecovered = false;
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const json = (body, status=200) => {res.writeHead(status, {'Content-Type':'application/json'});res.end(JSON.stringify(body));};
@@ -36,7 +38,21 @@ const server = http.createServer(async (req, res) => {
     return json({ok:true});
   }
   // An unavailable update service must never block configuration or Save.
-  if(url.pathname.startsWith('/api/github/')) return json({ok:false,checked:true,checking:false,message:'Offline test'});
+  if(url.pathname === '/api/github/check-updates'){
+    if(updateRetryAt && Number(url.searchParams.get('ts')) >= updateRetryAt * 1000){
+      updateRetryAt = null;
+      updateRecovered = true;
+    }
+    if(updateRecovered){
+      return json({ok:true,checked:true,checking:false,current_version:'2.0.0',latest_version:'2.0.1',
+        update_available:true,update_installable:true,
+        source_zip_url:'https://github.com/P0k3sm0t/Ray5-Pilot/releases/download/V2.0.1/Ray5-Pilot-v2.0.1.zip'});
+    }
+    return json({ok:false,checked:true,checking:false,current_version:'2.0.0',message:'Unable to check',
+      error:'GitHub temporarily rate-limited update checks.',retry_at:updateRetryAt || Date.now()/1000+3600,
+      source_zip_url_fallback:'https://github.com/P0k3sm0t/Ray5-Pilot/archive/refs/heads/main.zip'});
+  }
+  if(url.pathname === '/api/github/update-status') return json({ok:true,status:'none'});
   if(url.pathname.startsWith('/api/')) return json({ok:false,error:'Unexpected API request'},404);
   const file = url.pathname === '/setup' ? 'web/templates/setup.html' : url.pathname.startsWith('/static/') ? 'web/'+url.pathname.slice(1) : null;
   if(!file) {res.writeHead(404);res.end();return;}
@@ -58,6 +74,11 @@ const server = http.createServer(async (req, res) => {
     const originalIds=[...original.matchAll(/\bid="([^"]+)"/g)].map(m=>m[1]);
     await page.goto(base+'/setup');
     await page.waitForFunction(()=>document.getElementById('saveCfg').disabled===false);
+    await page.waitForFunction(()=>document.getElementById('githubUpdateStatus').textContent.includes('rate-limited'));
+    assert.match(await page.locator('#githubUpdateStatus').textContent(),/Next check: .+/);
+    assert.equal(await page.locator('#githubDownloadLatestSource').getAttribute('href'),'https://github.com/P0k3sm0t/Ray5-Pilot/releases/latest');
+    assert.equal(await page.locator('#githubUpdateAvailable').textContent(),'Unknown');
+    assert(await page.locator('#githubApplyUpdateWrap').isHidden());
     assert.equal(await page.locator('#settingsNav button').count(),7);
     const ids=await page.locator('[id]').evaluateAll(els=>els.map(el=>el.id));
     assert.equal(new Set(ids).size,ids.length,'Duplicate HTML IDs');
@@ -133,6 +154,22 @@ const server = http.createServer(async (req, res) => {
     assert.equal(await page.locator('#ray_host').inputValue(),'192.0.2.40');
     await page.unrouteAll({behavior:'ignoreErrors'});
     await page.close();
+    const retry=await browser.newPage();
+    const refreshTimes = [];
+    retry.on('request',req=>{
+      const query = new URL(req.url()).searchParams;
+      if(query.get('mode') === 'refresh') refreshTimes.push(Number(query.get('ts')));
+    });
+    const deadline=Math.ceil(Date.now()/1000)+3;
+    updateRetryAt=deadline;
+    await retry.goto(base+'/setup');
+    await retry.waitForFunction(()=>document.getElementById('githubUpdateStatus').textContent.includes('Next check:'));
+    assert.deepEqual(refreshTimes,[]);
+    await retry.waitForFunction(()=>document.getElementById('githubUpdateAvailable').textContent.includes('2.0.1'),null,{timeout:7000});
+    assert.deepEqual(refreshTimes.length,1,`Unexpected refreshes: ${refreshTimes.join(', ')}; deadline ${deadline*1000}`);
+    assert(refreshTimes[0]>=deadline*1000,'Settings retried before the deadline');
+    assert.equal(await retry.locator('#githubDownloadLatestSource').textContent(),'Download Release ZIP');
+    await retry.close();
     const broken=await browser.newPage();
     failLoad=true;
     await broken.goto(base+'/setup');

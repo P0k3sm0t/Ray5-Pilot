@@ -2,7 +2,7 @@
 
 A local, file-based controller for the Longer Ray5 using its ESP3D-style HTTP and WebSocket interfaces. Design in your laser software, export G-code, then use Pilot to frame, upload, run, and monitor it.
 
-**Version:** `2.0.1`. This update improves timelapse capture, automatic MP4 saving, recovery, and playback. It retains V2.0.0's SD-file framing, shared camera streaming, and camera tools. No firmware update is required. See the [release notes](RELEASE_NOTES.md) and [Timelapse guide](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Timelapse).
+**Version:** `2.0.2`. Pilot now waits for GitHub's update-check rate limit to reset, shows the next check in your local time, and keeps the manual release link available. It includes the timelapse recovery and playback improvements from V2.0.1. No firmware update is required. See the [release notes](RELEASE_NOTES.md) or [download the latest release](https://github.com/P0k3sm0t/Ray5-Pilot/releases/latest).
 
 - [Getting started](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Getting-Started)
 - [Dashboard guide](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Dashboard)
@@ -567,13 +567,17 @@ Dashboard and pop-out viewers now share one camera publisher for the same source
 
 Playing a saved video replaces the Dashboard preview without changing your saved camera setting or closing a live pop-out. Choose **Enable Video** to return to the preview. If autoplay is blocked, press Play in the video controls. A missing or unreadable video shows a playback error rather than a success message. Timelapse frames from different camera resolutions are fit into one video size without cropping.
 
-After updating, start Pilot through the launcher once so it can install the new FFmpeg dependency. On supported platforms this removes the need for a separate system FFmpeg install. To retry an old failed recording, back up its `session_...` folder and choose **Timelapse > Recover Video**. Recovery does not need a connected camera or Ray5, and it keeps the original JPEGs after success. Check the MP4 before choosing **Delete Frames**. Normal automatic job saving still cleans up its own session after a successful build.
+After updating from V2.0.0 or earlier, start Pilot through the launcher once so it can install the FFmpeg dependency introduced in V2.0.1. On supported platforms this removes the need for a separate system FFmpeg install.
+
+To retry an old failed recording, back up its `session_...` folder and choose **Timelapse > Recover Video**. Recovery does not need a connected camera or Ray5, and it keeps the original JPEGs after success. Check the MP4 before choosing **Delete Frames**. Normal automatic job saving still cleans up its own session after a successful build.
 
 ### Air assist status
 
 Pilot ignores cached accessory reports older than the last pump command. Once accessory reporting has been observed, a fresh status without `A:F` correctly confirms pump Off. This fixes the stale On indicator that could make one M9 appear ineffective. The hardware check confirmed that a single M9 cleared the Ray5's flood-assist flag; no blind duplicate pump commands were added. Check the physical pump if firmware reports and hardware disagree.
 
 ### Startup and upgrade notes
+
+If GitHub rate-limits the update check, Settings shows **Next check** in your local time and retries when the wait ends if Settings is still open. Refreshing the page does not bypass the cooldown. Use **View Latest Release** to download the packaged ZIP without waiting; do not use the `main.zip` source archive. Back up your local configuration and recordings before updating.
 
 The Windows BAT/EXE and Linux/macOS launcher cache successful requirements setup inside `.venv`. Unchanged requirements, package versions, and working imports skip pip/network setup on later launches. Changed/missing/broken dependencies are checked/installed again; first setup needs internet and Python already installed. Pilot, not the launchers, opens the configured browser address once the server is ready. Disable **Settings > App & Updates > Web UI > Open browser on startup** for headless use (`web_ui.open_browser_on_start: false`). No repeated forced pip upgrade is needed.
 

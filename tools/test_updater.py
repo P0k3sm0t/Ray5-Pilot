@@ -12,8 +12,11 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
+from email.utils import parsedate_to_datetime
+from urllib.error import HTTPError, URLError
 import zipfile
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -175,6 +178,65 @@ class UpdaterTests(unittest.TestCase):
                 updater._safe_wait_for_parent_exit(123,1,lambda _:None)
 
 
+class UpdateCooldownTests(unittest.TestCase):
+    def setUp(self):
+        self.state = {"checked": False, "checking": False}
+        self.clock = Mock()
+        self.clock.time.return_value = 1000.0
+        self.fetch = Mock()
+        self.thread = Mock()
+        self.ns = {
+            "Any": object, "time": self.clock, "threading": self.thread, "re": re,
+            "HTTPError": HTTPError, "URLError": URLError, "parsedate_to_datetime": parsedate_to_datetime,
+            "_read_local_version": lambda: "2.0.0", "_fetch_latest_release_update_info": self.fetch,
+            "_compare_versions": lambda *_: -1, "_log_github_http_diagnostics": Mock(),
+            "GITHUB_REPO_URL": "https://example.test/", "GITHUB_SOURCE_ZIP_FALLBACK_URL": "",
+            "GITHUB_UPDATE_CACHE_TTL_SECONDS": 1800, "github_update_status": self.state,
+            "github_update_lock": threading.RLock(), "app_state_lock": threading.RLock(),
+            "github_update_check_thread": None, "console": Mock(),
+        }
+        tree = ast.parse((Path(__file__).resolve().parents[1]/"app.py").read_text(encoding="utf-8-sig"))
+        names = {"_github_rate_limit_retry_at", "_check_source_update", "_github_update_cache_snapshot",
+                 "_update_github_check_cache_from_result", "_github_update_refresh_needed",
+                 "_start_github_update_check", "_run_github_update_check_worker"}
+        functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+        exec(compile(ast.Module(body=functions, type_ignores=[]), "app.py", "exec"), self.ns)
+
+    @staticmethod
+    def error(code, headers):
+        return HTTPError("https://example.test/", code, "test", headers, None)
+
+    def test_reset_controls_cooldown_even_for_forced_checks_and_clears_on_success(self):
+        self.fetch.side_effect = self.error(403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1200"})
+        self.ns["_run_github_update_check_worker"]()
+        self.assertEqual(self.state["retry_at"], 1201)
+        self.assertIn("rate-limited", self.state["error"])
+        self.clock.time.return_value = 1200.9
+        for force in (False, True):
+            snap = self.ns["_start_github_update_check"](force=force)
+            self.assertEqual(snap["retry_at"], 1201)
+        self.thread.Thread.assert_not_called()
+        self.fetch.assert_called_once()
+        self.clock.time.return_value = 1201
+        self.ns["_start_github_update_check"]()
+        self.thread.Thread.return_value.start.assert_called_once()
+        self.fetch.side_effect = None
+        self.fetch.return_value = {"tag": "2.0.1", "source_zip_url": "https://example.test/zip", "source_zip_sha256": "5"*64}
+        self.ns["_run_github_update_check_worker"]()
+        self.assertIsNone(self.state["retry_at"])
+        self.assertTrue(self.state["update_installable"])
+
+    def test_retry_after_and_reset_headers_and_safe_fallback(self):
+        due = self.ns["_github_rate_limit_retry_at"]
+        self.assertEqual(due(self.error(429, {"Retry-After": "120"}), 1000), 1121)
+        self.assertEqual(due(self.error(403, {"Retry-After": "300", "X-RateLimit-Remaining": "0",
+                                              "X-RateLimit-Reset": "1200"}), 1000), 1301)
+        self.assertEqual(due(self.error(429, {"Retry-After": "Thu, 01 Jan 1970 00:20:00 GMT"}), 1000), 1201)
+        self.assertEqual(due(self.error(429, {"Retry-After": "invalid"}), 1000), 1060)
+        self.assertIsNone(due(self.error(403, {}), 1000))
+        self.assertIsNone(due(self.error(404, {}), 1000))
+
+
 class UpdateApiTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
@@ -192,7 +254,8 @@ class UpdateApiTests(unittest.TestCase):
             "_snapshot_comm_safety_state":Mock(return_value={}),"_read_local_version":lambda:"0.0.1",
             "console":Mock(),"subprocess":Mock(),"_delayed_process_exit":Mock(),"sys":sys,"os":os,"re":re}
         self.ns.update(cfg={"safety":{"test_fire_enabled":True}},ray5=Mock(),
-            _require_ray5_configured=lambda:None,_set_laser_commanded_s=Mock(),_set_laser_test_active=Mock())
+            _require_ray5_configured=lambda:None,_set_laser_commanded_s=Mock(),_set_laser_test_active=Mock(),
+            _github_update_cache_snapshot=Mock(return_value={}),time=time)
         tree=ast.parse((Path(__file__).resolve().parents[1]/"app.py").read_text(encoding="utf-8-sig"))
         names={"api_github_apply_update","api_test_fire","_is_trusted_github_release_asset_url","_normalize_version_text","_parse_version_parts","_compare_versions","_extract_sha256_from_text"}
         functions=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in names]
@@ -204,6 +267,12 @@ class UpdateApiTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/github/apply-update').status_code,409)
         self.ns['subprocess'].Popen.assert_called_once()
         self.ns['_delayed_process_exit'].assert_called_once()
+
+    def test_apply_does_not_bypass_retry_deadline(self):
+        self.ns["_github_update_cache_snapshot"].return_value = {"retry_at": time.time() + 30}
+        self.assertEqual(self.client.post('/api/github/apply-update').status_code, 503)
+        self.ns["_check_source_update"].assert_not_called()
+        self.ns["subprocess"].Popen.assert_not_called()
 
     def test_all_busy_states_block_shutdown(self):
         for state in ('Run','Hold:0','Jog','Home','Door:1'):

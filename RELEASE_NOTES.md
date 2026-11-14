@@ -1,3 +1,19 @@
+# Ray5 Pilot V2.0.2 - Update Check Cooldown
+
+- When GitHub rate-limits update checks, Pilot waits until GitHub's retry time
+  instead of sending more requests. Settings shows **Next check** in your local
+  time and retries automatically if the page stays open.
+- **View Latest Release** stays available during the cooldown. Use the packaged
+  ZIP and SHA-256 checksum on that page, not the branch source archive.
+- The V2.0.1 timelapse and playback fixes are included. This release does not
+  change firmware or machine controls.
+
+If an older Pilot still says **Unable to check**, download this release ZIP
+manually. Back up your config and recordings, then start the updated copy using
+the launcher. No firmware update is required.
+
+---
+
 # Ray5 Pilot V2.0.1 - Timelapse Recovery and Camera Playback
 
 This update focuses on recordings that left JPEG frames behind but never showed
