@@ -2,7 +2,7 @@
 
 A local, file-based controller for the Longer Ray5 using its ESP3D-style HTTP and WebSocket interfaces. Design in your laser software, export G-code, then use Pilot to frame, upload, run, and monitor it.
 
-**Version:** `2.0.0`. This major update brings SD-file framing, shared camera streaming for pop-out/timelapse, refreshed camera tools, faster repeat startup, and audited stability fixes. Existing local config is preserved; no firmware update is required for the verified Ray5. See the [V2.0.0 release summary](RELEASE_NOTES.md) and [audit report](docs/AUDIT_2.0.0.md) for validation and limitations. Older release notes below remain historical.
+**Version:** `2.0.1`. This update improves timelapse capture, automatic MP4 saving, recovery, and playback. It retains V2.0.0's SD-file framing, shared camera streaming, and camera tools. No firmware update is required. See the [release notes](RELEASE_NOTES.md) and [Timelapse guide](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Timelapse).
 
 - [Getting started](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Getting-Started)
 - [Dashboard guide](https://github.com/P0k3sm0t/Ray5-Pilot/wiki/Dashboard)
@@ -219,7 +219,7 @@ http://127.0.0.1:5050
 
 The EXE launcher runs `Start_Ray5_Pilot.bat`, which creates a local `.venv` and installs `requirements.txt` before starting the app. Python and the complete extracted project are still required. First startup requires internet access to install the packages, including OpenCV (`cv2`). Both launchers use this same environment.
 
-The BAT checks cached dependency setup and installs requirements only when the environment needs setup or repair. Pilot opens the configured browser address once the server is ready; set `web_ui.open_browser_on_start` to false for headless use. Python is not bundled, and ffmpeg for RTSP fallback/MP4 creation is a separate PATH dependency.
+The BAT checks cached dependency setup and installs requirements only when the environment needs setup or repair. Pilot opens the configured browser address once the server is ready; set `web_ui.open_browser_on_start` to false for headless use. Python is not bundled. Timelapse encoding and FFmpeg camera capture use the binary supplied by `imageio-ffmpeg` on supported platforms, or FFmpeg on PATH.
 
 If an older EXE fails with `ModuleNotFoundError: No module named 'cv2'`, run `Start_Ray5_Pilot.bat` from the extracted project folder. It installs the dependencies and starts Pilot using `.venv`. Continue using the BAT until you replace the old EXE with the updated launcher; installing packages into `.venv` does not repair an old EXE that selects a different Python installation.
 
@@ -475,7 +475,7 @@ The safety lockout is intentionally conservative. It is designed to prevent Ray5
 - Physical overlay width/height can determine the written DPI. Verify imported size, disable Output on the image layer, and lock the reference before exporting G-code.
 - The default snapshot folder is `camera_captures/`. Startup cleanup can remove old snapshots, including latest images, before an optional new capture; copy images you need elsewhere first.
 - With history enabled, `keep_last: 0` means unlimited timestamped history. Capture-time retention protects `latest.jpg` and `latest_raw.jpg`; this is separate from startup cleanup.
-- Video disabled does not mean the camera is disabled: snapshots and timelapse can use the configured fallback capture method. RTSP fallback using ffmpeg requires ffmpeg on PATH.
+- Video disabled does not mean the camera is disabled: snapshots and timelapse can use the configured fallback capture method. If no recording frames were captured, check the camera capture error before retrying; Recover Video can only use frames already saved.
 - Multiple live viewers still use separate camera connections. Close unused tabs/popouts if the camera becomes overloaded.
 
 
@@ -565,6 +565,10 @@ Calibration changes camera reference images, not GRBL settings or machine coordi
 
 Dashboard and pop-out viewers now share one camera publisher for the same source. It keeps only the latest frame and stays warm briefly during viewer handoff, so timelapse can keep using the live-frame cache instead of opening another RTSP connection. A successful capture clears a previous transient recording error. Stream opens/reads have bounded RTSP timeouts; configured fallback capture still applies when there is no fresh cached frame. Camera failure cannot guarantee uninterrupted recording, and opening an external camera app still uses a separate connection.
 
+Playing a saved video replaces the Dashboard preview without changing your saved camera setting or closing a live pop-out. Choose **Enable Video** to return to the preview. If autoplay is blocked, press Play in the video controls. A missing or unreadable video shows a playback error rather than a success message. Timelapse frames from different camera resolutions are fit into one video size without cropping.
+
+After updating, start Pilot through the launcher once so it can install the new FFmpeg dependency. On supported platforms this removes the need for a separate system FFmpeg install. To retry an old failed recording, back up its `session_...` folder and choose **Timelapse > Recover Video**. Recovery does not need a connected camera or Ray5, and it keeps the original JPEGs after success. Check the MP4 before choosing **Delete Frames**. Normal automatic job saving still cleans up its own session after a successful build.
+
 ### Air assist status
 
 Pilot ignores cached accessory reports older than the last pump command. Once accessory reporting has been observed, a fresh status without `A:F` correctly confirms pump Off. This fixes the stale On indicator that could make one M9 appear ineffective. The hardware check confirmed that a single M9 cleared the Ray5's flood-assist flag; no blind duplicate pump commands were added. Check the physical pump if firmware reports and hardware disagree.
@@ -641,7 +645,7 @@ Always supervise laser operation, verify all files and settings before running a
 
 ## Ray5 Pilot V2.0.0
 
-V2.0 adds actual-SD-file laser-off framing, shared camera streaming across pop-out and Dashboard viewers, refreshed camera/calibration pages, and faster cached startup. The audit fixes snapshot preservation, atomic/concurrent job imports, invalid-request handling, stale Air Off reporting, RTSP timeouts, and localhost debug checks. See [release notes](RELEASE_NOTES.md) and the [2.0 audit](docs/AUDIT_2.0.0.md). Earlier versions below are historical records, not current behavior.
+V2.0 adds actual-SD-file laser-off framing, shared camera streaming across pop-out and Dashboard viewers, refreshed camera/calibration pages, and faster cached startup. The audit fixes snapshot preservation, atomic/concurrent job imports, invalid-request handling, stale Air Off reporting, RTSP timeouts, and localhost debug checks. See the [V2.0.0 release notes](https://github.com/P0k3sm0t/Ray5-Pilot/releases/tag/V2.0.0) and the [2.0 audit](docs/AUDIT_2.0.0.md). Earlier versions below are historical records, not current behavior.
 
 ## Ray5 Pilot V1.2.5
 
@@ -1470,7 +1474,7 @@ python tools/safety_check.py
 - Imported Upload Only does not arm Timelapse.
 - Imported Upload + Run and SD Card Start arm Timelapse automatically when enabled.
 - Manual Start Timelapse starts capture directly and Manual Stop Timelapse stops/saves directly.
-- If ffmpeg is not available, Timelapse frames are preserved and a warning is shown instead of silently failing to build an MP4.
+- If MP4 encoding fails, Pilot reports the encoder error and keeps the frames. Use **Recover Video** to retry, even if an older video already exists. Original frames are kept after manual recovery; use **Delete Frames** only after checking playback.
 
 ## v1.0.3
 - Fixed Test Fire for Ray5 screen-style stationary M4 behavior.

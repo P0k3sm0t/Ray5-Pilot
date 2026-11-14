@@ -3,24 +3,29 @@ import ast
 from concurrent.futures import ThreadPoolExecutor
 import io
 import json
+import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from typing import Any
 import unittest
 from unittest.mock import Mock, patch
+from urllib.parse import quote
 
 from PIL import Image
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from camera_manager import CameraCaptureError, CameraManager, SharedCameraStream, _open_video_capture_with_rtsp_transport, mask_camera_url
 from job_manager import JobManager
 from tools import prepare_environment
-from platform_utils import open_dashboard_when_ready
+from platform_utils import find_ffmpeg, open_dashboard_when_ready
 
 
 def functions(*names):
@@ -80,6 +85,183 @@ class SnapshotTests(TemporaryTest):
         for file in (camera.latest_path, camera.latest_raw_path):
             with Image.open(file) as image:
                 image.verify()
+
+
+class TimelapseEncodingTests(TemporaryTest):
+    def setUp(self):
+        super().setUp()
+        self.session = self.root / "session_20261113_120000"
+        self.session.mkdir()
+        self.output = self.root / "timelapse_recovered_20261113_120000.mp4"
+        self.state = {"session_id": "20261113_120000", "active": False}
+        self.ns = dict(globals(), _timelapse_output_dir=lambda: self.root,
+                       _timelapse_snapshot_state=lambda: dict(self.state), console=Mock(),
+                       _timelapse_cfg=lambda: {"playback_fps": 10})
+        names = (
+            "_build_timelapse_video", "_timelapse_session_id_from_video_name",
+            "_timelapse_safe_session_name", "_scan_timelapse_sessions", "api_timelapses",
+            "api_timelapses_recover", "api_timelapses_open", "api_timelapse_stop", "_timelapse_stop_internal",
+            "_queue_timelapse_stop_from_status",
+        )
+        tree = functions(*names)
+        for func in tree.body:
+            func.decorator_list = []
+        exec(compile(tree, "app.py", "exec"), self.ns)
+
+    def write_frame(self, index=1, size=(33, 25)):
+        path = self.session / f"frame_{index:06d}.jpg"
+        Image.new("RGB", size, "green").save(path)
+        return path
+
+    def setup_stop_state(self):
+        self.state.update({"active": True, "control_mode": "job", "snapshot_count": 1,
+                           "session_dir": str(self.session)})
+        self.ns.update(timelapse_state=self.state, timelapse_lock=threading.Lock(),
+                       timelapse_stop_worker=None, timelapse_thread=None,
+                       timelapse_stop_event=threading.Event(), camera=Mock(timeout_seconds=1),
+                       _timelapse_status_label=lambda _: "")
+
+    def test_recover_odd_size_numbering_gap_without_system_ffmpeg(self):
+        try:
+            import imageio_ffmpeg
+        except ImportError:
+            self.skipTest("imageio-ffmpeg not installed in test environment")
+        paths = [self.write_frame(i) for i in (1, 3, 15)]
+        with patch.dict(os.environ, {"PATH": "", "IMAGEIO_FFMPEG_EXE": ""}):
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+            with Flask(__name__).test_request_context(json={"session": self.session.name}):
+                response = self.ns["api_timelapses_recover"]()
+                self.assertTrue(response.get_json()["ok"])
+            decoded = subprocess.run(
+                [ffmpeg, "-v", "error", "-i", str(self.output), "-pix_fmt", "rgb24",
+                 "-f", "rawvideo", "-"], check=True, capture_output=True,
+            )
+        self.assertEqual(len(decoded.stdout), 3 * 34 * 26 * 3)
+        self.assertTrue(all(p.exists() for p in paths))
+
+    def test_real_encoder_stop_creates_playable_video(self):
+        import cv2
+        if not shutil.which("ffmpeg"):
+            try:
+                import imageio_ffmpeg
+                imageio_ffmpeg.get_ffmpeg_exe()
+            except (ImportError, RuntimeError):
+                self.skipTest("FFmpeg not installed")
+        self.write_frame()
+        self.setup_stop_state()
+        result = self.ns["_timelapse_stop_internal"]("state=Idle")
+        self.assertTrue(result["video"], result.get("message"))
+        self.assertEqual(self.state["error"], "")
+        with_video = cv2.VideoCapture(str(self.root / result["video"]))
+        try:
+            self.assertTrue(with_video.read()[0])
+        finally:
+            with_video.release()
+
+    def test_encoder_failure_keeps_frames_output_and_native_error(self):
+        frame = self.write_frame()
+        self.output.write_bytes(b"existing")
+
+        def encoder(cmd, **kwargs):
+            Path(cmd[-1]).write_bytes(b"partial")
+            raise subprocess.CalledProcessError(1, cmd, stderr="disk full\n")
+
+        with patch("shutil.which", return_value="ffmpeg"), patch("subprocess.run", side_effect=encoder):
+            with patch.dict(sys.modules, {"imageio_ffmpeg": None}):
+                ok, message = self.ns["_build_timelapse_video"](self.session, self.output, 10)
+        self.assertFalse(ok)
+        self.assertIn("disk full", message)
+        self.assertEqual(self.output.read_bytes(), b"existing")
+        self.assertTrue(frame.exists())
+        self.assertFalse(list(self.root.glob(".timelapse-build-*")))
+
+    def test_corrupt_jpeg_does_not_publish_a_partial_video(self):
+        if not find_ffmpeg():
+            self.skipTest("FFmpeg not installed")
+        first = self.write_frame()
+        corrupt = self.session / "frame_000002.jpg"
+        corrupt.write_bytes(b"not a JPEG")
+        ok, message = self.ns["_build_timelapse_video"](self.session, self.output, 10)
+        self.assertFalse(ok)
+        self.assertIn("FFmpeg exited with code", message)
+        self.assertFalse(self.output.exists())
+        self.assertTrue(first.is_file())
+        self.assertEqual(corrupt.read_bytes(), b"not a JPEG")
+
+    def test_stop_api_retains_encoder_warning_in_response_and_state(self):
+        frame = self.write_frame()
+        self.setup_stop_state()
+        self.ns["_build_timelapse_video"] = Mock(return_value=(False, "encoder failed"))
+        with Flask(__name__).app_context():
+            data = self.ns["api_timelapse_stop"]().get_json()
+        self.assertEqual(data["build_error"], "encoder failed")
+        self.assertEqual(data["state"]["error"], "encoder failed")
+        self.assertIn("video was not built", data["message"])
+        self.assertTrue(frame.exists())
+
+    def test_empty_mp4_is_not_listed_or_matched_to_frames(self):
+        self.write_frame()
+        self.output.touch()
+        with Flask(__name__).app_context():
+            data = self.ns["api_timelapses"]().get_json()
+        self.assertEqual(data["items"], [])
+        self.assertEqual(data["sessions"][0]["status"], "recoverable")
+
+    def test_video_url_escapes_filename_and_supports_seek_ranges(self):
+        filename = "Capture #1 %.mp4"
+        (self.root / filename).write_bytes(bytes(range(32)))
+        web = Flask(__name__)
+        web.add_url_rule("/api/timelapses", view_func=self.ns["api_timelapses"])
+        web.add_url_rule("/api/timelapses/open/<path:filename>", view_func=self.ns["api_timelapses_open"])
+        client = web.test_client()
+        with client.get("/api/timelapses") as listing:
+            url = listing.get_json()["items"][0]["url"]
+        self.assertTrue(url.endswith("Capture%20%231%20%25.mp4"))
+        with client.get(url, headers={"Range": "bytes=8-15"}) as response:
+            self.assertEqual(response.status_code, 206)
+            self.assertEqual(response.headers["Content-Range"], "bytes 8-15/32")
+            self.assertEqual(response.get_data(), bytes(range(8, 16)))
+
+    def test_encoding_fits_different_camera_resolutions_to_one_canvas(self):
+        encoder = find_ffmpeg()
+        if not encoder:
+            self.skipTest("FFmpeg not installed")
+        first = self.write_frame(1, (160, 90))
+        second = self.session / "frame_000002.jpg"
+        image = Image.new("RGB", (320, 240), "red")
+        image.paste("blue", (160, 0, 320, 240))
+        image.save(second)
+        ok, message = self.ns["_build_timelapse_video"](self.session, self.output, 10)
+        self.assertTrue(ok, message)
+        decoded = subprocess.check_output(
+            [encoder, "-v", "error", "-i", str(self.output), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
+            timeout=15,
+        )
+        self.assertEqual(len(decoded), 2 * 160 * 90 * 3)
+        recovered = Image.frombytes("RGB", (160, 90), decoded[len(decoded) // 2:])
+        self.assertGreater(recovered.getpixel((105, 40))[2], 180)
+        self.assertLess(max(recovered.getpixel((5, 40))), 30)
+        self.assertTrue(first.exists() and second.exists())
+
+    def test_stop_explains_camera_failure_when_no_frames_were_captured(self):
+        self.setup_stop_state()
+        self.state.update(snapshot_count=0, error="Camera timed out")
+        self.ns["_build_timelapse_video"] = Mock()
+        with Flask(__name__).app_context():
+            data = self.ns["api_timelapse_stop"]().get_json()
+        self.ns["_build_timelapse_video"].assert_not_called()
+        self.assertIn("No frames were captured. Last capture error: Camera timed out", data["message"])
+        self.assertEqual(data["state"]["error"], "Camera timed out")
+
+    def test_rate_limited_duplicate_stop_does_not_start_another_worker(self):
+        self.setup_stop_state()
+        sid = self.state["session_id"]
+        self.state.update(stop_pending=True, stop_pending_session_id=sid)
+        self.ns["timelapse_duplicate_log_at"] = {sid: time.time()}
+        with patch("threading.Thread") as worker:
+            queued = self.ns["_queue_timelapse_stop_from_status"]("state=Idle", "Idle", True)
+        self.assertFalse(queued)
+        worker.assert_not_called()
 
 
 class ImportTests(TemporaryTest):
@@ -153,6 +335,45 @@ class CameraHandoffTests(TemporaryTest):
             _open_video_capture_with_rtsp_transport("rtsp://camera.test/stream", "tcp")
         options = capture.call_args.args[2]
         self.assertEqual(options[1::2], [5000, 5000])
+
+    def test_opencv_fallback_uses_configured_rtsp_transport(self):
+        camera = self.camera()
+        camera.camera["rtsp_transport"] = "tcp"
+        url = "rtsp://camera.test/stream"
+        cap = Mock()
+        cap.read.return_value = False, None
+        with patch("camera_manager._open_video_capture_with_rtsp_transport", return_value=cap) as capture:
+            with self.assertRaisesRegex(CameraCaptureError, "failed to read frame"):
+                camera._capture_opencv_frame(url)
+        capture.assert_called_once_with(url, "tcp")
+        cap.release.assert_called_once()
+
+    def test_failed_frame_publish_preserves_existing_jpeg(self):
+        camera = self.camera()
+        camera.update_live_frame(self.jpeg())
+        target = self.root / "session" / "frame_000001.jpg"
+        target.parent.mkdir()
+        target.write_bytes(b"saved")
+        with patch("camera_manager.os.replace", side_effect=OSError("Injected disk failure")):
+            with self.assertRaisesRegex(OSError, "disk failure"):
+                camera.capture_timelapse_frame_to(target)
+        self.assertEqual(target.read_bytes(), b"saved")
+        self.assertEqual(list(target.parent.iterdir()), [target])
+
+    def test_timelapse_capture_uses_bundled_ffmpeg_with_no_preview_or_system_path(self):
+        try:
+            import imageio_ffmpeg
+        except ImportError:
+            self.skipTest("imageio-ffmpeg not installed in test environment")
+        camera = self.camera()
+        source = self.root / "camera.jpg"
+        source.write_bytes(self.jpeg())
+        camera.camera.update(url=str(source), capture_method="ffmpeg")
+        with patch.dict(os.environ, {"PATH": "", "IMAGEIO_FFMPEG_EXE": ""}):
+            imageio_ffmpeg.get_ffmpeg_exe()
+            dest = camera.capture_timelapse_frame_to(self.root / "frame.jpg", source="raw")
+        with Image.open(dest) as image:
+            image.verify()
 
     def test_timelapse_error_clears_after_a_successful_retry(self):
         state = {"active": True, "session_dir": str(self.root / "session")}

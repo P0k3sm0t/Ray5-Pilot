@@ -11,8 +11,8 @@ import tempfile
 import os
 
 
-PACKAGES = ("Flask", "requests", "opencv-python", "numpy", "pillow", "websocket-client")
-IMPORT_CHECK = "import flask, requests, cv2, numpy, PIL, websocket"
+PACKAGES = ("Flask", "requests", "opencv-python", "numpy", "pillow", "websocket-client", "imageio-ffmpeg")
+IMPORT_CHECK = "import flask, requests, cv2, numpy, PIL, websocket, imageio_ffmpeg"
 
 
 def signature(root: Path) -> dict:

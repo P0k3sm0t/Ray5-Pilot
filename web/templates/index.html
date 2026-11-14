@@ -104,7 +104,7 @@
       <div id="camera-test-status" class="camera-test-status muted small"></div>
       <div class="video-frame-wrap">
         <img id="cam" class="camera-feed" src="" alt="camera stream">
-        <video id="timelapsePlayer" class="camera-feed timelapse-player" controls playsinline style="display:none;"></video>
+        <video id="timelapsePlayer" class="camera-feed timelapse-player" controls playsinline preload="metadata" style="display:none;"></video>
         <div id="cameraOffline" class="camera-offline" style="display:none;">Camera unavailable</div>
       </div>
       <div class="camera-footer-row">
@@ -302,6 +302,6 @@
   </div>
 </div>
 <script src="/static/dashboard-layout.js?v=2.0.0"></script>
-<script src="/static/app.js?v=2.0.0"></script>
+<script src="/static/app.js?v=2.0.1"></script>
 </body>
 </html>

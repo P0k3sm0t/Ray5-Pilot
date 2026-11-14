@@ -1,3 +1,46 @@
+# Ray5 Pilot V2.0.1 - Timelapse Recovery and Camera Playback
+
+This update focuses on recordings that left JPEG frames behind but never showed
+a playable video. It also makes playback independent of saved camera settings.
+
+## What's fixed
+
+- Timelapse MP4 encoding and FFmpeg camera fallback use the executable supplied
+  by `imageio-ffmpeg` on supported platforms, with system FFmpeg as a fallback.
+- Automatic job saving and **Recover Video** publish the MP4 only after encoding
+  succeeds. Build errors are shown in Pilot, and failed builds keep the frames.
+- Recovery can retry sessions with an older failed output, handles frame-number
+  gaps, and retains the original JPEGs even after a successful manual recovery.
+  Frames of different resolutions fit into one video canvas without cropping.
+- Recording resumes when fresh camera frames return after a transient failure.
+  JPEGs are saved atomically and repeated status polls don't queue duplicate builds.
+- The player no longer disables the camera in Settings. It supports seeking
+  and distinguishes browser autoplay restrictions from file or decoding errors.
+
+## Updating and recovering a recording
+
+Back up local settings and recordings before updating. Extract the release ZIP
+and run the launcher, or use the in-app updater when Pilot and the machine are
+idle. The launcher installs the new dependency on the first run with internet
+access. No firmware changes are needed.
+
+Open **Timelapse > Recover Video** for a saved session. This works without the
+camera or laser connected. Verify playback before choosing **Delete Frames**.
+
+## Verification
+
+Tested with a real RTSP camera: dashboard and pop-out handoff, snapshots,
+playback, seeking, and automatic save after simulated job completion. A
+2.5-minute run recovered from an injected 10-second camera interruption and
+saved a playable 71-frame MP4. Also tested encoder and corrupt-frame failures,
+recovery with no system FFmpeg on PATH, and the Windows release ZIP. No laser
+commands were sent during these tests; physical job completion was not retested.
+
+See the [V2.0.0 GitHub release](https://github.com/P0k3sm0t/Ray5-Pilot/releases/tag/V2.0.0)
+for the full 2.0 overview. The earlier notes below are historical.
+
+---
+
 # Ray5 Pilot V2.0.0 - Performance, Stability, and Camera Workflows
 
 Ray5 Pilot 2.0 consolidates the file-based Ray5 workflow with SD-file framing,

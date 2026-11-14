@@ -715,7 +715,7 @@ def check_timelapse_recovery_safeguards(r: Result) -> None:
         ("sessions included in listing", '"sessions": sessions'),
         ("active session protected recover", "Cannot recover active timelapse session."),
         ("active session protected delete", "Cannot delete active timelapse session."),
-        ("recover deletes session only after video exists", "if not output_file.exists() or output_file.stat().st_size <= 0"),
+        ("recover verifies output video exists", "if not output_file.exists() or output_file.stat().st_size <= 0"),
     ]
     js_markers = [
         ("recoverable sessions section renderer", "renderTimelapseSessions"),

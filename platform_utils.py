@@ -9,6 +9,15 @@ from urllib.error import URLError
 from pathlib import Path
 
 
+def find_ffmpeg() -> str | None:
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe
+
+        return get_ffmpeg_exe()
+    except (ImportError, OSError, RuntimeError):
+        return shutil.which("ffmpeg")
+
+
 def _open_with_platform(path: Path) -> None:
     if os.name == "nt":
         os.startfile(str(path))  # type: ignore[attr-defined]

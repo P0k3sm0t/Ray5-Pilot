@@ -18,11 +18,12 @@ from threading import RLock
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib import request as urlrequest
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import cv2
 from flask import Flask, jsonify, render_template, render_template_string, request, send_file
 from jinja2 import TemplateNotFound
+from PIL import Image
 
 from camera_manager import CameraCaptureError, CameraManager, SharedCameraStream, mask_camera_url, mjpeg_generator
 from config_manager import ConfigManager
@@ -30,7 +31,7 @@ from console_log import ConsoleLog
 from job_manager import JobManager
 from ray5_client import Ray5Client
 from ray5_status_monitor import Ray5StatusMonitor
-from platform_utils import open_dashboard_when_ready
+from platform_utils import find_ffmpeg, open_dashboard_when_ready
 
 BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__, template_folder=str(BASE_DIR / "web" / "templates"), static_folder=str(BASE_DIR / "web" / "static"))
@@ -2304,28 +2305,64 @@ def _timelapse_is_terminal_state(machine_state: str, online: bool) -> bool:
 
 
 def _build_timelapse_video(session_dir: Path, output_file: Path, fps: float) -> tuple[bool, str]:
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = find_ffmpeg()
     if not ffmpeg:
-        return False, "ffmpeg not found; frames kept without video build"
-    pattern = str(session_dir / "frame_%06d.jpg")
-    cmd = [
-        ffmpeg,
-        "-y",
-        "-framerate",
-        f"{fps:.3f}",
-        "-i",
-        pattern,
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        str(output_file),
-    ]
+        return False, "FFmpeg not found. Rerun the Pilot launcher to install dependencies, or install FFmpeg on PATH."
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        frames = sorted(
+            p for p in session_dir.glob("frame_*.jpg")
+            if p.is_file() and re.fullmatch(r"frame_\d{6}\.jpg", p.name)
+        )
+        if not frames:
+            return False, "No numbered JPEG frames found."
+        if any(p.stat().st_size == 0 for p in frames):
+            return False, "A captured JPEG frame is empty."
+        with Image.open(frames[0]) as first_frame:
+            width, height = first_frame.size
+        width, height = max(2, width + width % 2), max(2, height + height % 2)
+        # The preview and snapshot fallback may have different resolutions.
+        fit = (f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+               f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1")
+
+        with tempfile.TemporaryDirectory(prefix=".timelapse-build-", dir=output_file.parent) as temp:
+            staging = Path(temp)
+            start = int(frames[0].stem.split("_")[1])
+            if all(frame.name == f"frame_{i:06d}.jpg" for i, frame in enumerate(frames, start)):
+                source = session_dir
+            else:
+                # FFmpeg's image sequence input stops at a numbering gap.
+                source, start = staging, 1
+                for index, frame in enumerate(frames, start):
+                    target = staging / f"frame_{index:06d}.jpg"
+                    try:
+                        os.link(frame, target)
+                    except OSError:
+                        shutil.copyfile(frame, target)
+            candidate = staging / "video.mp4"
+            cmd = [
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-xerror",
+                "-framerate", f"{fps:.3f}", "-start_number", str(start),
+                "-i", str(source / "frame_%06d.jpg"),
+                "-frames:v", str(len(frames)), "-vf", fit,
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                str(candidate),
+            ]
+            subprocess.run(
+                cmd, check=True, capture_output=True, timeout=180,
+                encoding="utf-8", errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if not candidate.is_file() or candidate.stat().st_size <= 0:
+                return False, "FFmpeg did not create a video."
+            os.replace(candidate, output_file)
         return True, ""
-    except Exception as exc:
-        return False, str(exc)
+    except subprocess.TimeoutExpired:
+        return False, "FFmpeg timed out while building the video."
+    except subprocess.CalledProcessError as exc:
+        details = " ".join((exc.stderr or "").split())
+        return False, f"FFmpeg exited with code {exc.returncode}: {details[:1000] or 'no details reported'}"
+    except OSError as exc:
+        return False, f"Could not build the video: {exc}"
 
 
 def _timelapse_session_id_from_video_name(filename: str) -> str:
@@ -2349,10 +2386,15 @@ def _scan_timelapse_sessions() -> list[dict[str, Any]]:
     active_like = bool(active_state.get("active") or active_state.get("armed") or active_state.get("paused") or active_state.get("stopping") or active_state.get("stop_pending") or active_state.get("build_in_progress"))
     known_video_session_ids: set[str] = set()
     for p in out_dir.glob("*"):
-        if p.is_file() and p.suffix.lower() in allowed_video_exts:
-            sid = _timelapse_session_id_from_video_name(p.name)
-            if sid:
-                known_video_session_ids.add(sid)
+        if p.suffix.lower() not in allowed_video_exts or not p.is_file():
+            continue
+        try:
+            if p.stat().st_size > 0:
+                sid = _timelapse_session_id_from_video_name(p.name)
+                if sid:
+                    known_video_session_ids.add(sid)
+        except FileNotFoundError:
+            continue
 
     sessions: list[dict[str, Any]] = []
     for p in sorted(out_dir.glob("session_*"), key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True):
@@ -2377,7 +2419,7 @@ def _scan_timelapse_sessions() -> list[dict[str, Any]]:
             msg = "Session folder has no frames."
         elif sid in known_video_session_ids:
             status = "already_built"
-            msg = "Matching video appears to exist."
+            msg = "Matching video found. Recover again if it won't play."
         else:
             status = "recoverable"
             msg = "Frames found but no built video."
@@ -2433,11 +2475,11 @@ def _timelapse_worker() -> None:
                         snap_count += 1
                         frame_target = session_dir / f"frame_{snap_count:06d}.jpg"
                 camera.capture_timelapse_frame_to(frame_target, source=frame_source)
+                with timelapse_lock:
+                    timelapse_state["snapshot_count"] = snap_count
+                    timelapse_state["last_snapshot_at"] = time.time()
+                    timelapse_state["error"] = ""
             _set_camera_check_result(True, "timelapse frame capture succeeded")
-            with timelapse_lock:
-                timelapse_state["snapshot_count"] = snap_count
-                timelapse_state["last_snapshot_at"] = time.time()
-                timelapse_state["error"] = ""
             console.add("info", f"Timelapse frame captured: {frame_target.name}")
         except Exception as exc:
             _set_camera_check_result(False, "timelapse frame capture failed")
@@ -2542,6 +2584,7 @@ def _timelapse_stop_internal(reason: str) -> dict[str, Any]:
         session_dir_str = str(timelapse_state.get("session_dir", ""))
         session_id = str(timelapse_state.get("session_id", "")).strip()
         snap_count = int(timelapse_state.get("snapshot_count", 0))
+        capture_error = str(timelapse_state.get("error") or "") if snap_count <= 0 else ""
         interval = max(1, int(timelapse_state.get("interval_seconds", 30) or 30))
         playback_fps = max(1.0, min(60.0, float(timelapse_state.get("playback_fps", 10) or 10)))
         job_name = str(timelapse_state.get("job_name", ""))
@@ -2573,9 +2616,9 @@ def _timelapse_stop_internal(reason: str) -> dict[str, Any]:
                     console.add("info", f"Timelapse session folder cleaned: {cleaned_session}")
             except Exception as exc:
                 console.add("warn", f"Timelapse session cleanup warning: {exc}")
-        elif err:
-            build_message = err
-            console.add("warn", f"Timelapse video build warning: {err}")
+        else:
+            build_message = err or "Output video was not created."
+            console.add("warn", f"Timelapse video build warning: {build_message}")
     with timelapse_lock:
         timelapse_state["active"] = False
         timelapse_state["paused"] = False
@@ -2590,6 +2633,7 @@ def _timelapse_stop_internal(reason: str) -> dict[str, Any]:
         timelapse_state["control_mode"] = ""
         timelapse_state["session_dir"] = ""
         timelapse_state["session_id"] = ""
+        timelapse_state["error"] = build_message or capture_error
         timelapse_state["status"] = _timelapse_status_label(timelapse_state)
     timelapse_stop_worker = None
     msg = "Timelapse stopped."
@@ -2597,10 +2641,12 @@ def _timelapse_stop_internal(reason: str) -> dict[str, Any]:
         msg = f"Timelapse stopped. Video saved: {built_video}"
     elif snap_count <= 0:
         msg = "Timelapse stopped. No frames were captured."
+        if capture_error:
+            msg += f" Last capture error: {capture_error}"
     elif build_message:
         msg = f"Timelapse stopped. Frames captured, but video was not built: {build_message}"
     console.add("info", f"Timelapse stopped ({reason})")
-    return {"ok": True, "message": msg, "video": built_video, "cleaned_session": cleaned_session}
+    return {"ok": True, "message": msg, "video": built_video, "cleaned_session": cleaned_session, "build_error": build_message}
 
 
 def _timelapse_arm(job_name: str, job_source: str) -> dict[str, Any]:
@@ -2737,24 +2783,22 @@ def _timelapse_capture_final_frame_after_delay(
                 console.add("info", f"Timelapse final frame target: {frame_target.name}")
                 console.add("info", f"Timelapse final frame capture attempt {attempt}/{max_attempts}")
                 camera.capture_timelapse_frame_to(frame_target, source=source)
+                with timelapse_lock:
+                    timelapse_state["snapshot_count"] = snap_count + 1
+                    timelapse_state["last_snapshot_at"] = time.time()
+                    timelapse_state["error"] = ""
             _set_camera_check_result(True, "timelapse final frame capture succeeded")
-            with timelapse_lock:
-                timelapse_state["snapshot_count"] = max(int(timelapse_state.get("snapshot_count", 0)), snap_count + 1)
-                timelapse_state["last_snapshot_at"] = time.time()
             console.add("info", f"Timelapse final frame captured: {frame_target.name}")
             return
         except Exception as exc:
             last_error = str(exc)
             _set_camera_check_result(False, "timelapse final frame capture failed")
-            try:
-                if 'frame_target' in locals() and isinstance(frame_target, Path) and frame_target.exists():
-                    frame_target.unlink(missing_ok=True)
-            except Exception:
-                pass
             if attempt < max_attempts:
                 console.add("warn", f"Timelapse final frame capture retry after failure: {last_error}")
                 time.sleep(retry_delay_seconds)
             else:
+                with timelapse_lock:
+                    timelapse_state["error"] = last_error
                 console.add("warn", f"Timelapse final frame capture failed after retries: {last_error}")
 
 
@@ -2784,7 +2828,7 @@ def _timelapse_stop_worker_run(reason: str, session_id: str, machine_state: str,
                 delay_seconds=final_delay_seconds,
             )
         result = _timelapse_stop_internal(reason=reason)
-        if result.get("ok"):
+        if result.get("ok") and not result.get("build_error"):
             console.add("info", f"Timelapse stop/build worker complete: session={session_id or 'none'}")
         else:
             console.add(
@@ -2844,10 +2888,9 @@ def _queue_timelapse_stop_from_status(reason: str, machine_state: str, online: b
             timelapse_state["stop_pending_session_id"] = session_id
             timelapse_state["stop_reason"] = str(reason or "")
             timelapse_state["status"] = _timelapse_status_label(timelapse_state)
-        else:
-            session_id = str(timelapse_state.get("session_id", "")).strip()
-    if duplicate_log_message:
-        console.add("info", duplicate_log_message)
+    if duplicate_detected:
+        if duplicate_log_message:
+            console.add("info", duplicate_log_message)
         return False
     console.add(
         "info",
@@ -6062,19 +6105,25 @@ def api_timelapses() -> Any:
     out_dir = _timelapse_output_dir()
     allowed = {".mp4", ".webm", ".mov", ".avi"}
     items: list[dict[str, Any]] = []
-    for p in sorted(out_dir.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True):
+    for p in out_dir.glob("*"):
         if not p.is_file() or p.suffix.lower() not in allowed:
             continue
-        s = p.stat()
+        try:
+            s = p.stat()
+        except FileNotFoundError:
+            continue
+        if s.st_size <= 0:
+            continue
         items.append(
             {
                 "name": p.name,
                 "filename": p.name,
                 "size_bytes": int(s.st_size),
                 "modified": float(s.st_mtime),
-                "url": f"/api/timelapses/open/{p.name}",
+                "url": f"/api/timelapses/open/{quote(p.name, safe='')}",
             }
         )
+    items.sort(key=lambda item: item["modified"], reverse=True)
     sessions = _scan_timelapse_sessions()
     return jsonify({"ok": True, "items": items, "sessions": sessions})
 
@@ -6141,8 +6190,6 @@ def api_timelapse_stop() -> Any:
     if not (bool(state.get("active", False)) or bool(state.get("armed", False)) or bool(state.get("paused", False))):
         return jsonify({"ok": True, "message": "No active timelapse to stop.", "state": state})
     result = _timelapse_stop_internal(reason="manual")
-    if result.get("ok"):
-        result["message"] = "Timelapse stopped and saving/building output."
     return jsonify(result | {"state": _timelapse_snapshot_state()})
 
 
@@ -6156,7 +6203,7 @@ def api_timelapses_open(filename: str) -> Any:
         return jsonify({"ok": False, "error": "timelapse not found"}), 404
     if p.suffix.lower() not in {".mp4", ".webm", ".mov", ".avi"}:
         return jsonify({"ok": False, "error": "unsupported timelapse file type"}), 400
-    return send_file(str(p), as_attachment=False, download_name=p.name)
+    return send_file(str(p), as_attachment=False, download_name=p.name, conditional=True)
 
 
 @app.post("/api/timelapses/delete")
@@ -6243,15 +6290,12 @@ def api_timelapses_recover() -> Any:
     fps = max(1.0, min(60.0, float(_timelapse_cfg().get("playback_fps", 10) or 10)))
     ok, err = _build_timelapse_video(session_dir, output_file, fps)
     if not ok:
-        return jsonify({"ok": False, "message": f"Recover failed: {err or 'video build failed'}"}), 502
+        console.add("warn", f"Timelapse recovery failed: {session_name}: {err}")
+        return jsonify({"ok": False, "message": f"Recover failed: {err or 'video build failed'} Frames kept."}), 502
     if not output_file.exists() or output_file.stat().st_size <= 0:
         return jsonify({"ok": False, "message": "Recover failed: output video was not created."}), 502
-    try:
-        shutil.rmtree(session_dir)
-    except OSError as exc:
-        return jsonify({"ok": False, "message": f"Recovered video saved, but failed to delete session frames: {exc}", "video": output_file.name}), 207
     console.add("info", f"Recovered timelapse from session: {session_name} -> {output_file.name}")
-    return jsonify({"ok": True, "message": f"Recovered video: {output_file.name}", "video": output_file.name, "deleted_session": session_name})
+    return jsonify({"ok": True, "message": f"Recovered video: {output_file.name}. Original frames kept.", "video": output_file.name})
 
 
 @app.post("/api/timelapses/delete-session")

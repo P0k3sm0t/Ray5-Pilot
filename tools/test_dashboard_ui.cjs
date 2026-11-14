@@ -76,7 +76,10 @@ const server=http.createServer(async(req,res)=>{
  page.on('pageerror',e=>errors.push(e.message));
  await page.addInitScript(()=>{
    window.popupCalls=[];window.open=(...args)=>{window.popupCalls.push(args);return {closed:false,focus(){},close(){this.closed=true;}};};
-   HTMLMediaElement.prototype.play=function(){this.dispatchEvent(new Event('play'));return Promise.resolve();};
+   HTMLMediaElement.prototype.play=function(){
+     if(window.testPlayError) return Promise.reject(new DOMException('Fixture playback failure',window.testPlayError));
+     this.dispatchEvent(new Event('play'));return Promise.resolve();
+   };
    HTMLMediaElement.prototype.pause=function(){};HTMLMediaElement.prototype.load=function(){};
    Object.defineProperty(HTMLMediaElement.prototype,'src',{get(){return this.dataset.testSrc||'';},set(value){this.dataset.testSrc=value;}});
  });
@@ -200,7 +203,27 @@ const server=http.createServer(async(req,res)=>{
  await nav('timelapse');await call('#timelapseStart','/api/timelapse/start',{job_source:'manual'});await call('#timelapseStop','/api/timelapse/stop',{},true);
  await call('#timelapseSessionsBody button:first-child','/api/timelapses/recover',{session:'fixture_session'},true);
  await call('#timelapseSessionsBody button:last-child','/api/timelapses/delete-session',{session:'fixture_session'},true);
+ timelapseState={enabled:true,active:true,session_id:'fixture_session'};
+ await page.evaluate(()=>refreshStatus());
+ timelapseState={enabled:true,active:false,error:'Fixture encoder failed'};
+ await page.evaluate(()=>refreshStatus());
+ await page.waitForFunction(()=>document.getElementById('timelapseMsg').textContent.includes('Frames kept: Fixture encoder failed'));
+ timelapseState={enabled:true,active:false,armed:false};
+ const cameraSettingWrites=commands.filter(c=>c.url==='/api/camera/video-enabled').length;
  await page.locator('#timelapseBody tr:first-child button').click();await page.waitForFunction(()=>document.getElementById('dashboardWorkspaceView').hidden===false&&currentTimelapsePlaybackFile==='fixture_run.mp4');assert(await page.locator('#timelapsePlayer').isVisible());
+ assert.equal(commands.filter(c=>c.url==='/api/camera/video-enabled').length,cameraSettingWrites,'Playback must not change camera settings');
+ await page.evaluate(async()=>{
+   window.testPlayError='NotAllowedError';
+   await playTimelapse(currentTimelapseItems[1]);
+ });
+ assert.match(await page.locator('#timelapseMsg').textContent(),/Press Play/);
+ await page.evaluate(async()=>{
+   window.testPlayError='NotSupportedError';
+   await playTimelapse(currentTimelapseItems[0]);
+   window.testPlayError=null;
+ });
+ assert.match(await page.locator('#timelapseMsg').textContent(),/Playback failed for fixture_run.mp4/);
+ assert(await page.locator('#timelapsePlayer').isVisible());
  await nav('timelapse');await page.locator('#timelapseSelectAll').check();await page.waitForFunction(()=>document.getElementById('timelapseSelectedCount').textContent==='2 selected');await call('#timelapseDeleteSelected','/api/timelapses/delete',{filenames:timelapses.map(t=>t.name)},true);
  await page.locator('#timelapseSelectAll').check();await page.waitForFunction(()=>!document.getElementById('timelapseClearSelection').disabled);await page.locator('#timelapseClearSelection').click();
  // An older overlapping refresh must neither duplicate nor replace the newest timelapse list.

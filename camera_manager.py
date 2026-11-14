@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import threading
@@ -18,7 +17,7 @@ import cv2
 import numpy as np
 import requests
 from PIL import Image, ImageDraw
-from platform_utils import open_folder
+from platform_utils import open_folder, find_ffmpeg
 
 
 class CameraCaptureError(RuntimeError):
@@ -279,13 +278,15 @@ class CameraManager:
             content, source_label = self.capture_timelapse_frame()
             raw_image_pil = Image.open(io.BytesIO(content)).convert("RGB")
             raw_np = cv2.cvtColor(np.array(raw_image_pil), cv2.COLOR_RGB2BGR)
-            if selected == "raw":
-                if not cv2.imwrite(str(dest_path), raw_np):
-                    raise CameraCaptureError(f"failed to write timelapse raw frame {dest_path}")
-            else:
-                processed_np, _, _ = self._create_corrected_from_image(raw_np)
-                if not cv2.imwrite(str(dest_path), processed_np):
-                    raise CameraCaptureError(f"failed to write timelapse processed frame {dest_path}")
+            image = raw_np if selected == "raw" else self._create_corrected_from_image(raw_np)[0]
+            # Publish a frame only after encoding and writing the whole JPEG.
+            ok, jpeg = cv2.imencode(".jpg", image)
+            if not ok:
+                raise CameraCaptureError(f"failed to encode timelapse {selected} frame")
+            with tempfile.TemporaryDirectory(prefix=".frame-", dir=dest_path.parent) as temp:
+                staged = Path(temp) / "frame.jpg"
+                staged.write_bytes(jpeg.tobytes())
+                os.replace(staged, dest_path)
             self.log.info("[CAMERA] Timelapse frame source: %s", source_label)
             self.log.info("[CAMERA] Timelapse frame saved: %s", dest_path)
             return dest_path
@@ -355,9 +356,9 @@ class CameraManager:
             raise CameraCaptureError(f"http snapshot failed: {_sanitize_camera_error_text(str(exc))}") from exc
 
     def _capture_ffmpeg(self, stream_url: str) -> bytes:
-        ffmpeg = shutil.which("ffmpeg")
+        ffmpeg = find_ffmpeg()
         if not ffmpeg:
-            raise CameraCaptureError("ffmpeg not found in PATH")
+            raise CameraCaptureError("FFmpeg not found. Rerun the Pilot launcher to install dependencies, or install FFmpeg on PATH.")
         tmp: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -390,7 +391,8 @@ class CameraManager:
                     ]
                 )
                 try:
-                    subprocess.run(cmd, check=True, capture_output=True, timeout=self.timeout_seconds + 8)
+                    subprocess.run(cmd, check=True, capture_output=True, timeout=self.timeout_seconds + 8,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                     return True, ""
                 except subprocess.TimeoutExpired as exc:
                     raise CameraCaptureError("ffmpeg capture timed out") from exc
@@ -420,8 +422,10 @@ class CameraManager:
                     pass
 
     def _capture_opencv_frame(self, stream_url: str) -> bytes:
-        cap = cv2.VideoCapture(stream_url)
+        cap = _open_video_capture_with_rtsp_transport(stream_url, self.rtsp_transport())
         try:
+            if not cap.isOpened():
+                raise CameraCaptureError("OpenCV could not open the camera stream")
             ok, frame = cap.read()
             if not ok or frame is None:
                 raise CameraCaptureError("opencv failed to read frame")

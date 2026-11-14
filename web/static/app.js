@@ -117,6 +117,7 @@ let cameraPopoutClosePoll = null;
 let cameraPopoutWasLiveEnabled = false;
 let cameraPopoutActive = false;
 let currentTimelapsePlaybackFile = '';
+let timelapsePlaybackGeneration = 0;
 let latestProcessedSnapshotAvailable = false;
 let latestRawSnapshotAvailable = false;
 const selectedImportedJobs = new Set();
@@ -177,6 +178,7 @@ function setTimelapseMessage(message){
   if(msg) msg.textContent = String(message || '');
 }
 
+const recoveringTimelapseSessions = new Set();
 function renderTimelapseSessions(){
   const wrap = document.getElementById('timelapseSessionsWrap');
   const body = document.getElementById('timelapseSessionsBody');
@@ -200,9 +202,11 @@ function renderTimelapseSessions(){
     actions.className = 'timelapse-session-actions';
     const recoverBtn = btn('Recover Video', ()=>recoverTimelapseSession(sess.session));
     recoverBtn.classList.add('btn-sm');
-    recoverBtn.disabled = String(sess.status || '') !== 'recoverable';
+    const recovering = recoveringTimelapseSessions.has(sess.session);
+    recoverBtn.disabled = recovering || !['recoverable', 'already_built'].includes(String(sess.status || ''));
     const deleteBtn = btn('Delete Frames', ()=>deleteTimelapseSessionFrames(sess.session));
     deleteBtn.classList.add('btn-sm','danger');
+    deleteBtn.disabled = recovering;
     actions.append(recoverBtn, deleteBtn);
     row.append(meta, actions);
     body.append(row);
@@ -211,8 +215,10 @@ function renderTimelapseSessions(){
 
 async function recoverTimelapseSession(session){
   const safeSession = String(session || '').trim();
-  if(!safeSession) return;
+  if(!safeSession || recoveringTimelapseSessions.has(safeSession)) return;
   if(!confirm(`Recover timelapse video from ${safeSession}?`)) return;
+  recoveringTimelapseSessions.add(safeSession);
+  renderTimelapseSessions();
   setTimelapseMessage(`Recovering ${safeSession}...`);
   try{
     const r = await api('/api/timelapses/recover','POST',{session:safeSession});
@@ -220,6 +226,9 @@ async function recoverTimelapseSession(session){
     await loadTimelapses({preserveMessage:true});
   }catch(err){
     setTimelapseMessage(`Timelapse recover failed: ${String(err)}`);
+  }finally{
+    recoveringTimelapseSessions.delete(safeSession);
+    renderTimelapseSessions();
   }
 }
 
@@ -436,6 +445,10 @@ async function refreshStatus(){
     const prevActiveLike = !!(previousTimelapseState && (previousTimelapseState.active || previousTimelapseState.armed || previousTimelapseState.paused));
     const nowActiveLike = !!(timelapseRuntimeState && (timelapseRuntimeState.active || timelapseRuntimeState.armed || timelapseRuntimeState.paused));
     if(prevActiveLike && !nowActiveLike){
+      if(timelapseRuntimeState.error){
+        const detail = timelapseRuntimeState.snapshot_count === 0 ? 'No frames captured' : 'Frames kept';
+        setTimelapseMessage(`Timelapse video not saved. ${detail}: ${timelapseRuntimeState.error}`);
+      }
       const completionKey = String(
         (previousTimelapseState && (previousTimelapseState.session_id || previousTimelapseState.started_at || previousTimelapseState.last_snapshot_at))
         || ''
@@ -666,16 +679,22 @@ async function setCameraVideoEnabled(enabled){
   return r;
 }
 
-function stopTimelapsePlayback(showPlaceholder=true){
-  const player = document.getElementById('timelapsePlayer');
-  const cam = document.getElementById('cam');
+function resetTimelapsePlayer(player){
+  timelapsePlaybackGeneration += 1;
+  currentTimelapsePlaybackFile = '';
   if(player){
+    player.onended = null;
+    player.onerror = null;
     player.pause();
     player.removeAttribute('src');
     player.load();
     player.style.display='none';
   }
-  currentTimelapsePlaybackFile = '';
+}
+
+function stopTimelapsePlayback(showPlaceholder=true){
+  const cam = document.getElementById('cam');
+  resetTimelapsePlayer(document.getElementById('timelapsePlayer'));
   if(cam) cam.style.display='block';
   if(showPlaceholder){
     stopDashboardLiveVideo('Camera video disabled.');
@@ -685,51 +704,59 @@ function stopTimelapsePlayback(showPlaceholder=true){
 }
 
 function clearDeletedTimelapsePlayback(message='Selected timelapse was deleted.'){
-  const player = document.getElementById('timelapsePlayer');
-  if(player){
-    player.pause();
-    player.removeAttribute('src');
-    player.load();
-    player.style.display='none';
-  }
-  currentTimelapsePlaybackFile = '';
+  resetTimelapsePlayer(document.getElementById('timelapsePlayer'));
   setDashboardCameraPlaceholder(message);
   setVideoCardMessage(message, 'warn');
   updateVideoToggleButton();
 }
 
 async function playTimelapse(item){
-  const msg = document.getElementById('timelapseMsg');
   const player = document.getElementById('timelapsePlayer');
   const cam = document.getElementById('cam');
-  if(!player || !cam) return;
-  await setCameraVideoEnabled(false);
+  if(!player || !cam || !item.url) return;
+  resetTimelapsePlayer(player);
+  const generation = timelapsePlaybackGeneration;
   cameraDisplayMode = 'timelapse';
   dashboardVideoActive = false;
   cam.style.display='none';
   cam.removeAttribute('src');
   cameraActivePath = '';
   player.style.display='block';
-  player.src = item.url;
   currentTimelapsePlaybackFile = normalizeName(item.name || '');
   document.dispatchEvent(new CustomEvent('ray5:playback'));
   updateVideoToggleButton();
   player.onended = ()=>{
-    // Keep the ended timelapse visible in the video card until user action replaces it.
-    cameraDisplayMode = 'timelapse';
-    setVideoCardMessage('Timelapse playback ended. Re-enable live video to return to camera.', 'muted');
-    updateVideoToggleButton();
+    if(generation !== timelapsePlaybackGeneration) return;
+    setVideoCardMessage('Timelapse ended. Press Play to replay or Enable Video to return to the live camera.', 'muted');
   };
-  player.onerror = ()=>{
-    stopTimelapsePlayback(true);
-    setVideoCardMessage('Timelapse playback failed.', 'error');
+  const reportError = ()=>{
+    if(generation !== timelapsePlaybackGeneration) return;
+    const detail = {
+      2: 'The video could not be loaded.',
+      3: 'The browser could not decode this video.',
+      4: 'The video is missing, invalid, or unsupported by this browser.',
+    }[player.error?.code] || 'The video could not be played.';
+    const message = `Playback failed for ${item.name}. ${detail}`;
+    setVideoCardMessage(message, 'error');
+    setTimelapseMessage(message);
   };
+  player.onerror = reportError;
+  setVideoCardMessage(`Loading timelapse: ${item.name}`);
+  player.src = item.url;
   try{
     await player.play();
-  }catch(_err){
-    if(msg) msg.textContent = 'Timelapse ready. Press play.';
+    if(generation !== timelapsePlaybackGeneration || player.error) return;
+    setTimelapseMessage(`Playing timelapse: ${item.name}`);
+    if(!player.ended) setVideoCardMessage(`Playing timelapse: ${item.name}`);
+  }catch(err){
+    if(generation !== timelapsePlaybackGeneration) return;
+    if(err.name !== 'NotAllowedError' || player.error){
+      reportError();
+      return;
+    }
+    setVideoCardMessage('Timelapse ready. Press Play in the video controls.');
+    setTimelapseMessage('Timelapse ready. Press Play in the video controls.');
   }
-  if(msg) setTimelapseMessage(`Playing timelapse: ${item.name}`);
 }
 
 async function deleteSelectedTimelapses(){
@@ -1068,13 +1095,7 @@ function startDashboardLiveVideo(path, opts={}){
   if(!force && dashboardVideoActive && cameraActivePath === livePath && hasSrc){
     return;
   }
-  if(timelapsePlayer){
-    timelapsePlayer.pause();
-    timelapsePlayer.removeAttribute('src');
-    timelapsePlayer.load();
-    timelapsePlayer.style.display='none';
-  }
-  currentTimelapsePlaybackFile = '';
+  resetTimelapsePlayer(timelapsePlayer);
   cam.style.display='block';
   cam.style.opacity='1';
   cam.removeAttribute('src');
@@ -1766,12 +1787,12 @@ function bind(){
     }
   });
   document.getElementById('camVideoToggle').onclick=async()=>{
-    const nextEnabled = !cameraVideoEnabled;
+    const nextEnabled = cameraDisplayMode === 'timelapse' || !cameraVideoEnabled;
     if(nextEnabled && !cameraConfigured){
       showCameraNotConfiguredMessage();
       return;
     }
-    const r = await setCameraVideoEnabled(nextEnabled);
+    const r = nextEnabled === cameraVideoEnabled ? {ok:true} : await setCameraVideoEnabled(nextEnabled);
     if(!r.ok){
       setCameraTestStatus(`Camera video toggle failed: ${r.message || 'unknown error'}`, 'error', 10000);
       return;
@@ -1795,6 +1816,7 @@ function bind(){
     refreshStatus();
   };
   cam.onerror=()=>{
+    if(cameraDisplayMode !== 'live' || !dashboardVideoActive) return;
     if((cam.src||'').includes('camera_placeholder.svg')) return;
     stopDashboardLiveVideo('Camera stream unavailable.');
     setCameraTestStatus('Camera stream unavailable.', 'error', 10000);
